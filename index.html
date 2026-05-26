@@ -91,6 +91,7 @@
   <div id="legend">
     <div><b>WASD</b> / <b>Arrows</b> — move</div>
     <div><b>Space</b> — kick</div>
+    <div><b>Shift</b> — slide tackle</div>
     <div><b>R</b> — reset</div>
   </div>
   <div id="toast"></div>
@@ -116,6 +117,11 @@
     const FRICTION = 1.2;        // velocity damping per second
     const GRAVITY = 22;
     const BOUNCE = 0.45;
+    const TACKLE_DURATION = 0.55;
+    const TACKLE_SPEED = 17;
+    const TACKLE_COOLDOWN = 1.4;
+    const TACKLE_HIT_RANGE = PLAYER_R * 2.2;
+    const FALL_DURATION = 1.8;   // time spent on the ground after being tackled
 
     // ---------- Renderer / Scene / Camera ----------
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -487,10 +493,75 @@
     // a kick is initiated. Forward direction in local frame is +Z, so to swing
     // a limb forward we rotate the joint by NEGATIVE X (right-hand rule).
     const KICK_DURATION = 0.4;
-    function animateBody(group, vel, dt, kickTriggered) {
+    function setLimbs(parts, hipL, kneeL, hipR, kneeR, shL, shR, elL, elR) {
+      parts.legL.hip.rotation.x = hipL;
+      parts.legL.knee.rotation.x = kneeL;
+      parts.legR.hip.rotation.x = hipR;
+      parts.legR.knee.rotation.x = kneeR;
+      parts.armL.shoulder.rotation.x = shL;
+      parts.armR.shoulder.rotation.x = shR;
+      parts.armL.elbow.rotation.x = elL;
+      parts.armR.elbow.rotation.x = elR;
+    }
+    function animateBody(group, vel, dt, kickTriggered, state) {
       const anim = group.userData.anim;
-      const { root, head, legL, legR, armL, armR } = group.userData.parts;
+      const parts = group.userData.parts;
+      const { root, head, legL, legR, armL, armR } = parts;
       const speedMag = Math.hypot(vel.x, vel.z);
+
+      // ---- Fallen: lying face-down, then a quick get-up at the end ----
+      if (state && state.fallTimer > 0) {
+        // Easing on the way down (first 0.25s) and on the way back up (last 0.35s).
+        const f = state.fallTimer;
+        let lying; // 0 standing, 1 fully prone
+        if (FALL_DURATION - f < 0.25) {
+          lying = (FALL_DURATION - f) / 0.25;
+        } else if (f < 0.35) {
+          lying = f / 0.35;
+        } else {
+          lying = 1;
+        }
+        root.rotation.x = -lying * (Math.PI / 2 - 0.05);
+        root.position.y = lying * 0.55; // raise so face plant rests on ground roughly
+        head.rotation.x = -root.rotation.x * 0.4;
+        setLimbs(parts,
+          0.2, 0.1,        // legs splayed slightly
+         -0.1, 0.4,
+          -1.2, 1.2,       // arms out front (overhead because prone)
+          0.6, 0.6);
+        armL.shoulder.rotation.z = 0.4;
+        armR.shoulder.rotation.z = -0.4;
+        return;
+      }
+
+      // ---- Tackling: slide pose, body angled forward, lead leg extended ----
+      if (state && state.tackleActive > 0) {
+        const t = 1 - state.tackleActive / TACKLE_DURATION; // 0 → 1
+        const dive = Math.min(1, t * 4); // ramp into pose quickly
+        root.rotation.x = -dive * 0.9;
+        root.position.y = -dive * 0.25; // sink down to the ground
+        head.rotation.x = dive * 0.5;   // tuck chin
+        const leadLeg = anim.kickLeg === 1 ? legL : legR;
+        const trailLeg = anim.kickLeg === 1 ? legR : legL;
+        leadLeg.hip.rotation.x = -1.1;   // extended forward
+        leadLeg.knee.rotation.x = 0.1;
+        trailLeg.hip.rotation.x = 0.4;   // tucked back
+        trailLeg.knee.rotation.x = 1.4;
+        armL.shoulder.rotation.x = -0.7;
+        armR.shoulder.rotation.x = -0.7;
+        armL.shoulder.rotation.z = 0.35;
+        armR.shoulder.rotation.z = -0.35;
+        armL.elbow.rotation.x = 0.4;
+        armR.elbow.rotation.x = 0.4;
+        return;
+      }
+
+      // Smoothly restore root if we just came out of fall/tackle.
+      root.position.y += (0 - root.position.y) * Math.min(1, dt * 8);
+      // Reset arm Z drift in case it was overridden.
+      armL.shoulder.rotation.z = 0.12;
+      armR.shoulder.rotation.z = -0.12;
+
 
       // Walk cycle: phase advances faster the faster the player moves.
       const cadence = 2.4; // strides per unit distance
@@ -574,8 +645,19 @@
     cpu.rotation.y = -Math.PI / 2; // face -X
     scene.add(cpu);
 
-    const playerState = { vel: new THREE.Vector3(), kickCooldown: 0 };
-    const cpuState   = { vel: new THREE.Vector3(), kickCooldown: 0 };
+    function makePlayerState() {
+      return {
+        vel: new THREE.Vector3(),
+        kickCooldown: 0,
+        tackleActive: 0,    // > 0 = mid-slide
+        tackleCooldown: 0,
+        tackleDirX: 0,      // locked forward direction at tackle start
+        tackleDirZ: 0,
+        fallTimer: 0,       // > 0 = currently on the ground
+      };
+    }
+    const playerState = makePlayerState();
+    const cpuState = makePlayerState();
 
     // ---------- Input ----------
     const keys = Object.create(null);
@@ -608,8 +690,17 @@
       player.rotation.y = Math.PI / 2;
       cpu.position.set(10, 0, 0);
       cpu.rotation.y = -Math.PI / 2;
-      playerState.vel.set(0, 0, 0);
-      cpuState.vel.set(0, 0, 0);
+      for (const st of [playerState, cpuState]) {
+        st.vel.set(0, 0, 0);
+        st.kickCooldown = 0;
+        st.tackleActive = 0;
+        st.tackleCooldown = 0;
+        st.fallTimer = 0;
+      }
+      for (const p of [player, cpu]) {
+        p.userData.parts.root.rotation.set(0, 0, 0);
+        p.userData.parts.root.position.y = 0;
+      }
       if (resetScore) {
         score.you = score.cpu = 0;
         elScoreYou.textContent = '0';
@@ -632,6 +723,39 @@
     }
 
     function updatePlayer(dt) {
+      playerState.kickCooldown = Math.max(0, playerState.kickCooldown - dt);
+      playerState.tackleCooldown = Math.max(0, playerState.tackleCooldown - dt);
+
+      // Fallen: ignore input, decay velocity, wait to get up.
+      if (playerState.fallTimer > 0) {
+        playerState.fallTimer = Math.max(0, playerState.fallTimer - dt);
+        playerState.vel.multiplyScalar(Math.exp(-3 * dt));
+        player.position.x += playerState.vel.x * dt;
+        player.position.z += playerState.vel.z * dt;
+        player.position.x = clamp(player.position.x, -HALF_W + PLAYER_R, HALF_W - PLAYER_R);
+        player.position.z = clamp(player.position.z, -HALF_D + PLAYER_R, HALF_D - PLAYER_R);
+        animateBody(player, playerState.vel, dt, false, playerState);
+        pushBall(player.position, playerState.vel, playerState);
+        return;
+      }
+
+      // Tackling: locked into forward slide.
+      if (playerState.tackleActive > 0) {
+        playerState.tackleActive = Math.max(0, playerState.tackleActive - dt);
+        // Decay tackle speed slightly toward the end.
+        const t = playerState.tackleActive / TACKLE_DURATION;
+        const speed = TACKLE_SPEED * (0.5 + 0.5 * t);
+        playerState.vel.x = playerState.tackleDirX * speed;
+        playerState.vel.z = playerState.tackleDirZ * speed;
+        player.position.x += playerState.vel.x * dt;
+        player.position.z += playerState.vel.z * dt;
+        player.position.x = clamp(player.position.x, -HALF_W + PLAYER_R, HALF_W - PLAYER_R);
+        player.position.z = clamp(player.position.z, -HALF_D + PLAYER_R, HALF_D - PLAYER_R);
+        animateBody(player, playerState.vel, dt, false, playerState);
+        pushBall(player.position, playerState.vel, playerState);
+        return;
+      }
+
       let ix = 0, iz = 0;
       if (keys['KeyW'] || keys['ArrowUp']) iz -= 1;
       if (keys['KeyS'] || keys['ArrowDown']) iz += 1;
@@ -659,21 +783,58 @@
         player.rotation.y = cur + shortestAngle(cur, targetYaw) * Math.min(1, dt * 10);
       }
 
+      // Tackle: Shift launches a slide in the current facing direction.
+      const shiftDown = keys['ShiftLeft'] || keys['ShiftRight'];
+      if (shiftDown && playerState.tackleCooldown === 0) {
+        startTackle(player, playerState);
+      }
+
       // Kick
-      playerState.kickCooldown = Math.max(0, playerState.kickCooldown - dt);
       let kicked = false;
       if (keys['Space'] && playerState.kickCooldown === 0) {
         kicked = tryKick(player, ballState, 1);
         playerState.kickCooldown = 0.4;
       }
 
-      animateBody(player, playerState.vel, dt, kicked);
+      animateBody(player, playerState.vel, dt, kicked, playerState);
 
       // Body push the ball if collided
-      pushBall(player.position, playerState.vel);
+      pushBall(player.position, playerState.vel, playerState);
     }
 
     function updateCpu(dt) {
+      cpuState.kickCooldown = Math.max(0, cpuState.kickCooldown - dt);
+      cpuState.tackleCooldown = Math.max(0, cpuState.tackleCooldown - dt);
+
+      // Fallen
+      if (cpuState.fallTimer > 0) {
+        cpuState.fallTimer = Math.max(0, cpuState.fallTimer - dt);
+        cpuState.vel.multiplyScalar(Math.exp(-3 * dt));
+        cpu.position.x += cpuState.vel.x * dt;
+        cpu.position.z += cpuState.vel.z * dt;
+        cpu.position.x = clamp(cpu.position.x, -HALF_W + PLAYER_R, HALF_W - PLAYER_R);
+        cpu.position.z = clamp(cpu.position.z, -HALF_D + PLAYER_R, HALF_D - PLAYER_R);
+        animateBody(cpu, cpuState.vel, dt, false, cpuState);
+        pushBall(cpu.position, cpuState.vel, cpuState);
+        return;
+      }
+
+      // Tackling
+      if (cpuState.tackleActive > 0) {
+        cpuState.tackleActive = Math.max(0, cpuState.tackleActive - dt);
+        const t = cpuState.tackleActive / TACKLE_DURATION;
+        const speed = TACKLE_SPEED * (0.5 + 0.5 * t);
+        cpuState.vel.x = cpuState.tackleDirX * speed;
+        cpuState.vel.z = cpuState.tackleDirZ * speed;
+        cpu.position.x += cpuState.vel.x * dt;
+        cpu.position.z += cpuState.vel.z * dt;
+        cpu.position.x = clamp(cpu.position.x, -HALF_W + PLAYER_R, HALF_W - PLAYER_R);
+        cpu.position.z = clamp(cpu.position.z, -HALF_D + PLAYER_R, HALF_D - PLAYER_R);
+        animateBody(cpu, cpuState.vel, dt, false, cpuState);
+        pushBall(cpu.position, cpuState.vel, cpuState);
+        return;
+      }
+
       // Simple AI: move toward ball, kick toward player's goal when close.
       tmp.set(ballState.pos.x - cpu.position.x, 0, ballState.pos.z - cpu.position.z);
       const distToBall = tmp.length();
@@ -717,7 +878,6 @@
       const yaw = Math.atan2(tmp.x, tmp.z);
       cpu.rotation.y = cpu.rotation.y + shortestAngle(cpu.rotation.y, yaw) * Math.min(1, dt * 8);
 
-      cpuState.kickCooldown = Math.max(0, cpuState.kickCooldown - dt);
       let kicked = false;
       if (distToBall < KICK_RANGE && cpuState.kickCooldown === 0) {
         // Aim toward player's goal with slight randomness
@@ -733,9 +893,67 @@
         kicked = true;
       }
 
-      animateBody(cpu, cpuState.vel, dt, kicked);
+      // CPU tackle: if the human player is between the CPU and the ball
+      // and within range, slide in. Only ~60% of the time so it's not robotic.
+      const playerDx = player.position.x - cpu.position.x;
+      const playerDz = player.position.z - cpu.position.z;
+      const playerDist = Math.hypot(playerDx, playerDz);
+      const ballDx = ballState.pos.x - cpu.position.x;
+      const ballDz = ballState.pos.z - cpu.position.z;
+      const dot = (playerDx * ballDx + playerDz * ballDz) / Math.max(0.01, playerDist * distToBall);
+      if (
+        playerState.fallTimer === 0 &&
+        playerDist > PLAYER_R * 2 &&
+        playerDist < 3.5 &&
+        distToBall < 4 &&
+        dot > 0.5 &&
+        cpuState.tackleCooldown === 0 &&
+        Math.random() < 0.6
+      ) {
+        startTackle(cpu, cpuState);
+      }
 
-      pushBall(cpu.position, cpuState.vel);
+      animateBody(cpu, cpuState.vel, dt, kicked, cpuState);
+
+      pushBall(cpu.position, cpuState.vel, cpuState);
+    }
+
+    function startTackle(actor, state) {
+      const yaw = actor.rotation.y;
+      state.tackleDirX = Math.sin(yaw);
+      state.tackleDirZ = Math.cos(yaw);
+      state.tackleActive = TACKLE_DURATION;
+      state.tackleCooldown = TACKLE_DURATION + TACKLE_COOLDOWN;
+      // small forward burst into velocity
+      state.vel.x = state.tackleDirX * TACKLE_SPEED;
+      state.vel.z = state.tackleDirZ * TACKLE_SPEED;
+    }
+
+    // Player-vs-player tackle hit detection. A tackling actor that overlaps
+    // the other actor knocks them down (knockback + fallTimer).
+    function checkTackleHits() {
+      const pairs = [
+        [player, playerState, cpu, cpuState],
+        [cpu, cpuState, player, playerState],
+      ];
+      for (const [attacker, atkSt, victim, vicSt] of pairs) {
+        if (atkSt.tackleActive <= 0) continue;
+        if (vicSt.fallTimer > 0) continue;
+        const dx = attacker.position.x - victim.position.x;
+        const dz = attacker.position.z - victim.position.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 0 && d < TACKLE_HIT_RANGE) {
+          vicSt.fallTimer = FALL_DURATION;
+          // Knockback away from attacker, plus a touch in attacker's forward
+          // direction so it looks like the impact pushed them over.
+          const nx = -dx / d, nz = -dz / d;
+          vicSt.vel.x = nx * 8 + atkSt.tackleDirX * 3;
+          vicSt.vel.z = nz * 8 + atkSt.tackleDirZ * 3;
+          // Attacker stops short on contact.
+          atkSt.vel.x *= 0.3;
+          atkSt.vel.z *= 0.3;
+        }
+      }
     }
 
     function tryKick(playerObj, ballSt, powerScale) {
@@ -754,9 +972,9 @@
       return true;
     }
 
-    function pushBall(pos, vel) {
+    function pushBall(pos, vel, state) {
       // soft collision between a player and the ball — push the ball away,
-      // and impart a small fraction of player velocity
+      // and impart velocity. Tackling stab gives a much bigger boost.
       const dx = ballState.pos.x - pos.x;
       const dz = ballState.pos.z - pos.z;
       const d = Math.hypot(dx, dz);
@@ -766,11 +984,13 @@
         const overlap = min - d;
         ballState.pos.x += nx * overlap;
         ballState.pos.z += nz * overlap;
-        // Impart velocity along the normal based on player's velocity component
         const playerSpeedAlongN = vel.x * nx + vel.z * nz;
-        const transfer = Math.max(0, playerSpeedAlongN) * 0.8 + 1.5;
+        const tackling = state && state.tackleActive > 0;
+        const baseTransfer = Math.max(0, playerSpeedAlongN) * 0.8 + 1.5;
+        const transfer = tackling ? baseTransfer + 8 : baseTransfer;
         ballState.vel.x += nx * transfer;
         ballState.vel.z += nz * transfer;
+        if (tackling) ballState.vel.y = Math.max(ballState.vel.y, 2.5);
       }
     }
 
@@ -897,6 +1117,7 @@
 
       updatePlayer(dt);
       updateCpu(dt);
+      checkTackleHits();
       updateBall(dt);
 
       if (toastTimer > 0) {
