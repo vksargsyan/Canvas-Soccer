@@ -449,6 +449,7 @@
 
     // ---------- Score ----------
     const score = { you: 0, cpu: 0 };
+    let goalLocked = false; // prevents the same goal from counting every frame until reset
     const elScoreYou = document.getElementById('scoreYou');
     const elScoreCpu = document.getElementById('scoreCpu');
     const elToast = document.getElementById('toast');
@@ -475,6 +476,7 @@
         elScoreYou.textContent = '0';
         elScoreCpu.textContent = '0';
       }
+      goalLocked = false;
     }
 
     // ---------- Update logic ----------
@@ -685,7 +687,7 @@
 
       // Right side (CPU goal)
       if (ballState.pos.x > HALF_W - BALL_R) {
-        if (inGoalMouth && ballState.pos.x > HALF_W) {
+        if (!goalLocked && inGoalMouth && ballState.pos.x > HALF_W) {
           onGoal('you');
           return;
         }
@@ -700,7 +702,7 @@
       }
       // Left side (player goal)
       if (ballState.pos.x < -HALF_W + BALL_R) {
-        if (inGoalMouth && ballState.pos.x < -HALF_W) {
+        if (!goalLocked && inGoalMouth && ballState.pos.x < -HALF_W) {
           onGoal('cpu');
           return;
         }
@@ -746,6 +748,8 @@
     }
 
     function onGoal(scorer) {
+      if (goalLocked) return;
+      goalLocked = true;
       if (scorer === 'you') {
         score.you++;
         elScoreYou.textContent = String(score.you);
