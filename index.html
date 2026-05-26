@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Canvas Soccer</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #87ceeb;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #fff;
+      user-select: none;
+    }
+    #app { position: fixed; inset: 0; }
+    #hud {
+      position: fixed;
+      top: 16px;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: center;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #score {
+      background: rgba(0, 0, 0, 0.55);
+      padding: 10px 22px;
+      border-radius: 10px;
+      font-size: 28px;
+      letter-spacing: 2px;
+      font-weight: 700;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.4);
+    }
+    #score .you { color: #6ec1ff; }
+    #score .cpu { color: #ff7a7a; }
+    #legend {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      z-index: 10;
+      pointer-events: none;
+    }
+    #legend b { color: #ffd66e; }
+    #toast {
+      position: fixed;
+      top: 40%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.8);
+      font-size: 64px;
+      font-weight: 900;
+      letter-spacing: 6px;
+      color: #fff;
+      text-shadow: 0 4px 0 #000, 0 6px 30px rgba(0,0,0,0.6);
+      opacity: 0;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+      pointer-events: none;
+      z-index: 20;
+    }
+    #toast.show {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <div id="score">
+      <span class="you">YOU</span>
+      <span id="scoreYou">0</span>
+      &mdash;
+      <span id="scoreCpu">0</span>
+      <span class="cpu">CPU</span>
+    </div>
+  </div>
+  <div id="legend">
+    <div><b>WASD</b> / <b>Arrows</b> — move</div>
+    <div><b>Space</b> — kick</div>
+    <div><b>R</b> — reset</div>
+  </div>
+  <div id="toast"></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ---------- Constants ----------
+    const FIELD_W = 60;          // along X (goal-to-goal)
+    const FIELD_D = 40;          // along Z
+    const HALF_W = FIELD_W / 2;
+    const HALF_D = FIELD_D / 2;
+    const GOAL_HALF_WIDTH = 4;   // half-width of goal mouth along Z
+    const GOAL_HEIGHT = 3;
+    const GOAL_DEPTH = 2.5;
+    const BALL_R = 0.5;
+    const PLAYER_R = 0.6;
+    const KICK_RANGE = 1.6;
+    const KICK_POWER = 22;
+    const KICK_LIFT = 5;
+    const PLAYER_SPEED = 11;
+    const CPU_SPEED = 8.5;
+    const FRICTION = 1.2;        // velocity damping per second
+    const GRAVITY = 22;
+    const BOUNCE = 0.45;
+
+    // ---------- Renderer / Scene / Camera ----------
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.getElementById('app').appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb);
+    scene.fog = new THREE.Fog(0x87ceeb, 80, 160);
+
+    const camera = new THREE.PerspectiveCamera(
+      52, window.innerWidth / window.innerHeight, 0.1, 500
+    );
+    camera.position.set(0, 32, 44);
+    camera.lookAt(0, 0, 0);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ---------- Lights ----------
+    scene.add(new THREE.HemisphereLight(0xbfe7ff, 0x3a5a2a, 0.75));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+    sun.position.set(20, 40, 25);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.camera.left = -45;
+    sun.shadow.camera.right = 45;
+    sun.shadow.camera.top = 35;
+    sun.shadow.camera.bottom = -35;
+    sun.shadow.camera.near = 5;
+    sun.shadow.camera.far = 120;
+    scene.add(sun);
+
+    // ---------- Helpers ----------
+    function flatMat(color, opts = {}) {
+      return new THREE.MeshStandardMaterial({
+        color, flatShading: true, roughness: 0.85, metalness: 0.0, ...opts,
+      });
+    }
+
+    function addMesh(geo, mat, parent, opts = {}) {
+      const m = new THREE.Mesh(geo, mat);
+      m.castShadow = opts.castShadow ?? true;
+      m.receiveShadow = opts.receiveShadow ?? false;
+      if (opts.pos) m.position.set(...opts.pos);
+      if (opts.rot) m.rotation.set(...opts.rot);
+      parent.add(m);
+      return m;
+    }
+
+    // ---------- Pitch ----------
+    const pitchGroup = new THREE.Group();
+    scene.add(pitchGroup);
+
+    // Grass
+    const grassGeo = new THREE.PlaneGeometry(FIELD_W, FIELD_D, 12, 8);
+    // jitter vertex heights very slightly for low-poly grass feel
+    {
+      const pos = grassGeo.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i);
+        const edge = Math.abs(x) > HALF_W - 0.5 || Math.abs(y) > HALF_D - 0.5;
+        pos.setZ(i, edge ? 0 : (Math.random() - 0.5) * 0.12);
+      }
+      grassGeo.computeVertexNormals();
+    }
+    const grass = new THREE.Mesh(grassGeo, flatMat(0x3fa64a, { roughness: 1 }));
+    grass.rotation.x = -Math.PI / 2;
+    grass.receiveShadow = true;
+    pitchGroup.add(grass);
+
+    // Field stripes (alternating shades) for that mowed look
+    const stripeMat = flatMat(0x49b556, { roughness: 1 });
+    for (let i = 0; i < 6; i++) {
+      const stripe = new THREE.Mesh(
+        new THREE.PlaneGeometry(FIELD_W, FIELD_D / 12),
+        stripeMat
+      );
+      stripe.rotation.x = -Math.PI / 2;
+      stripe.position.set(0, 0.005, -HALF_D + (i * 2 + 1) * (FIELD_D / 12));
+      stripe.receiveShadow = true;
+      pitchGroup.add(stripe);
+    }
+
+    // Lines
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    function addLine(w, d, x, z) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), lineMat);
+      m.rotation.x = -Math.PI / 2;
+      m.position.set(x, 0.02, z);
+      pitchGroup.add(m);
+      return m;
+    }
+    const LINE_T = 0.18;
+    // Outer rectangle
+    addLine(FIELD_W, LINE_T, 0, -HALF_D + LINE_T / 2);
+    addLine(FIELD_W, LINE_T, 0,  HALF_D - LINE_T / 2);
+    addLine(LINE_T, FIELD_D, -HALF_W + LINE_T / 2, 0);
+    addLine(LINE_T, FIELD_D,  HALF_W - LINE_T / 2, 0);
+    // Halfway line
+    addLine(LINE_T, FIELD_D, 0, 0);
+    // Center circle
+    {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(4.5 - LINE_T / 2, 4.5 + LINE_T / 2, 48),
+        lineMat
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.02;
+      pitchGroup.add(ring);
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.25, 16), lineMat);
+      dot.rotation.x = -Math.PI / 2;
+      dot.position.y = 0.02;
+      pitchGroup.add(dot);
+    }
+    // Penalty boxes
+    function penaltyBox(side) {
+      const boxW = 6, boxD = 14;
+      const x = side * (HALF_W - boxW / 2);
+      addLine(LINE_T, boxD, x - side * (boxW / 2), 0);
+      addLine(boxW, LINE_T, side * (HALF_W - boxW / 2), -boxD / 2);
+      addLine(boxW, LINE_T, side * (HALF_W - boxW / 2),  boxD / 2);
+    }
+    penaltyBox(1);
+    penaltyBox(-1);
+
+    // ---------- Goals ----------
+    function buildGoal(side, teamColor) {
+      const g = new THREE.Group();
+      const x = side * HALF_W;
+      g.position.x = x;
+
+      const postMat = flatMat(0xf6f6f6, { roughness: 0.6 });
+      const postGeo = new THREE.CylinderGeometry(0.12, 0.12, GOAL_HEIGHT, 8);
+      const barGeo = new THREE.CylinderGeometry(0.12, 0.12, GOAL_HALF_WIDTH * 2 + 0.24, 8);
+
+      const post1 = new THREE.Mesh(postGeo, postMat);
+      post1.position.set(0, GOAL_HEIGHT / 2, -GOAL_HALF_WIDTH);
+      post1.castShadow = true;
+      g.add(post1);
+
+      const post2 = new THREE.Mesh(postGeo, postMat);
+      post2.position.set(0, GOAL_HEIGHT / 2, GOAL_HALF_WIDTH);
+      post2.castShadow = true;
+      g.add(post2);
+
+      const bar = new THREE.Mesh(barGeo, postMat);
+      bar.position.set(0, GOAL_HEIGHT, 0);
+      bar.rotation.x = Math.PI / 2;
+      bar.castShadow = true;
+      g.add(bar);
+
+      // Net: a wireframe box behind the goal mouth
+      const netGeo = new THREE.BoxGeometry(GOAL_DEPTH, GOAL_HEIGHT, GOAL_HALF_WIDTH * 2);
+      const netFill = new THREE.Mesh(
+        netGeo,
+        new THREE.MeshStandardMaterial({
+          color: teamColor, transparent: true, opacity: 0.12, flatShading: true,
+        })
+      );
+      netFill.position.set(side * GOAL_DEPTH / 2, GOAL_HEIGHT / 2, 0);
+      g.add(netFill);
+
+      const netWire = new THREE.LineSegments(
+        new THREE.EdgesGeometry(netGeo),
+        new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 })
+      );
+      netWire.position.copy(netFill.position);
+      g.add(netWire);
+
+      scene.add(g);
+      return g;
+    }
+    const goalLeft = buildGoal(-1, 0x6ec1ff);  // player's goal (defends left)
+    const goalRight = buildGoal(1, 0xff7a7a);  // CPU's goal (player attacks right)
+
+    // ---------- Stands (decorative low-poly boxes) ----------
+    {
+      const standMat1 = flatMat(0xd95d5d);
+      const standMat2 = flatMat(0x4a8edb);
+      const standMats = [standMat1, standMat2];
+      for (let i = 0; i < 24; i++) {
+        const onLong = i < 12;
+        const t = (i % 12) / 11;
+        const x = onLong ? -HALF_W + t * FIELD_W : (i < 18 ? -HALF_W - 2 : HALF_W + 2);
+        const z = onLong ? (i < 6 ? -HALF_D - 2 : HALF_D + 2) : -HALF_D + ((i % 6) / 5) * FIELD_D;
+        const h = 1.4 + Math.random() * 1.6;
+        const box = new THREE.Mesh(
+          new THREE.BoxGeometry(1.6, h, 1.6),
+          standMats[i % 2]
+        );
+        box.position.set(x, h / 2, z);
+        box.castShadow = true;
+        box.receiveShadow = true;
+        scene.add(box);
+      }
+    }
+
+    // ---------- Soccer ball ----------
+    function buildBall() {
+      const geo = new THREE.IcosahedronGeometry(BALL_R, 1);
+      // Color a subset of faces black for a soccer-ball pattern.
+      const posAttr = geo.attributes.position;
+      const count = posAttr.count;
+      const colors = new Float32Array(count * 3);
+      const faceCount = count / 3;
+      for (let f = 0; f < faceCount; f++) {
+        const black = f % 4 === 0;
+        for (let v = 0; v < 3; v++) {
+          const idx = (f * 3 + v) * 3;
+          if (black) {
+            colors[idx] = 0.05; colors[idx + 1] = 0.05; colors[idx + 2] = 0.05;
+          } else {
+            colors[idx] = 1; colors[idx + 1] = 1; colors[idx + 2] = 1;
+          }
+        }
+      }
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true, flatShading: true, roughness: 0.55,
+      });
+      const m = new THREE.Mesh(geo, mat);
+      m.castShadow = true;
+      return m;
+    }
+    const ball = buildBall();
+    scene.add(ball);
+
+    const ballState = {
+      pos: new THREE.Vector3(0, BALL_R, 0),
+      vel: new THREE.Vector3(),
+    };
+
+    // ---------- Players ----------
+    function buildPlayer(bodyColor, shortsColor) {
+      const g = new THREE.Group();
+
+      // Torso (hex prism)
+      const torso = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.42, 0.52, 1.1, 6),
+        flatMat(bodyColor)
+      );
+      torso.position.y = 1.05;
+      torso.castShadow = true;
+      g.add(torso);
+
+      // Shorts (smaller hex prism)
+      const shorts = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.42, 0.4, 6),
+        flatMat(shortsColor)
+      );
+      shorts.position.y = 0.5;
+      shorts.castShadow = true;
+      g.add(shorts);
+
+      // Legs
+      const legGeo = new THREE.CylinderGeometry(0.16, 0.16, 0.55, 6);
+      const legMat = flatMat(0x1f2a3a);
+      const legL = new THREE.Mesh(legGeo, legMat);
+      legL.position.set(0.18, 0.27, 0);
+      legL.castShadow = true;
+      g.add(legL);
+      const legR = new THREE.Mesh(legGeo, legMat);
+      legR.position.set(-0.18, 0.27, 0);
+      legR.castShadow = true;
+      g.add(legR);
+
+      // Arms
+      const armGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.85, 6);
+      const armL = new THREE.Mesh(armGeo, flatMat(bodyColor));
+      armL.position.set(0.55, 1.05, 0);
+      armL.rotation.z = 0.18;
+      armL.castShadow = true;
+      g.add(armL);
+      const armR = new THREE.Mesh(armGeo, flatMat(bodyColor));
+      armR.position.set(-0.55, 1.05, 0);
+      armR.rotation.z = -0.18;
+      armR.castShadow = true;
+      g.add(armR);
+
+      // Head
+      const head = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.38, 0),
+        flatMat(0xf2c79b)
+      );
+      head.position.y = 1.95;
+      head.castShadow = true;
+      g.add(head);
+
+      // Facing indicator: a small nose-cone in +Z direction (we'll rotate group so +Z = forward)
+      const nose = new THREE.Mesh(
+        new THREE.ConeGeometry(0.08, 0.18, 6),
+        flatMat(0xff9966)
+      );
+      nose.position.set(0, 1.95, 0.34);
+      nose.rotation.x = Math.PI / 2;
+      g.add(nose);
+
+      // Group userData for animation
+      g.userData.parts = { legL, legR, armL, armR };
+      return g;
+    }
+
+    const player = buildPlayer(0x6ec1ff, 0x1d4f80);
+    player.position.set(-10, 0, 0);
+    player.rotation.y = Math.PI / 2; // face +X (toward CPU goal)
+    scene.add(player);
+
+    const cpu = buildPlayer(0xff7a7a, 0x802020);
+    cpu.position.set(10, 0, 0);
+    cpu.rotation.y = -Math.PI / 2; // face -X
+    scene.add(cpu);
+
+    const playerState = { vel: new THREE.Vector3(), kickCooldown: 0, walkPhase: 0 };
+    const cpuState   = { vel: new THREE.Vector3(), kickCooldown: 0, walkPhase: 0 };
+
+    // ---------- Input ----------
+    const keys = Object.create(null);
+    window.addEventListener('keydown', (e) => {
+      keys[e.code] = true;
+      if (e.code === 'Space') e.preventDefault();
+      if (e.code === 'KeyR') resetPositions(true);
+    });
+    window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+    // ---------- Score ----------
+    const score = { you: 0, cpu: 0 };
+    const elScoreYou = document.getElementById('scoreYou');
+    const elScoreCpu = document.getElementById('scoreCpu');
+    const elToast = document.getElementById('toast');
+    let toastTimer = 0;
+    function showToast(text, ms = 1200) {
+      elToast.textContent = text;
+      elToast.classList.add('show');
+      toastTimer = ms / 1000;
+    }
+
+    function resetPositions(resetScore = false) {
+      ballState.pos.set(0, BALL_R, 0);
+      ballState.vel.set(0, 0, 0);
+      ball.position.copy(ballState.pos);
+      ball.rotation.set(0, 0, 0);
+      player.position.set(-10, 0, 0);
+      player.rotation.y = Math.PI / 2;
+      cpu.position.set(10, 0, 0);
+      cpu.rotation.y = -Math.PI / 2;
+      playerState.vel.set(0, 0, 0);
+      cpuState.vel.set(0, 0, 0);
+      if (resetScore) {
+        score.you = score.cpu = 0;
+        elScoreYou.textContent = '0';
+        elScoreCpu.textContent = '0';
+      }
+    }
+
+    // ---------- Update logic ----------
+    const tmp = new THREE.Vector3();
+    const tmp2 = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+    function shortestAngle(a, b) {
+      let d = b - a;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      return d;
+    }
+
+    function updatePlayer(dt) {
+      let ix = 0, iz = 0;
+      if (keys['KeyW'] || keys['ArrowUp']) iz -= 1;
+      if (keys['KeyS'] || keys['ArrowDown']) iz += 1;
+      if (keys['KeyA'] || keys['ArrowLeft']) ix -= 1;
+      if (keys['KeyD'] || keys['ArrowRight']) ix += 1;
+      const len = Math.hypot(ix, iz);
+      if (len > 0) { ix /= len; iz /= len; }
+
+      // Velocity toward input
+      const targetVx = ix * PLAYER_SPEED;
+      const targetVz = iz * PLAYER_SPEED;
+      // simple smoothing
+      playerState.vel.x += (targetVx - playerState.vel.x) * Math.min(1, dt * 12);
+      playerState.vel.z += (targetVz - playerState.vel.z) * Math.min(1, dt * 12);
+
+      player.position.x += playerState.vel.x * dt;
+      player.position.z += playerState.vel.z * dt;
+      player.position.x = clamp(player.position.x, -HALF_W + PLAYER_R, HALF_W - PLAYER_R);
+      player.position.z = clamp(player.position.z, -HALF_D + PLAYER_R, HALF_D - PLAYER_R);
+
+      // Rotate toward movement direction
+      if (len > 0) {
+        const targetYaw = Math.atan2(ix, iz); // because +Z = forward
+        const cur = player.rotation.y;
+        player.rotation.y = cur + shortestAngle(cur, targetYaw) * Math.min(1, dt * 10);
+      }
+
+      // Walk animation
+      const speedMag = Math.hypot(playerState.vel.x, playerState.vel.z);
+      playerState.walkPhase += speedMag * dt * 0.9;
+      const swing = Math.sin(playerState.walkPhase) * Math.min(0.6, speedMag * 0.08);
+      const { legL, legR, armL, armR } = player.userData.parts;
+      legL.rotation.x = swing;
+      legR.rotation.x = -swing;
+      armL.rotation.x = -swing * 0.7;
+      armR.rotation.x = swing * 0.7;
+
+      // Kick
+      playerState.kickCooldown = Math.max(0, playerState.kickCooldown - dt);
+      if (keys['Space'] && playerState.kickCooldown === 0) {
+        tryKick(player, ballState, 1);
+        playerState.kickCooldown = 0.4;
+      }
+
+      // Body push the ball if collided
+      pushBall(player.position, playerState.vel);
+    }
+
+    function updateCpu(dt) {
+      // Simple AI: move toward ball, kick toward player's goal when close.
+      tmp.set(ballState.pos.x - cpu.position.x, 0, ballState.pos.z - cpu.position.z);
+      const distToBall = tmp.length();
+
+      // Decide approach point: get behind the ball relative to its target goal (-X side)
+      const targetX = -HALF_W; // player's goal
+      const dirToGoal = new THREE.Vector3(targetX - ballState.pos.x, 0, 0 - ballState.pos.z);
+      dirToGoal.y = 0;
+      dirToGoal.normalize();
+      // Stand a little behind ball (opposite of goal direction)
+      const approach = new THREE.Vector3(
+        ballState.pos.x - dirToGoal.x * 1.2,
+        0,
+        ballState.pos.z - dirToGoal.z * 1.2
+      );
+
+      const toApproach = new THREE.Vector3(
+        approach.x - cpu.position.x, 0, approach.z - cpu.position.z
+      );
+      const aDist = toApproach.length();
+      if (aDist > 0.01) toApproach.multiplyScalar(1 / aDist);
+
+      // If close to ball, just chase ball directly
+      let dirX = toApproach.x, dirZ = toApproach.z;
+      if (distToBall < 2.5) {
+        dirX = tmp.x / Math.max(0.01, distToBall);
+        dirZ = tmp.z / Math.max(0.01, distToBall);
+      }
+
+      const targetVx = dirX * CPU_SPEED;
+      const targetVz = dirZ * CPU_SPEED;
+      cpuState.vel.x += (targetVx - cpuState.vel.x) * Math.min(1, dt * 8);
+      cpuState.vel.z += (targetVz - cpuState.vel.z) * Math.min(1, dt * 8);
+
+      cpu.position.x += cpuState.vel.x * dt;
+      cpu.position.z += cpuState.vel.z * dt;
+      cpu.position.x = clamp(cpu.position.x, -HALF_W + PLAYER_R, HALF_W - PLAYER_R);
+      cpu.position.z = clamp(cpu.position.z, -HALF_D + PLAYER_R, HALF_D - PLAYER_R);
+
+      // Face the ball
+      const yaw = Math.atan2(tmp.x, tmp.z);
+      cpu.rotation.y = cpu.rotation.y + shortestAngle(cpu.rotation.y, yaw) * Math.min(1, dt * 8);
+
+      // Walk anim
+      const speedMag = Math.hypot(cpuState.vel.x, cpuState.vel.z);
+      cpuState.walkPhase += speedMag * dt * 0.9;
+      const swing = Math.sin(cpuState.walkPhase) * Math.min(0.6, speedMag * 0.08);
+      const { legL, legR, armL, armR } = cpu.userData.parts;
+      legL.rotation.x = swing;
+      legR.rotation.x = -swing;
+      armL.rotation.x = -swing * 0.7;
+      armR.rotation.x = swing * 0.7;
+
+      cpuState.kickCooldown = Math.max(0, cpuState.kickCooldown - dt);
+      if (distToBall < KICK_RANGE && cpuState.kickCooldown === 0) {
+        // Aim toward player's goal with slight randomness
+        const aim = new THREE.Vector3(
+          -HALF_W - ballState.pos.x,
+          0,
+          (Math.random() - 0.5) * (GOAL_HALF_WIDTH * 1.4) - ballState.pos.z
+        ).normalize();
+        ballState.vel.x = aim.x * KICK_POWER * 0.85;
+        ballState.vel.z = aim.z * KICK_POWER * 0.85;
+        ballState.vel.y = KICK_LIFT * 0.7;
+        cpuState.kickCooldown = 0.7;
+      }
+
+      pushBall(cpu.position, cpuState.vel);
+    }
+
+    function tryKick(playerObj, ballSt, powerScale) {
+      const dx = ballSt.pos.x - playerObj.position.x;
+      const dz = ballSt.pos.z - playerObj.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d > KICK_RANGE) return false;
+      // Kick in the direction the player is facing
+      const yaw = playerObj.rotation.y;
+      // forward vector for a Y-yaw rotation where +Z is forward at yaw=0:
+      const fx = Math.sin(yaw);
+      const fz = Math.cos(yaw);
+      ballSt.vel.x = fx * KICK_POWER * powerScale;
+      ballSt.vel.z = fz * KICK_POWER * powerScale;
+      ballSt.vel.y = KICK_LIFT;
+      return true;
+    }
+
+    function pushBall(pos, vel) {
+      // soft collision between a player and the ball — push the ball away,
+      // and impart a small fraction of player velocity
+      const dx = ballState.pos.x - pos.x;
+      const dz = ballState.pos.z - pos.z;
+      const d = Math.hypot(dx, dz);
+      const min = BALL_R + PLAYER_R;
+      if (d > 0 && d < min) {
+        const nx = dx / d, nz = dz / d;
+        const overlap = min - d;
+        ballState.pos.x += nx * overlap;
+        ballState.pos.z += nz * overlap;
+        // Impart velocity along the normal based on player's velocity component
+        const playerSpeedAlongN = vel.x * nx + vel.z * nz;
+        const transfer = Math.max(0, playerSpeedAlongN) * 0.8 + 1.5;
+        ballState.vel.x += nx * transfer;
+        ballState.vel.z += nz * transfer;
+      }
+    }
+
+    function updateBall(dt) {
+      // gravity
+      ballState.vel.y -= GRAVITY * dt;
+
+      // friction on XZ when on ground
+      if (ballState.pos.y <= BALL_R + 0.001) {
+        const decay = Math.exp(-FRICTION * dt);
+        ballState.vel.x *= decay;
+        ballState.vel.z *= decay;
+      }
+
+      // integrate
+      ballState.pos.x += ballState.vel.x * dt;
+      ballState.pos.y += ballState.vel.y * dt;
+      ballState.pos.z += ballState.vel.z * dt;
+
+      // ground
+      if (ballState.pos.y < BALL_R) {
+        ballState.pos.y = BALL_R;
+        if (ballState.vel.y < 0) ballState.vel.y = -ballState.vel.y * BOUNCE;
+        if (Math.abs(ballState.vel.y) < 0.6) ballState.vel.y = 0;
+      }
+
+      // Z walls (sidelines)
+      if (ballState.pos.z < -HALF_D + BALL_R) {
+        ballState.pos.z = -HALF_D + BALL_R;
+        ballState.vel.z = Math.abs(ballState.vel.z) * 0.6;
+      } else if (ballState.pos.z > HALF_D - BALL_R) {
+        ballState.pos.z = HALF_D - BALL_R;
+        ballState.vel.z = -Math.abs(ballState.vel.z) * 0.6;
+      }
+
+      // X walls / goals
+      const inGoalMouth =
+        Math.abs(ballState.pos.z) < GOAL_HALF_WIDTH - BALL_R * 0.3 &&
+        ballState.pos.y < GOAL_HEIGHT - BALL_R;
+
+      // Right side (CPU goal)
+      if (ballState.pos.x > HALF_W - BALL_R) {
+        if (inGoalMouth && ballState.pos.x > HALF_W) {
+          onGoal('you');
+          return;
+        }
+        if (!inGoalMouth) {
+          ballState.pos.x = HALF_W - BALL_R;
+          ballState.vel.x = -Math.abs(ballState.vel.x) * 0.6;
+        } else if (ballState.pos.x > HALF_W + GOAL_DEPTH - BALL_R) {
+          // back of net
+          ballState.pos.x = HALF_W + GOAL_DEPTH - BALL_R;
+          ballState.vel.x = -Math.abs(ballState.vel.x) * 0.2;
+        }
+      }
+      // Left side (player goal)
+      if (ballState.pos.x < -HALF_W + BALL_R) {
+        if (inGoalMouth && ballState.pos.x < -HALF_W) {
+          onGoal('cpu');
+          return;
+        }
+        if (!inGoalMouth) {
+          ballState.pos.x = -HALF_W + BALL_R;
+          ballState.vel.x = Math.abs(ballState.vel.x) * 0.6;
+        } else if (ballState.pos.x < -HALF_W - GOAL_DEPTH + BALL_R) {
+          ballState.pos.x = -HALF_W - GOAL_DEPTH + BALL_R;
+          ballState.vel.x = Math.abs(ballState.vel.x) * 0.2;
+        }
+      }
+
+      // Goal posts collision (cylinders at z = ±GOAL_HALF_WIDTH on each side)
+      [[-1, -GOAL_HALF_WIDTH], [-1, GOAL_HALF_WIDTH], [1, -GOAL_HALF_WIDTH], [1, GOAL_HALF_WIDTH]]
+        .forEach(([sx, sz]) => {
+          const px = sx * HALF_W;
+          const dx = ballState.pos.x - px;
+          const dz = ballState.pos.z - sz;
+          const d = Math.hypot(dx, dz);
+          const minD = BALL_R + 0.12;
+          if (d > 0 && d < minD && ballState.pos.y < GOAL_HEIGHT) {
+            const nx = dx / d, nz = dz / d;
+            ballState.pos.x += nx * (minD - d);
+            ballState.pos.z += nz * (minD - d);
+            const vn = ballState.vel.x * nx + ballState.vel.z * nz;
+            if (vn < 0) {
+              ballState.vel.x -= 1.8 * vn * nx;
+              ballState.vel.z -= 1.8 * vn * nz;
+            }
+          }
+        });
+
+      // Apply to mesh
+      ball.position.copy(ballState.pos);
+
+      // Rolling rotation
+      const speed = Math.hypot(ballState.vel.x, ballState.vel.z);
+      if (speed > 0.01) {
+        const axis = tmp2.set(-ballState.vel.z, 0, ballState.vel.x).normalize();
+        const angle = (speed * dt) / BALL_R;
+        ball.rotateOnWorldAxis(axis, angle);
+      }
+    }
+
+    function onGoal(scorer) {
+      if (scorer === 'you') {
+        score.you++;
+        elScoreYou.textContent = String(score.you);
+        showToast('GOAL!');
+      } else {
+        score.cpu++;
+        elScoreCpu.textContent = String(score.cpu);
+        showToast('CPU SCORES');
+      }
+      // Pause briefly then reset
+      setTimeout(() => resetPositions(false), 900);
+    }
+
+    // ---------- Loop ----------
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+
+      updatePlayer(dt);
+      updateCpu(dt);
+      updateBall(dt);
+
+      if (toastTimer > 0) {
+        toastTimer -= dt;
+        if (toastTimer <= 0) elToast.classList.remove('show');
+      }
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
