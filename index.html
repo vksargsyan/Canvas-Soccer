@@ -356,73 +356,212 @@
     };
 
     // ---------- Players ----------
+    // The rig:
+    //   root (bobbable/leanable) → torso, shorts, head, nose, hipL, hipR, shoulderL, shoulderR
+    //   hip(L|R) (rotates around X for swing) → upperLeg, knee(L|R)
+    //   knee(L|R) (rotates around X for bend) → lowerLeg, foot
+    //   shoulder(L|R) → upperArm, elbow(L|R)
+    //   elbow(L|R) → lowerArm
+    // Joints pivot from the top of each limb, not its midpoint.
     function buildPlayer(bodyColor, shortsColor) {
       const g = new THREE.Group();
+      const root = new THREE.Group();
+      g.add(root);
 
       // Torso (hex prism)
       const torso = new THREE.Mesh(
         new THREE.CylinderGeometry(0.42, 0.52, 1.1, 6),
         flatMat(bodyColor)
       );
-      torso.position.y = 1.05;
+      torso.position.y = 1.35;
       torso.castShadow = true;
-      g.add(torso);
+      root.add(torso);
 
       // Shorts (smaller hex prism)
       const shorts = new THREE.Mesh(
         new THREE.CylinderGeometry(0.5, 0.42, 0.4, 6),
         flatMat(shortsColor)
       );
-      shorts.position.y = 0.5;
+      shorts.position.y = 0.8;
       shorts.castShadow = true;
-      g.add(shorts);
+      root.add(shorts);
 
-      // Legs
-      const legGeo = new THREE.CylinderGeometry(0.16, 0.16, 0.55, 6);
       const legMat = flatMat(0x1f2a3a);
-      const legL = new THREE.Mesh(legGeo, legMat);
-      legL.position.set(0.18, 0.27, 0);
-      legL.castShadow = true;
-      g.add(legL);
-      const legR = new THREE.Mesh(legGeo, legMat);
-      legR.position.set(-0.18, 0.27, 0);
-      legR.castShadow = true;
-      g.add(legR);
+      const skinMat = flatMat(0xf2c79b);
+      const upperLegGeo = new THREE.CylinderGeometry(0.17, 0.14, 0.34, 6);
+      const lowerLegGeo = new THREE.CylinderGeometry(0.14, 0.12, 0.32, 6);
+      const footGeo = new THREE.BoxGeometry(0.22, 0.1, 0.34);
 
-      // Arms
-      const armGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.85, 6);
-      const armL = new THREE.Mesh(armGeo, flatMat(bodyColor));
-      armL.position.set(0.55, 1.05, 0);
-      armL.rotation.z = 0.18;
-      armL.castShadow = true;
-      g.add(armL);
-      const armR = new THREE.Mesh(armGeo, flatMat(bodyColor));
-      armR.position.set(-0.55, 1.05, 0);
-      armR.rotation.z = -0.18;
-      armR.castShadow = true;
-      g.add(armR);
+      function buildLeg(side) {
+        // hip joint pivot at top of leg
+        const hip = new THREE.Group();
+        hip.position.set(side * 0.18, 0.62, 0);
+
+        const upper = new THREE.Mesh(upperLegGeo, legMat);
+        upper.position.y = -0.17;
+        upper.castShadow = true;
+        hip.add(upper);
+
+        // knee joint at bottom of upper leg
+        const knee = new THREE.Group();
+        knee.position.y = -0.34;
+        hip.add(knee);
+
+        const lower = new THREE.Mesh(lowerLegGeo, legMat);
+        lower.position.y = -0.16;
+        lower.castShadow = true;
+        knee.add(lower);
+
+        const foot = new THREE.Mesh(footGeo, legMat);
+        foot.position.set(0, -0.36, 0.08);
+        foot.castShadow = true;
+        knee.add(foot);
+
+        return { hip, knee };
+      }
+      const legL = buildLeg(1);
+      const legR = buildLeg(-1);
+      root.add(legL.hip, legR.hip);
+
+      const upperArmGeo = new THREE.CylinderGeometry(0.13, 0.12, 0.42, 6);
+      const lowerArmGeo = new THREE.CylinderGeometry(0.12, 0.11, 0.40, 6);
+      const handGeo = new THREE.IcosahedronGeometry(0.13, 0);
+
+      function buildArm(side) {
+        const shoulder = new THREE.Group();
+        shoulder.position.set(side * 0.52, 1.78, 0);
+
+        const upper = new THREE.Mesh(upperArmGeo, flatMat(bodyColor));
+        upper.position.y = -0.21;
+        upper.castShadow = true;
+        shoulder.add(upper);
+
+        const elbow = new THREE.Group();
+        elbow.position.y = -0.42;
+        shoulder.add(elbow);
+
+        const lower = new THREE.Mesh(lowerArmGeo, skinMat);
+        lower.position.y = -0.20;
+        lower.castShadow = true;
+        elbow.add(lower);
+
+        const hand = new THREE.Mesh(handGeo, skinMat);
+        hand.position.y = -0.42;
+        hand.castShadow = true;
+        elbow.add(hand);
+
+        return { shoulder, elbow };
+      }
+      const armL = buildArm(1);
+      const armR = buildArm(-1);
+      root.add(armL.shoulder, armR.shoulder);
 
       // Head
       const head = new THREE.Mesh(
         new THREE.IcosahedronGeometry(0.38, 0),
-        flatMat(0xf2c79b)
+        skinMat
       );
-      head.position.y = 1.95;
+      head.position.y = 2.25;
       head.castShadow = true;
-      g.add(head);
+      root.add(head);
 
-      // Facing indicator: a small nose-cone in +Z direction (we'll rotate group so +Z = forward)
+      // Facing indicator (nose) — +Z is forward in local frame
       const nose = new THREE.Mesh(
         new THREE.ConeGeometry(0.08, 0.18, 6),
         flatMat(0xff9966)
       );
-      nose.position.set(0, 1.95, 0.34);
+      nose.position.set(0, 2.25, 0.34);
       nose.rotation.x = Math.PI / 2;
-      g.add(nose);
+      root.add(nose);
 
-      // Group userData for animation
-      g.userData.parts = { legL, legR, armL, armR };
+      g.userData.parts = { root, head, legL, legR, armL, armR };
+      g.userData.anim = {
+        phase: 0,        // walk cycle phase
+        kickTimer: 0,    // seconds remaining in kick animation
+        kickLeg: -1,     // which leg kicks next (alternates: -1 = right, 1 = left)
+      };
       return g;
+    }
+
+    // Drives joint rotations from velocity. kickTriggered = true on the frame
+    // a kick is initiated. Forward direction in local frame is +Z, so to swing
+    // a limb forward we rotate the joint by NEGATIVE X (right-hand rule).
+    const KICK_DURATION = 0.4;
+    function animateBody(group, vel, dt, kickTriggered) {
+      const anim = group.userData.anim;
+      const { root, head, legL, legR, armL, armR } = group.userData.parts;
+      const speedMag = Math.hypot(vel.x, vel.z);
+
+      // Walk cycle: phase advances faster the faster the player moves.
+      const cadence = 2.4; // strides per unit distance
+      anim.phase += speedMag * dt * cadence;
+
+      const swingAmt = Math.min(0.85, 0.18 + speedMag * 0.08);
+      const s = Math.sin(anim.phase);
+      const sOpp = -s; // opposite leg
+
+      // Hips: forward when sin>0 → negative X rotation.
+      legL.hip.rotation.x = -s * swingAmt;
+      legR.hip.rotation.x = -sOpp * swingAmt;
+
+      // Knees bend during the leg's swing-through (when it's moving forward).
+      // Add a small idle bend so legs never look perfectly stiff.
+      legL.knee.rotation.x = 0.08 + Math.max(0, s) * swingAmt * 1.3;
+      legR.knee.rotation.x = 0.08 + Math.max(0, sOpp) * swingAmt * 1.3;
+
+      // Arms swing opposite to same-side leg.
+      armL.shoulder.rotation.x = -sOpp * swingAmt * 0.85;
+      armR.shoulder.rotation.x = -s * swingAmt * 0.85;
+      // Elbows have a constant slight bend, more when arm is forward.
+      armL.elbow.rotation.x = 0.35 + Math.max(0, -sOpp) * 0.35;
+      armR.elbow.rotation.x = 0.35 + Math.max(0, -s) * 0.35;
+      // Arms also drift slightly out to the sides for natural posture.
+      armL.shoulder.rotation.z = 0.12;
+      armR.shoulder.rotation.z = -0.12;
+
+      // Torso bob (vertical) and forward lean while moving.
+      root.position.y = Math.abs(Math.sin(anim.phase * 2)) * swingAmt * 0.08;
+      const targetLean = -Math.min(0.18, speedMag * 0.025);
+      root.rotation.x += (targetLean - root.rotation.x) * Math.min(1, dt * 6);
+
+      // Head bobs counter to torso so it stays roughly level.
+      head.rotation.x = -root.rotation.x * 0.6;
+
+      // ---- Kick animation: overrides one leg for KICK_DURATION seconds ----
+      if (kickTriggered) {
+        anim.kickTimer = KICK_DURATION;
+        anim.kickLeg *= -1;
+      }
+      if (anim.kickTimer > 0) {
+        const t = 1 - anim.kickTimer / KICK_DURATION; // 0 → 1
+        // Three phases: backswing (0..0.25), strike (0.25..0.55), recover (0.55..1)
+        let hipAngle, kneeAngle;
+        if (t < 0.25) {
+          const k = t / 0.25;
+          hipAngle = 0.9 * k;          // pull leg back (positive X)
+          kneeAngle = 1.0 * k;         // bend knee a lot
+        } else if (t < 0.55) {
+          const k = (t - 0.25) / 0.30;
+          hipAngle = 0.9 - 1.8 * k;    // swing forward through to -0.9
+          kneeAngle = 1.0 - 0.95 * k;  // straighten during contact
+        } else {
+          const k = (t - 0.55) / 0.45;
+          hipAngle = -0.9 * (1 - k);   // return to neutral
+          kneeAngle = 0.05 + 0.0 * k;
+        }
+        const kickingLeg = anim.kickLeg === 1 ? legL : legR;
+        const standingLeg = anim.kickLeg === 1 ? legR : legL;
+        kickingLeg.hip.rotation.x = hipAngle;
+        kickingLeg.knee.rotation.x = kneeAngle;
+        // Standing leg straightens to balance.
+        standingLeg.hip.rotation.x *= 0.3;
+        standingLeg.knee.rotation.x = 0.12;
+        // Counter-rotate arms for balance during the swing.
+        armL.shoulder.rotation.x = -hipAngle * 0.6;
+        armR.shoulder.rotation.x = hipAngle * 0.6;
+
+        anim.kickTimer = Math.max(0, anim.kickTimer - dt);
+      }
     }
 
     const player = buildPlayer(0x6ec1ff, 0x1d4f80);
@@ -435,8 +574,8 @@
     cpu.rotation.y = -Math.PI / 2; // face -X
     scene.add(cpu);
 
-    const playerState = { vel: new THREE.Vector3(), kickCooldown: 0, walkPhase: 0 };
-    const cpuState   = { vel: new THREE.Vector3(), kickCooldown: 0, walkPhase: 0 };
+    const playerState = { vel: new THREE.Vector3(), kickCooldown: 0 };
+    const cpuState   = { vel: new THREE.Vector3(), kickCooldown: 0 };
 
     // ---------- Input ----------
     const keys = Object.create(null);
@@ -520,22 +659,15 @@
         player.rotation.y = cur + shortestAngle(cur, targetYaw) * Math.min(1, dt * 10);
       }
 
-      // Walk animation
-      const speedMag = Math.hypot(playerState.vel.x, playerState.vel.z);
-      playerState.walkPhase += speedMag * dt * 0.9;
-      const swing = Math.sin(playerState.walkPhase) * Math.min(0.6, speedMag * 0.08);
-      const { legL, legR, armL, armR } = player.userData.parts;
-      legL.rotation.x = swing;
-      legR.rotation.x = -swing;
-      armL.rotation.x = -swing * 0.7;
-      armR.rotation.x = swing * 0.7;
-
       // Kick
       playerState.kickCooldown = Math.max(0, playerState.kickCooldown - dt);
+      let kicked = false;
       if (keys['Space'] && playerState.kickCooldown === 0) {
-        tryKick(player, ballState, 1);
+        kicked = tryKick(player, ballState, 1);
         playerState.kickCooldown = 0.4;
       }
+
+      animateBody(player, playerState.vel, dt, kicked);
 
       // Body push the ball if collided
       pushBall(player.position, playerState.vel);
@@ -585,17 +717,8 @@
       const yaw = Math.atan2(tmp.x, tmp.z);
       cpu.rotation.y = cpu.rotation.y + shortestAngle(cpu.rotation.y, yaw) * Math.min(1, dt * 8);
 
-      // Walk anim
-      const speedMag = Math.hypot(cpuState.vel.x, cpuState.vel.z);
-      cpuState.walkPhase += speedMag * dt * 0.9;
-      const swing = Math.sin(cpuState.walkPhase) * Math.min(0.6, speedMag * 0.08);
-      const { legL, legR, armL, armR } = cpu.userData.parts;
-      legL.rotation.x = swing;
-      legR.rotation.x = -swing;
-      armL.rotation.x = -swing * 0.7;
-      armR.rotation.x = swing * 0.7;
-
       cpuState.kickCooldown = Math.max(0, cpuState.kickCooldown - dt);
+      let kicked = false;
       if (distToBall < KICK_RANGE && cpuState.kickCooldown === 0) {
         // Aim toward player's goal with slight randomness
         const aim = new THREE.Vector3(
@@ -607,7 +730,10 @@
         ballState.vel.z = aim.z * KICK_POWER * 0.85;
         ballState.vel.y = KICK_LIFT * 0.7;
         cpuState.kickCooldown = 0.7;
+        kicked = true;
       }
+
+      animateBody(cpu, cpuState.vel, dt, kicked);
 
       pushBall(cpu.position, cpuState.vel);
     }
