@@ -139,12 +139,20 @@ export function createAudio() {
   }
 
   // Self-arm: if anything at all in the page produces a gesture, come alive.
+  // Also give the HUD's own controls click feedback without needing the integrator
+  // to wire anything — the classes come from ui/hud.js, which this file ships with.
   if (typeof window !== 'undefined') {
     const arm = () => { unlock(); };
     try {
       window.addEventListener('pointerdown', arm, { once: true, capture: true });
       window.addEventListener('keydown', arm, { once: true, capture: true });
       window.addEventListener('touchstart', arm, { once: true, capture: true });
+      window.addEventListener('pointerdown', (e) => {
+        const t = e.target;
+        if (!t || !t.closest) return;
+        if (t.closest('.cs-cta')) ui('confirm');
+        else if (t.closest('.cs-btn') || t.closest('.cs-sys')) ui('tap');
+      }, true);
     } catch (e) { /* ignore */ }
   }
 

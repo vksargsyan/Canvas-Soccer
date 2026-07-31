@@ -419,8 +419,11 @@ export function createVfx(scene) {
     map: smokeTexture(), blending: THREE.NormalBlending, capacity: 40, mode: 0,
   });
   smoke.mesh.renderOrder = 18;
+  // Alpha-blended, not additive: the streak in the reference is an opaque salmon
+  // band. Added on top of bright turf, a pink additive layer just resolves to
+  // white and the shot loses its signature colour.
   const ribbons = createBatch({
-    map: swooshStrip(), blending: THREE.AdditiveBlending, capacity: 8, mode: 1, boost: 1.55,
+    map: swooshStrip(), blending: THREE.NormalBlending, capacity: 8, mode: 1, boost: 1.0,
   });
   ribbons.mesh.renderOrder = 24;
   const glows = createBatch({
@@ -592,11 +595,11 @@ export function createVfx(scene) {
     s.t = 0;
     s.max = 0.55 + 0.25 * power;
     s.speed = 20 * power + 8;
-    s.width = 0.20 + 0.16 * power;
+    s.width = 0.30 + 0.26 * power;
     s.track = !!ball();
     s.idx = ribbons.add({
       x: p.x, y: s.oy, z: p.z, ax: ux, ay: 0, az: uz,
-      w0: 0.01, h0: s.width, life: s.max, color: 0xffa2d8, alpha: 1.0, ease: 1.4, hold: 0.30,
+      w0: 0.01, h0: s.width, life: s.max, color: 0xffc4de, alpha: 1.0, ease: 1.4, hold: 0.30,
     });
     // strike star at the boot, sized off the power
     flash(0, p.x + ux * 0.18, (p.y ?? 0.45) + 0.12, p.z + uz * 0.18,

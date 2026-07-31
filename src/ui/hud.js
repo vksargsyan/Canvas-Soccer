@@ -136,14 +136,14 @@ const CSS = `
   filter:drop-shadow(0 calc(8px*var(--u)) calc(18px*var(--u)) rgba(0,0,0,.6)); }
 .cs-l3.on { transform:translateX(-50%) translateY(0); opacity:1; }
 .cs-l3 .badge { display:flex; align-items:center; justify-content:center;
-  width:calc(96px*var(--u)); background:linear-gradient(180deg,#3a3f86,#1b1e4c); }
-.cs-l3 .badge img { width:calc(60px*var(--u)); height:calc(60px*var(--u)); }
+  width:calc(104px*var(--u)); background:linear-gradient(180deg,#3a3f86,#1b1e4c); }
+.cs-l3 .badge img { width:calc(66px*var(--u)); height:calc(66px*var(--u)); }
 .cs-l3 .body { padding:calc(11px*var(--u)) calc(70px*var(--u)) calc(11px*var(--u)) calc(26px*var(--u));
-  min-width:calc(360px*var(--u));
+  min-width:calc(440px*var(--u));
   background:linear-gradient(180deg,#4a3fa0,#2c2570);
-  clip-path:polygon(0 0, 100% 0, calc(100% - 30px) 100%, 0 100%);
+  clip-path:polygon(0 0, 100% 0, calc(100% - 30px*var(--u)) 100%, 0 100%);
   box-shadow:inset 0 calc(2px*var(--u)) 0 rgba(255,255,255,.2); }
-.cs-l3 .t { font-size:calc(30px*var(--u)); font-weight:900; color:#fff; letter-spacing:.05em;
+.cs-l3 .t { font-size:calc(33px*var(--u)); font-weight:900; color:#fff; letter-spacing:.05em;
   -webkit-text-stroke:calc(4px*var(--u)) rgba(6,12,26,.4); paint-order:stroke fill; }
 .cs-l3 .s { margin-top:calc(3px*var(--u)); font-size:calc(16px*var(--u)); font-weight:900;
   letter-spacing:.2em; color:#c9c3ff; }
@@ -157,7 +157,9 @@ const CSS = `
 .cs-toast.on { opacity:1; transform:translate(-50%,0); }
 
 /* ============================================================ VIRTUAL STICK */
-.cs-stick { position:absolute; left:calc(46px*var(--u)); bottom:calc(24px*var(--u));
+.cs-stick { position:absolute;
+  left:calc(46px*var(--u) + env(safe-area-inset-left, 0px));
+  bottom:calc(24px*var(--u) + env(safe-area-inset-bottom, 0px));
   width:calc(340px*var(--u)); height:calc(340px*var(--u));
   pointer-events:auto; touch-action:none; -webkit-user-select:none; user-select:none;
   transition:opacity .3s ease; }
@@ -227,19 +229,28 @@ const CSS = `
 
 .cs-btn.primary { --c:var(--red); --cg:rgba(255,95,107,.5);
   width:calc(176px*var(--u)); height:calc(176px*var(--u));
-  right:calc(49px*var(--u)); bottom:calc(341px*var(--u)); }
+  right:calc(49px*var(--u) + env(safe-area-inset-right, 0px));
+  bottom:calc(341px*var(--u) + env(safe-area-inset-bottom, 0px)); }
 .cs-btn.sprint  { --c:var(--grn); --cg:rgba(95,216,115,.45);
   width:calc(164px*var(--u)); height:calc(164px*var(--u));
-  right:calc(113px*var(--u)); bottom:calc(103px*var(--u)); }
+  right:calc(113px*var(--u) + env(safe-area-inset-right, 0px));
+  bottom:calc(103px*var(--u) + env(safe-area-inset-bottom, 0px)); }
 .cs-btn.second  { --c:var(--cyn); --cg:rgba(63,203,232,.45);
   width:calc(156px*var(--u)); height:calc(156px*var(--u));
-  right:calc(372px*var(--u)); bottom:calc(64px*var(--u)); }
+  right:calc(372px*var(--u) + env(safe-area-inset-right, 0px));
+  bottom:calc(64px*var(--u) + env(safe-area-inset-bottom, 0px)); }
 
 .cs-touch { transition:opacity .35s ease; }
 .cs-touch.hidden, .cs-touch.cine { opacity:0; pointer-events:none; }
 
+/* danger vignette — pulses at the screen edge when your goal is under threat */
+.cs-danger { position:absolute; inset:0; pointer-events:none; opacity:0;
+  transition:opacity .5s ease;
+  box-shadow:inset 0 0 calc(180px*var(--u)) calc(30px*var(--u)) rgba(196,24,40,.55); }
+
 /* ================================================================ SYS BUTTON */
-.cs-sys { position:absolute; top:calc(18px*var(--u)); right:calc(20px*var(--u));
+.cs-sys { position:absolute; top:calc(18px*var(--u) + env(safe-area-inset-top, 0px));
+  right:calc(20px*var(--u) + env(safe-area-inset-right, 0px));
   width:calc(56px*var(--u)); height:calc(56px*var(--u)); border-radius:calc(16px*var(--u));
   pointer-events:auto; cursor:pointer; display:flex; align-items:center; justify-content:center;
   gap:calc(7px*var(--u));
@@ -273,14 +284,14 @@ const CSS = `
     rgba(52,132,214,.85) 0 calc(16px*var(--u)),
     rgba(28,86,160,.85) calc(16px*var(--u)) calc(30px*var(--u)),
     rgba(12,44,96,.0)  calc(30px*var(--u)) calc(52px*var(--u)));
-  opacity:.55; pointer-events:none; }
+  opacity:.42; pointer-events:none; }
 .cs-ov::before { left:calc(-6vmax); top:calc(-6vmax);
   clip-path:polygon(0 0, 100% 0, 0 100%); }
 .cs-ov::after { right:calc(-6vmax); bottom:calc(-6vmax);
   clip-path:polygon(100% 100%, 100% 0, 0 100%); }
 .cs-ov.on { display:flex; animation:cs-fade .3s ease forwards; }
 @keyframes cs-fade { from { opacity:0; } to { opacity:1; } }
-.cs-card { position:relative; min-width:calc(520px*var(--u));
+.cs-card { position:relative; min-width:calc(560px*var(--u));
   padding:calc(40px*var(--u)) calc(56px*var(--u)) calc(38px*var(--u));
   text-align:center; border-radius:calc(22px*var(--u)); overflow:hidden;
   background:
@@ -294,7 +305,7 @@ const CSS = `
 .cs-card::before { content:''; position:absolute; left:0; right:0; top:0; height:calc(7px*var(--u));
   background:linear-gradient(90deg,var(--ca1) 0%,var(--ca1) 46%,#ffb52e 50%,var(--cb1) 54%,var(--cb1) 100%); }
 @keyframes cs-rise { from { transform:translateY(calc(34px*var(--u))) scale(.94); opacity:0; } to { transform:none; opacity:1; } }
-.cs-card .wm { width:calc(420px*var(--u)); height:calc(140px*var(--u)); margin:0 auto calc(6px*var(--u));
+.cs-card .wm { width:calc(470px*var(--u)); height:calc(156px*var(--u)); margin:0 auto calc(4px*var(--u));
   display:block; object-fit:contain; }
 .cs-card h2 { font-size:calc(50px*var(--u)); font-weight:900; color:#fff; letter-spacing:.05em;
   -webkit-text-stroke:calc(7px*var(--u)) rgba(6,12,26,.55); paint-order:stroke fill; }
@@ -305,16 +316,16 @@ const CSS = `
 .cs-card .vs img { width:calc(92px*var(--u)); height:calc(92px*var(--u)); }
 .cs-card .vs .k { font-size:calc(26px*var(--u)); font-weight:900; color:#fff; letter-spacing:.06em; }
 .cs-card .vs .x { font-size:calc(20px*var(--u)); font-weight:900; color:#ffb52e; letter-spacing:.18em; }
-.cs-card .result { display:flex; align-items:center; justify-content:center; gap:calc(26px*var(--u));
-  margin:calc(14px*var(--u)) 0 calc(6px*var(--u)); }
+.cs-card .result { display:flex; align-items:center; justify-content:center; gap:calc(36px*var(--u));
+  margin:calc(18px*var(--u)) 0 calc(10px*var(--u)); }
 .cs-card .result img { width:calc(104px*var(--u)); height:calc(104px*var(--u));
   filter:drop-shadow(0 calc(7px*var(--u)) calc(14px*var(--u)) rgba(0,0,0,.6)); transition:transform .3s ease; }
 .cs-card .result img.win { transform:scale(1.16); }
-.cs-card .result img.lose { opacity:.55; transform:scale(.9); }
+.cs-card .result img.lose { opacity:.62; transform:scale(.88); }
 .cs-card .bigscore { font-size:calc(78px*var(--u)); line-height:1;
   font-weight:900; color:#fff; letter-spacing:.06em;
   -webkit-text-stroke:calc(9px*var(--u)) rgba(6,12,26,.55); paint-order:stroke fill; }
-.cs-actions { margin-top:calc(22px*var(--u)); display:flex; gap:calc(14px*var(--u)); justify-content:center; }
+.cs-actions { margin-top:calc(26px*var(--u)); display:flex; gap:calc(14px*var(--u)); justify-content:center; }
 .cs-cta { pointer-events:auto; cursor:pointer; border:0;
   padding:calc(15px*var(--u)) calc(40px*var(--u)); border-radius:calc(13px*var(--u));
   font-family:inherit; font-size:calc(21px*var(--u)); font-weight:900; letter-spacing:.14em; color:#08210f;
@@ -367,20 +378,22 @@ const CSS = `
 }
 `;
 
-const ARROW_D = 'M50 8 L70 33 Q50 28 30 33 Z';
+// One arrow, pointing up; the other three are rotations of it. Keep it narrow
+// enough that the four bases never touch, or the cluster reads as a solid diamond.
+const ARROW_D = 'M50 11 L63 30 Q50 26.5 37 30 Z';
 const ARROWS = `<svg viewBox="0 0 100 100" aria-hidden="true">
   <defs>
     <linearGradient id="csAg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#3f618d"/><stop offset="1" stop-color="#1f3b5e"/>
     </linearGradient>
   </defs>
-  <g fill="#ffffff" opacity=".42" transform="translate(0,3)">
+  <g fill="#ffffff" opacity=".45" transform="translate(0,2.6)">
     <path d="${ARROW_D}"/>
     <path d="${ARROW_D}" transform="rotate(90 50 50)"/>
     <path d="${ARROW_D}" transform="rotate(180 50 50)"/>
     <path d="${ARROW_D}" transform="rotate(270 50 50)"/>
   </g>
-  <g fill="url(#csAg)" stroke="#22395a" stroke-width="3" stroke-linejoin="round">
+  <g fill="url(#csAg)" stroke="#22395a" stroke-width="2.4" stroke-linejoin="round">
     <path d="${ARROW_D}"/>
     <path d="${ARROW_D}" transform="rotate(90 50 50)"/>
     <path d="${ARROW_D}" transform="rotate(180 50 50)"/>
@@ -436,6 +449,7 @@ export function createHud(root) {
       <div class="body"><div class="t" id="cs-l3-t">GOAL</div><div class="s" id="cs-l3-s"></div></div>
     </div>
 
+    <div class="cs-danger" id="cs-danger"></div>
     <div class="cs-toast" id="cs-toast"></div>
 
     <div class="cs-touch" id="cs-touch">
@@ -793,6 +807,7 @@ export function createHud(root) {
   let scoreA = 0, scoreB = 0;
   let clockShown = '';
   let bannerTimer = 0, l3Timer = 0, toastTimer = 0, introTimer = 0;
+  let pendingTally = -1;
   let boardShown = false;
 
   function showBoard(v) {
@@ -840,7 +855,7 @@ export function createHud(root) {
       bannerEl.classList.remove('on');
       l3El.classList.remove('on');
       touchLayer.classList.remove('cine');
-      bannerTimer = 0; l3Timer = 0;
+      bannerTimer = 0; l3Timer = 0; pendingTally = -1;
       return;
     }
     const t = String(text);
@@ -859,8 +874,11 @@ export function createHud(root) {
       const teamIdx = sub.indexOf(TEAMS[1].name) === 0 ? 1 : 0;
       $('cs-l3-crest').src = teamIdx === 1 ? crestB : crestA;
       $('cs-l3-t').textContent = sub;
-      const n = teamIdx === 0 ? scoreA : scoreB;
-      $('cs-l3-s').textContent = `${n} GOAL${n === 1 ? '' : 'S'} THIS MATCH`;
+      // main.js announces the goal BEFORE it pushes the new score, so the tally is
+      // resolved on the next update() instead of right now — otherwise every goal
+      // reads one behind.
+      pendingTally = teamIdx;
+      $('cs-l3-s').textContent = '';
       l3El.classList.add('on');
       l3Timer = seconds + 0.6;
     }
@@ -976,6 +994,11 @@ export function createHud(root) {
   // ---------------------------------------------------------------- update
   function update(dt) {
     if (!(dt > 0)) dt = 0;
+    if (pendingTally >= 0) {
+      const n = pendingTally === 0 ? scoreA : scoreB;
+      $('cs-l3-s').textContent = `${n} GOAL${n === 1 ? '' : 'S'} THIS MATCH`;
+      pendingTally = -1;
+    }
     pollKeys(dt);
     resolveCharge(dt);
     tickCooldowns(dt);
@@ -990,7 +1013,17 @@ export function createHud(root) {
   }
 
   function setVisible(v) { el.style.display = v ? '' : 'none'; }
-  function setDanger() { /* reserved: audio owns the crowd swell */ }
+
+  // 0..1 — how threatened the player's goal is. Drives an edge vignette; the
+  // matching crowd swell lives in audio.js (`audio.setDanger`).
+  const dangerEl = $('cs-danger');
+  let dangerShown = -1;
+  function setDanger(x) {
+    const v = clamp(x || 0, 0, 1);
+    if (Math.abs(v - dangerShown) < 0.03) return;
+    dangerShown = v;
+    dangerEl.style.opacity = (v * v * 0.85).toFixed(3);
+  }
 
   const api = {
     el, input,

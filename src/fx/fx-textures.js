@@ -143,22 +143,23 @@ export function swooshStrip() {
     }
     g.closePath();
     const grad = g.createLinearGradient(0, 0, W, 0);
-    grad.addColorStop(0.00, 'rgba(255,110,190,0)');
-    grad.addColorStop(0.18, 'rgba(255,124,196,0.30)');
-    grad.addColorStop(0.62, 'rgba(255,140,206,0.80)');
-    grad.addColorStop(0.90, 'rgba(255,190,228,0.98)');
-    grad.addColorStop(1.00, 'rgba(255,240,250,0.62)');
+    grad.addColorStop(0.00, 'rgba(255,88,172,0)');
+    grad.addColorStop(0.14, 'rgba(255,88,172,0.42)');
+    grad.addColorStop(0.55, 'rgba(255,104,184,0.92)');
+    grad.addColorStop(0.88, 'rgba(255,128,196,1.0)');
+    grad.addColorStop(1.00, 'rgba(255,196,228,0.85)');
     g.fillStyle = grad;
     g.fill();
 
-    // hot spine
+    // hot spine — kept narrow. A wide white core desaturates the whole ribbon
+    // back to grey once it is drawn over bright turf.
     g.globalCompositeOperation = 'lighter';
     const spine = g.createLinearGradient(0, 0, W, 0);
     spine.addColorStop(0.0, 'rgba(255,255,255,0)');
-    spine.addColorStop(0.72, 'rgba(255,236,250,0.40)');
+    spine.addColorStop(0.80, 'rgba(255,226,242,0.28)');
     spine.addColorStop(1.0, 'rgba(255,255,255,0)');
     g.fillStyle = spine;
-    g.fillRect(0, cy - H * 0.055, W, H * 0.11);
+    g.fillRect(0, cy - H * 0.022, W, H * 0.044);
 
     // soften the vertical edge so the strip has no hard cut
     const soft = g.createLinearGradient(0, 0, 0, H);
