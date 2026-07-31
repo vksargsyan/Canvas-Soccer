@@ -743,8 +743,7 @@ export function createAI(ctx) {
     // ---------------- shape / off-ball run ----------------
     const h = homeFor(a);
     const dd = seek(a, h.x, h.z, dt, s.hasBall ? RUN_SPEED * 0.95 : RUN_SPEED * 0.82, 0.5);
-    if (s.hasBall) face(a, body.pos.x, body.pos.z);
-    else face(a, body.pos.x, body.pos.z);
+    face(a, body.pos.x, body.pos.z);
     locomote(a, dd > 0.9, dd > 9);
   }
 
@@ -799,8 +798,10 @@ export function createAI(ctx) {
         const speed = Math.hypot(body.vel.x, body.vel.z);
         // a rocket from close range leaves less time; the keeper's own reaction
         // shortens with danger but never gets to zero
-        const react = clamp(0.30 - speed * 0.0055 - (24 - toGoal) * 0.004, 0.055, 0.26)
-          * (1.35 - (SKILL[a.slot] ?? 0.85));
+        // A harder, closer strike gives him less to work with, but he is never
+        // instant: this window is what decides whether a corner is reachable.
+        const react = clamp(0.34 - speed * 0.0050 - (24 - toGoal) * 0.004, 0.11, 0.30)
+          * (1.30 - 0.35 * (SKILL[a.slot] ?? 0.85));
         a.reactT = react;
         a.shotLive = true;
       }
@@ -820,12 +821,15 @@ export function createAI(ctx) {
 
     // ---- save resolution --------------------------------------------------
     // hands reach out along the dive as it develops
-    const ext = a.diving ? clamp(a.diveAge / 0.30, 0, 1) * 2.0 : 0;
+    // The hands sweep out along the dive as it develops. This radius is the
+    // single strongest difficulty dial in the game: too generous and a keeper
+    // standing centrally covers the whole mouth and nothing is ever scored.
+    const ext = a.diving ? clamp(a.diveAge / 0.26, 0, 1) * 1.5 : 0;
     const handZ = a.pos.z + (a.diveDir || 0) * ext;
-    const handY = a.diving ? clamp(a.diveHigh ? 1.9 : 0.75, 0, 2.4) : 1.05;
-    const reach = a.diving ? 0.95 : 0.85;
-    const nearHands = Math.hypot(bx - a.pos.x, bz - handZ) < reach + BALL_R + 0.45
-      && Math.abs(by - handY) < 1.15;
+    const handY = a.diving ? (a.diveHigh ? 1.85 : 0.7) : 1.0;
+    const reach = a.diving ? 0.72 : 0.62;
+    const nearHands = Math.hypot(bx - a.pos.x, bz - handZ) < reach + BALL_R + 0.2
+      && Math.abs(by - handY) < 0.95;
     if (a.diving) a.diveAge = (a.diveAge || 0) + dt;
 
     if (nearHands && a.saveCool <= 0 && Math.abs(bx - gx) < 6.5) {
@@ -873,7 +877,7 @@ export function createAI(ctx) {
     }
     if (a.diving) {
       // travel along the dive; the animation owns the pose, the sim owns the slide
-      seek(a, gx - s * 1.1, a.diveTarget, dt, KEEPER_SPEED * 2.2, 0.05);
+      seek(a, gx - s * 1.1, a.diveTarget, dt, KEEPER_SPEED * 1.85, 0.05);
       if (a.anim && !a.anim.busy) { a.diving = false; a.diveAge = 0; }
       a.faceX = -s; a.faceZ = 0;
       return;

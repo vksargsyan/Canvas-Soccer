@@ -349,7 +349,10 @@ export function createMatch(ctx) {
       kickoff(state.possession === 0 ? 1 : 0);
     }
 
-    if (body.lastTouchTeam >= 0) state.possession = body.lastTouchTeam;
+    // While a dead ball is staged nobody has touched it, so possession would go
+    // stale on the HUD; the side awarded the restart owns it.
+    if (sp.kind) state.possession = sp.team;
+    else if (body.lastTouchTeam >= 0) state.possession = body.lastTouchTeam;
   }
 
   function reset() {

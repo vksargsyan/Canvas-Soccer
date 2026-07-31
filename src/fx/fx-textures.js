@@ -62,15 +62,15 @@ export function impactStar(variant = 'pink') {
     const S = 512, h = S / 2;
     const c = canvas(S);
     const g = c.getContext('2d');
-    const fringe = variant === 'gold' ? '255,196,96' : '255,120,205';
-    const mid = variant === 'gold' ? '255,232,170' : '255,208,242';
+    const fringe = variant === 'gold' ? '255,190,86' : '255,72,190';
+    const mid = variant === 'gold' ? '255,228,160' : '255,166,228';
 
     // --- soft core glow ---------------------------------------------------
-    const core = g.createRadialGradient(h, h, 0, h, h, h * 0.34);
+    const core = g.createRadialGradient(h, h, 0, h, h, h * 0.26);
     core.addColorStop(0.00, 'rgba(255,255,255,1)');
-    core.addColorStop(0.22, 'rgba(255,255,255,0.92)');
-    core.addColorStop(0.46, `rgba(${mid},0.42)`);
-    core.addColorStop(0.78, `rgba(${fringe},0.13)`);
+    core.addColorStop(0.20, 'rgba(255,255,255,0.85)');
+    core.addColorStop(0.44, `rgba(${mid},0.50)`);
+    core.addColorStop(0.76, `rgba(${fringe},0.20)`);
     core.addColorStop(1.00, `rgba(${fringe},0)`);
     g.fillStyle = core;
     g.fillRect(0, 0, S, S);
@@ -84,9 +84,9 @@ export function impactStar(variant = 'pink') {
       g.rotate(angle);
       const grad = g.createLinearGradient(0, 0, len, 0);
       grad.addColorStop(0.00, `rgba(255,255,255,${alpha})`);
-      grad.addColorStop(0.16, `rgba(255,255,255,${alpha * 0.95})`);
-      grad.addColorStop(0.52, `rgba(${mid},${alpha * 0.62})`);
-      grad.addColorStop(0.82, `rgba(${fringe},${alpha * 0.24})`);
+      grad.addColorStop(0.13, `rgba(255,255,255,${alpha * 0.92})`);
+      grad.addColorStop(0.40, `rgba(${mid},${alpha * 0.72})`);
+      grad.addColorStop(0.74, `rgba(${fringe},${alpha * 0.40})`);
       grad.addColorStop(1.00, `rgba(${fringe},0)`);
       g.fillStyle = grad;
       g.beginPath();
@@ -99,7 +99,7 @@ export function impactStar(variant = 'pink') {
     }
 
     const R = h * 0.98;
-    for (let i = 0; i < 4; i++) spike(i * Math.PI / 2, R, h * 0.115, 1.0);
+    for (let i = 0; i < 4; i++) spike(i * Math.PI / 2, R, h * 0.098, 1.0);
     for (let i = 0; i < 4; i++) spike(Math.PI / 4 + i * Math.PI / 2, R * 0.46, h * 0.052, 0.7);
     // eight hairline glints between the majors keeps it from looking like a plus sign
     for (let i = 0; i < 8; i++) spike(Math.PI / 8 + i * Math.PI / 4, R * 0.26, h * 0.018, 0.45);
@@ -145,9 +145,9 @@ export function swooshStrip() {
     const grad = g.createLinearGradient(0, 0, W, 0);
     grad.addColorStop(0.00, 'rgba(255,110,190,0)');
     grad.addColorStop(0.18, 'rgba(255,124,196,0.30)');
-    grad.addColorStop(0.62, 'rgba(255,168,220,0.72)');
-    grad.addColorStop(0.90, 'rgba(255,236,250,0.95)');
-    grad.addColorStop(1.00, 'rgba(255,255,255,0.55)');
+    grad.addColorStop(0.62, 'rgba(255,140,206,0.80)');
+    grad.addColorStop(0.90, 'rgba(255,190,228,0.98)');
+    grad.addColorStop(1.00, 'rgba(255,240,250,0.62)');
     g.fillStyle = grad;
     g.fill();
 
@@ -155,7 +155,7 @@ export function swooshStrip() {
     g.globalCompositeOperation = 'lighter';
     const spine = g.createLinearGradient(0, 0, W, 0);
     spine.addColorStop(0.0, 'rgba(255,255,255,0)');
-    spine.addColorStop(0.7, 'rgba(255,255,255,0.55)');
+    spine.addColorStop(0.72, 'rgba(255,236,250,0.40)');
     spine.addColorStop(1.0, 'rgba(255,255,255,0)');
     g.fillStyle = spine;
     g.fillRect(0, cy - H * 0.055, W, H * 0.11);

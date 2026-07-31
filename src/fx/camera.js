@@ -19,6 +19,9 @@ import { HALF_W, HALF_D } from '../core/constants.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
+// see MODES.wide / the 'wide' case below
+const WIDE_YAW_BIAS = 0.66;
+
 /**
  * Analytic critically-damped spring (Game Programming Gems 4, 1.10).
  * Unconditionally stable at any dt, and exact at the limit — no overshoot,
@@ -164,8 +167,14 @@ export function createDirector(camera) {
         // Outside the bowl, just over the roofline, looking almost level across
         // the stadium: the pitch sits in the lower third, the far stand fills
         // the middle and the roof, jumbotron and pylons crown the frame.
-        const yaw = yawOffset + orbitRate * t;
-        wantPos.set(Math.sin(yaw) * back * 1.12, h, Math.cos(yaw) * back);
+        //
+        // The azimuth is biased onto the bowl's diagonal (the core rect is
+        // 28 x 18, so its corner lies at atan2(28,18) = 1.00 rad). Sitting on
+        // the diagonal is not cosmetic: the roof-mounted jumbotrons are parked
+        // on the short axis at z = +/-56 and are 27 m wide, so a camera on that
+        // axis puts a black slab across a third of the establishing shot.
+        const yaw = yawOffset + WIDE_YAW_BIAS + orbitRate * t;
+        wantPos.set(Math.sin(yaw) * back * 1.10, h, Math.cos(yaw) * back * 0.92);
         wantLook.set(0, cfg.look, 0);
         break;
       }

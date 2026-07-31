@@ -411,7 +411,7 @@ export function createVfx(scene) {
   });
   smoke.mesh.renderOrder = 18;
   const ribbons = createBatch({
-    map: swooshStrip(), blending: THREE.AdditiveBlending, capacity: 8, mode: 1, boost: 1.25,
+    map: swooshStrip(), blending: THREE.AdditiveBlending, capacity: 8, mode: 1, boost: 1.55,
   });
   ribbons.mesh.renderOrder = 24;
   const glows = createBatch({
@@ -466,14 +466,18 @@ export function createVfx(scene) {
       });
       return;
     }
+    // Callers ask for a "size" in metres; the sprite's needles reach the very
+    // edge of the tile, so it is scaled down here to keep the burst reading as a
+    // sharp star rather than a soft flare that swallows the players.
+    const s = size * 0.78;
     stars.add({
       x, y, z,
-      w0: size * 0.28, w1: size, h0: size * 0.28, h1: size,
-      life, color, alpha: 1, rot: spin * 0.7, spin: spin * 1.4, ease: 2.1,
+      w0: s * 0.30, w1: s, h0: s * 0.30, h1: s,
+      life, color, alpha: 1, rot: spin * 0.7, spin: spin * 1.4, ease: 2.3,
     });
     glows.add({
-      x, y, z, w0: size * 0.30, w1: size * 0.82, h0: size * 0.30, h1: size * 0.82,
-      life: life * 1.25, color, alpha: 0.5, ease: 1.6,
+      x, y, z, w0: s * 0.26, w1: s * 0.58, h0: s * 0.26, h1: s * 0.58,
+      life: life * 1.15, color, alpha: 0.30, ease: 1.8,
     });
   }
 
@@ -576,7 +580,7 @@ export function createVfx(scene) {
     s.track = !!ball();
     s.idx = ribbons.add({
       x: p.x, y: s.oy, z: p.z, ax: ux, ay: 0, az: uz,
-      w0: 0.01, h0: s.width, life: s.max, color: 0xffffff, alpha: 1.0, ease: 1.5, hold: 0.35,
+      w0: 0.01, h0: s.width, life: s.max, color: 0xffa2d8, alpha: 1.0, ease: 1.4, hold: 0.30,
     });
     // strike star at the boot, sized off the power
     flash(0, p.x + ux * 0.18, (p.y ?? 0.45) + 0.12, p.z + uz * 0.18,

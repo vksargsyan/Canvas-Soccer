@@ -26,9 +26,9 @@ import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { envMap, skyTexture } from './assets.js';
 
 export const QUALITY_TIERS = {
-  low: { pixelRatio: 1.0, shadow: 1024, bloom: 0.20, msaa: 0, fxaa: true, grade: true },
-  medium: { pixelRatio: 1.0, shadow: 2048, bloom: 0.26, msaa: 4, fxaa: true, grade: true },
-  high: { pixelRatio: 1.5, shadow: 2048, bloom: 0.30, msaa: 4, fxaa: true, grade: true },
+  low: { pixelRatio: 1.0, shadow: 1024, bloom: 0.19, msaa: 0, fxaa: true, grade: true },
+  medium: { pixelRatio: 1.0, shadow: 2048, bloom: 0.25, msaa: 4, fxaa: true, grade: true },
+  high: { pixelRatio: 1.5, shadow: 2048, bloom: 0.28, msaa: 4, fxaa: true, grade: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -45,10 +45,10 @@ const GradeShader = {
     uAberration: { value: 0.0016 },
     uVignette: { value: new THREE.Vector2(0.72, 1.34) }, // (inner, power)
     uVigStrength: { value: 0.36 },
-    uSaturation: { value: 1.16 },
-    uContrast: { value: 1.055 },
-    uLift: { value: new THREE.Vector3(0.006, 0.010, 0.020) },
-    uGain: { value: new THREE.Vector3(1.030, 1.012, 0.972) },
+    uSaturation: { value: 1.24 },
+    uContrast: { value: 1.10 },
+    uLift: { value: new THREE.Vector3(0.004, 0.008, 0.016) },
+    uGain: { value: new THREE.Vector3(1.020, 1.006, 0.992) },
     uGrain: { value: 0.016 },
     uTime: { value: 0 },
   },
@@ -130,7 +130,7 @@ export function createEngine(canvas) {
 
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.02;
+  renderer.toneMappingExposure = 1.07;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.setClearColor(0x8ec6ee, 1);
@@ -162,10 +162,10 @@ export function createEngine(canvas) {
   // hemisphere and the environment: same overall brightness, much flatter
   // terminator on spheres. Exposure came down to match and the grade pass puts
   // the contrast back where the reference has it.
-  const hemi = new THREE.HemisphereLight(0xd6ecff, 0x5c7f42, 1.95);
+  const hemi = new THREE.HemisphereLight(0xd4eaff, 0x557f3e, 1.62);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff2d6, 1.95);
+  const sun = new THREE.DirectionalLight(0xfff2d6, 2.30);
   sun.position.set(34, 62, 24);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -213,7 +213,7 @@ export function createEngine(canvas) {
   // radius 0.68 keeps the glow tight enough that the pitch does not haze over,
   // threshold 0.92 means only genuinely hot pixels (lamps, star flashes, the
   // ball's specular hit) bloom at all.
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x * 0.5, size.y * 0.5), 0.30, 0.68, 0.92);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x * 0.5, size.y * 0.5), 0.28, 0.44, 1.02);
   composer.addPass(bloom);
 
   const outputPass = new OutputPass();
