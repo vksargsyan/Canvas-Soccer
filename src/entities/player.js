@@ -277,10 +277,15 @@ function hairShell({ inner, outer, puff, nu = 30, nv = 8, shadeBias = 0 }) {
       shade.push(0.50 * t + 0.075 * Math.sin(az * 9 + t * 2.2) + 0.16 + shadeBias);
     }
   }
+  // WINDING: +i walks azimuth clockwise seen from +Y and +j walks DOWN from the
+  // crown, so (a -> b -> a+1) is clockwise on the outside of the skull, i.e. a
+  // back face. Written that way every shell was culled and only the solid lumps
+  // (bun knot, mohawk crest, afro beads) survived — hair read as a stray spike on
+  // a bald head. The order below faces outward.
   for (let i = 0; i < nu; i++) {
     for (let j = 0; j < nv; j++) {
       const a = i * rows + j, b = a + rows;
-      idx.push(a, b, a + 1, a + 1, b, b + 1);
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
     }
   }
   const g = new THREE.BufferGeometry();

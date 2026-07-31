@@ -325,6 +325,10 @@ export function createAnimator(rig) {
     if (current === 'knocked') return 'getup';
     if (current === 'keeperDive' || current === 'keeperCatch') return 'keeperIdle';
     if (ctx.isKeeper) return 'keeperIdle';
+    // A player carrying the ball keeps touching it: the one-shot dribble falls
+    // back into itself so the carry reads as a repeating knock-on rather than a
+    // clean sprint. `ctx.hasBall` is published by the sim (see main.js/ai.js).
+    if (ctx.hasBall && ctx.moving && !ctx.sprinting) return 'dribble';
     if (ctx.moving) return ctx.sprinting ? 'sprint' : 'run';
     return 'idle';
   }

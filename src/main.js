@@ -176,7 +176,9 @@ export function boot({ canvas, hudRoot, splash } = {}) {
         hud.banner('HALF TIME', '', 2.4);
         hud.showMenu('half', 'HALF TIME',
           `${TEAMS[0].name} ${s[0]} — ${s[1]} ${TEAMS[1].name}`);
-        paused = false;   // the break plays out; the menu is informational
+        // A real break: freeze until SECOND HALF is pressed, which emits
+        // 'resume' and lets match.js run its halftime countdown out.
+        setPaused(true);
       }
       if (p === 'play') { if (match.state.half === 2) hud.showMenu(null); }
       if (p === 'fulltime') {
