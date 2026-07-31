@@ -392,9 +392,9 @@ export function smokeTexture() {
       const x = h + Math.cos(a) * r, y = h + Math.sin(a) * r;
       const rad = rng.range(h * 0.22, h * 0.44);
       const grad = g.createRadialGradient(x, y, rad * 0.1, x, y, rad);
-      const v = rng.range(0.16, 0.30);
+      const v = rng.range(0.42, 0.72);
       grad.addColorStop(0.0, `rgba(255,255,255,${v})`);
-      grad.addColorStop(0.6, `rgba(255,255,255,${v * 0.4})`);
+      grad.addColorStop(0.6, `rgba(255,255,255,${v * 0.55})`);
       grad.addColorStop(1.0, 'rgba(255,255,255,0)');
       g.fillStyle = grad;
       g.beginPath(); g.arc(x, y, rad, 0, Math.PI * 2); g.fill();

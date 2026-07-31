@@ -131,7 +131,7 @@ function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 
 
   const slots = [];
   for (let i = 0; i < capacity; i++) {
-    slots.push({ live: false, life: 0, max: 1, s0x: 1, s1x: 1, s0y: 1, s1y: 1, spin: 0, ease: 1, hold: 0, a0: 1 });
+    slots.push({ live: false, life: 0, max: 1, s0x: 1, s1x: 1, s0y: 1, s1y: 1, spin: 0, ease: 1, hold: 0, a0: 1, vx: 0, vy: 0, vz: 0, drag: 0 });
   }
 
   const col = new THREE.Color();
@@ -160,6 +160,8 @@ function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 
     s.ease = o.ease ?? 1.6;
     s.hold = o.hold ?? 0;
     s.a0 = o.alpha ?? 1;
+    s.vx = o.vx ?? 0; s.vy = o.vy ?? 0; s.vz = o.vz ?? 0;
+    s.drag = o.drag ?? 0;
     iPos[i * 3] = o.x; iPos[i * 3 + 1] = o.y; iPos[i * 3 + 2] = o.z;
     iAxis[i * 3] = o.ax ?? 1; iAxis[i * 3 + 1] = o.ay ?? 0; iAxis[i * 3 + 2] = o.az ?? 0;
     iRot[i] = o.rot ?? 0;
@@ -182,6 +184,13 @@ function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 
       const w = s.s0x + (s.s1x - s.s0x) * g;
       const h = s.s0y + (s.s1y - s.s0y) * g;
       iScale[i * 2] = w; iScale[i * 2 + 1] = h;
+      if (s.vx || s.vy || s.vz) {
+        const k = s.drag ? Math.max(0, 1 - s.drag * dt) : 1;
+        s.vx *= k; s.vy *= k; s.vz *= k;
+        iPos[i * 3] += s.vx * dt;
+        iPos[i * 3 + 1] += s.vy * dt;
+        iPos[i * 3 + 2] += s.vz * dt;
+      }
       const fadeT = s.hold > 0 ? Math.max(0, (t - s.hold) / (1 - s.hold)) : t;
       iAlpha[i] = s.a0 * (s.ease <= 0 ? 1 : Math.pow(1 - fadeT, s.ease));
       iRot[i] += s.spin * dt;
@@ -469,7 +478,7 @@ export function createVfx(scene) {
     // Callers ask for a "size" in metres; the sprite's needles reach the very
     // edge of the tile, so it is scaled down here to keep the burst reading as a
     // sharp star rather than a soft flare that swallows the players.
-    const s = size * 0.78;
+    const s = size * 0.66;
     stars.add({
       x, y, z,
       w0: s * 0.30, w1: s, h0: s * 0.30, h1: s,
@@ -522,9 +531,9 @@ export function createVfx(scene) {
       matter.emit({
         x: p.x + frng.range(-0.2, 0.2), y: 0.05, z: p.z + frng.range(-0.2, 0.2),
         vx: Math.cos(a) * frng.range(0.4, 2.0), vy: frng.range(0.4, 1.5), vz: Math.sin(a) * frng.range(0.4, 2.0),
-        life: frng.range(0.55, 1.05), size: frng.range(0.16, 0.30), size1: frng.range(0.5, 0.9),
-        color: opts.color ?? 0xd8ddcd,
-        drag: 2.6, grav: -1.4, fade: 0.5, tile: SPRITE.PUFF,
+        life: frng.range(0.55, 1.05), size: frng.range(0.28, 0.50), size1: frng.range(0.85, 1.5),
+        color: opts.color ?? 0xe6ead8,
+        drag: 2.6, grav: -1.4, fade: 0.8, tile: SPRITE.PUFF,
         rot: frng.float() * 6.28, spin: frng.range(-1.2, 1.2), ease: 1.5, bounce: 0,
       });
     }
@@ -535,25 +544,32 @@ export function createVfx(scene) {
     const n = opts.count ?? 14;
     const len = Math.hypot(dirX, dirZ) || 1;
     const ux = dirX / len, uz = dirZ / len;
+    // Perpendicular to the run, so roughly half the spray fans out to the sides
+    // instead of piling up directly behind the boot where the player's own body
+    // hides it from the camera.
+    const px = -uz, pz = ux;
     for (let i = 0; i < n; i++) {
+      const side = frng.range(-1, 1);
       matter.emit({
-        x: p.x + frng.range(-0.22, 0.22), y: 0.06, z: p.z + frng.range(-0.22, 0.22),
-        vx: -ux * frng.range(1.2, 4.8) + frng.range(-1.1, 1.1),
-        vy: frng.range(1.4, 4.2),
-        vz: -uz * frng.range(1.2, 4.8) + frng.range(-1.1, 1.1),
-        life: frng.range(0.45, 0.9), size: frng.range(0.055, 0.115),
-        color: frng.chance(0.62) ? 0x4f9c2c : (frng.chance(0.6) ? 0x84cc4f : 0x6b5a32),
+        x: p.x + px * side * 0.28 + frng.range(-0.16, 0.16), y: 0.09,
+        z: p.z + pz * side * 0.28 + frng.range(-0.16, 0.16),
+        vx: -ux * frng.range(1.0, 4.4) + px * side * frng.range(1.4, 4.0),
+        vy: frng.range(1.8, 4.6),
+        vz: -uz * frng.range(1.0, 4.4) + pz * side * frng.range(1.4, 4.0),
+        life: frng.range(0.45, 0.9), size: frng.range(0.10, 0.21),
+        color: frng.chance(0.55) ? 0x8fe05a : (frng.chance(0.55) ? 0xc8f08a : 0x8a6d3c),
         drag: 1.5, grav: -14, tile: SPRITE.BLADE,
         rot: frng.float() * 6.28, spin: frng.range(-18, 18), ease: 1.3,
       });
     }
-    dust(p, { count: Math.max(4, (n * 0.45) | 0) });
-    if (opts.decal !== false && frng.chance(0.85)) {
+    dust(p, { count: Math.max(5, (n * 0.6) | 0) });
+    if (opts.decal !== false && frng.chance(0.9)) {
       scuffs.add({
-        x: p.x + frng.range(-0.15, 0.15), y: 0.017, z: p.z + frng.range(-0.15, 0.15),
-        w0: frng.range(0.7, 1.15), h0: frng.range(0.5, 0.85),
-        rot: Math.atan2(ux, uz) + frng.range(-0.3, 0.3),
-        life: opts.decalLife ?? 5.0, color: 0xffffff, alpha: 0.55, ease: 0.9, hold: 0.45,
+        x: p.x - ux * 0.35 + frng.range(-0.12, 0.12), y: 0.017,
+        z: p.z - uz * 0.35 + frng.range(-0.12, 0.12),
+        w0: frng.range(1.5, 2.3), h0: frng.range(0.9, 1.4),
+        rot: Math.atan2(ux, uz) + frng.range(-0.25, 0.25),
+        life: opts.decalLife ?? 6.0, color: 0xffffff, alpha: 0.6, ease: 0.9, hold: 0.5,
       });
     }
   }
@@ -609,10 +625,11 @@ export function createVfx(scene) {
         y: (opts.y ?? 7) + frng.range(0, 4),
         z: p.z + Math.sin(a) * r,
         vx: frng.range(-2.2, 2.2), vy: frng.range(-0.6, 2.8), vz: frng.range(-2.2, 2.2),
-        life: frng.range(1.8, 3.6), size: frng.range(0.10, 0.20),
+        life: frng.range(1.8, 3.6),
+        size: frng.chance(0.14) ? frng.range(0.30, 0.46) : frng.range(0.15, 0.27),
         color: CONFETTI[frng.int(CONFETTI.length)],
-        drag: 1.5, grav: -3.1, fade: 0.95, tile: SPRITE.CHIP,
-        rot: frng.float() * 6.28, spin: frng.range(-9, 9), ease: 0.8, bounce: 0.1,
+        drag: 1.5, grav: -3.1, fade: 1, tile: SPRITE.CHIP,
+        rot: frng.float() * 6.28, spin: frng.range(-9, 9), ease: 0.7, bounce: 0.1,
       });
     }
   }
@@ -631,12 +648,18 @@ export function createVfx(scene) {
         color: opts.color ?? 0xffd58a, drag: 1.2, grav: -8, tile: SPRITE.SPARK, ease: 1.4,
       });
     }
-    for (let i = 0; i < 5; i++) {
+    // Flare smoke is the part that survives: it keeps rising and spreading for
+    // several seconds after the embers are gone, which is what actually reads in
+    // a celebration frame.
+    for (let i = 0; i < 6; i++) {
+      const sz = 1.2 + i * 0.55;
       smoke.add({
-        x: x + frng.range(-0.5, 0.5), y: y + 0.6 + i * 0.9, z: z + frng.range(-0.5, 0.5),
-        w0: 1.4 + i * 0.5, w1: 5.5 + i * 1.6, h0: 1.4 + i * 0.5, h1: 5.5 + i * 1.6,
-        life: frng.range(1.6, 2.6), color: opts.smoke ?? 0xd8e6f2, alpha: 0.55,
-        rot: frng.float() * 6.28, spin: frng.range(-0.4, 0.4), ease: 1.3, hold: 0.2,
+        x: x + frng.range(-0.5, 0.5), y: y + 0.5 + i * 0.75, z: z + frng.range(-0.5, 0.5),
+        w0: sz, w1: sz + 5.5, h0: sz, h1: sz + 5.5,
+        life: frng.range(3.4, 5.2), color: opts.smoke ?? 0xe3edf7, alpha: 0.9,
+        rot: frng.float() * 6.28, spin: frng.range(-0.35, 0.35), ease: 1.5, hold: 0.28,
+        vx: frng.range(-0.35, 0.35), vy: frng.range(1.5, 3.0) - i * 0.12,
+        vz: frng.range(-0.35, 0.35), drag: 0.35,
       });
     }
   }
@@ -654,8 +677,13 @@ export function createVfx(scene) {
     }
     flash(0, p.x, p.y + 1.2, p.z, 8.5, 0.46, 0xfff0c8, 0.5);
     flash(1, p.x, p.y + 1.2, p.z, 7.5, 0.6, 0xffd6ee);
-    pyro(p.x - 1.6, p.y, p.z - 6.5, { count: 22 });
-    pyro(p.x - 1.6, p.y, p.z + 6.5, { count: 22 });
+    // The goal cam sits inside the bowl looking back at the mouth, so the pyro
+    // is planted just outside each post rather than out on the touchlines where
+    // it would be behind the lens.
+    pyro(p.x + 1.2, p.y, p.z - 5.2, { count: 24 });
+    pyro(p.x + 1.2, p.y, p.z + 5.2, { count: 24 });
+    pyro(p.x - 7.0, p.y, p.z - 8.5, { count: 18 });
+    pyro(p.x - 7.0, p.y, p.z + 8.5, { count: 18 });
   }
 
   /** leave a long scrape where a player slid */

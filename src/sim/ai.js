@@ -28,7 +28,7 @@
 import * as THREE from 'three';
 import {
   HALF_W, HALF_D, GOAL_HALF_W, GOAL_H, RUN_SPEED, SPRINT_SPEED, KEEPER_SPEED,
-  ACCEL, PLAYER_R, BALL_R, TEAMS, BOX_W, BOX_D, SIX_W,
+  ACCEL, PLAYER_R, BALL_R, TEAMS, BOX_W, BOX_D,
 } from '../core/constants.js';
 
 // 2-2-1 in attacking space: +X is the direction this team attacks.
@@ -70,7 +70,7 @@ const _v = new THREE.Vector3();
 const _aim = new THREE.Vector3();
 
 export function createAI(ctx) {
-  const { agents, body, goals } = ctx;
+  const { agents, body } = ctx;
   const rng = ctx.rng;
   const events = ctx.events || {};
 
@@ -121,7 +121,6 @@ export function createAI(ctx) {
   function toX(team, u) { return u * TEAMS[team].dir; }
 
   function dist2(ax, az, bx, bz) { const dx = ax - bx, dz = az - bz; return dx * dx + dz * dz; }
-  function distTo(a, x, z) { return Math.hypot(a.pos.x - x, a.pos.z - z); }
   function distToBall(a) { return Math.hypot(body.pos.x - a.pos.x, body.pos.z - a.pos.z); }
 
   /** shortest distance from point p to segment a->b, or Infinity if p is not beside it */
@@ -800,8 +799,8 @@ export function createAI(ctx) {
         // shortens with danger but never gets to zero
         // A harder, closer strike gives him less to work with, but he is never
         // instant: this window is what decides whether a corner is reachable.
-        const react = clamp(0.34 - speed * 0.0050 - (24 - toGoal) * 0.004, 0.11, 0.30)
-          * (1.30 - 0.35 * (SKILL[a.slot] ?? 0.85));
+        const react = clamp(0.36 - speed * 0.0050 - (24 - toGoal) * 0.004, 0.13, 0.32)
+          * (1.32 - 0.35 * (SKILL[a.slot] ?? 0.85));
         a.reactT = react;
         a.shotLive = true;
       }
@@ -824,12 +823,12 @@ export function createAI(ctx) {
     // The hands sweep out along the dive as it develops. This radius is the
     // single strongest difficulty dial in the game: too generous and a keeper
     // standing centrally covers the whole mouth and nothing is ever scored.
-    const ext = a.diving ? clamp(a.diveAge / 0.26, 0, 1) * 1.5 : 0;
+    const ext = a.diving ? clamp(a.diveAge / 0.26, 0, 1) * 1.0 : 0;
     const handZ = a.pos.z + (a.diveDir || 0) * ext;
     const handY = a.diving ? (a.diveHigh ? 1.85 : 0.7) : 1.0;
-    const reach = a.diving ? 0.72 : 0.62;
-    const nearHands = Math.hypot(bx - a.pos.x, bz - handZ) < reach + BALL_R + 0.2
-      && Math.abs(by - handY) < 0.95;
+    const reach = a.diving ? 0.55 : 0.5;
+    const nearHands = Math.hypot(bx - a.pos.x, bz - handZ) < reach + BALL_R + 0.12
+      && Math.abs(by - handY) < 0.9;
     if (a.diving) a.diveAge = (a.diveAge || 0) + dt;
 
     if (nearHands && a.saveCool <= 0 && Math.abs(bx - gx) < 6.5) {
@@ -877,7 +876,7 @@ export function createAI(ctx) {
     }
     if (a.diving) {
       // travel along the dive; the animation owns the pose, the sim owns the slide
-      seek(a, gx - s * 1.1, a.diveTarget, dt, KEEPER_SPEED * 1.85, 0.05);
+      seek(a, gx - s * 1.1, a.diveTarget, dt, KEEPER_SPEED * 1.7, 0.05);
       if (a.anim && !a.anim.busy) { a.diving = false; a.diveAge = 0; }
       a.faceX = -s; a.faceZ = 0;
       return;

@@ -61,7 +61,7 @@ export const MODES = {
   chase: { fov: 46, height: 9.0, back: 15.0, lead: 0.55, look: 1.4, omega: 5.6 },
   closeup: { fov: 32, height: 1.55, back: 5.0, lead: 0, look: 1.02, omega: 7.0 },
   keeper: { fov: 46, height: 4.2, back: 8.2, lead: 0.15, look: 1.5, omega: 4.4 },
-  wide: { fov: 50, height: 43, back: 74, lead: 0, look: 15.0, omega: 1.5 },
+  wide: { fov: 52, height: 40, back: 76, lead: 0, look: 21.0, omega: 1.5 },
   goal: { fov: 36, height: 5.5, back: 12.0, lead: 0, look: 1.5, omega: 3.6 },
   tackle: { fov: 36, height: 3.2, back: 8.0, lead: 0, look: 1.1, omega: 5.4 },
   replay: { fov: 38, height: 4.6, back: 11.0, lead: 0, look: 1.3, omega: 3.0 },

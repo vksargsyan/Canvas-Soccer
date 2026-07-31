@@ -20,7 +20,7 @@
 
 import {
   HALF_W, HALF_D, MATCH_SECONDS, KICKOFF_HOLD, GOAL_HOLD, TEAMS, BALL_R,
-  GOAL_HALF_W, BOX_W, BOX_D, RUN_SPEED,
+  BOX_W, RUN_SPEED,
 } from '../core/constants.js';
 import { KICKOFF_ATTACK, KICKOFF_DEFEND } from './ai.js';
 
