@@ -210,10 +210,13 @@ export function createEngine(canvas) {
   const renderPass = new RenderPass(scene, camera);
   composer.addPass(renderPass);
 
-  // radius 0.68 keeps the glow tight enough that the pitch does not haze over,
-  // threshold 0.92 means only genuinely hot pixels (lamps, star flashes, the
-  // ball's specular hit) bloom at all.
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x * 0.5, size.y * 0.5), 0.28, 0.44, 1.02);
+  // Threshold 1.34 is deliberately high. Several additive elements in the scene
+  // (the ball's motion trail, the floodlight lamp quads) sit just above 1.0 in
+  // linear, and at a lower threshold their halo smeared a white haze across the
+  // whole play area — it was washing the pink out of the shot swoosh. Only the
+  // genuinely hot pixels (impact stars, lamp cores) bloom now, and a tight
+  // radius keeps the glow attached to what emits it.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x * 0.5, size.y * 0.5), 0.28, 0.38, 1.34);
   composer.addPass(bloom);
 
   const outputPass = new OutputPass();

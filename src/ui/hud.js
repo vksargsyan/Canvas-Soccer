@@ -878,7 +878,8 @@ export function createHud(root) {
       // resolved on the next update() instead of right now — otherwise every goal
       // reads one behind.
       pendingTally = teamIdx;
-      $('cs-l3-s').textContent = '';
+      const n0 = teamIdx === 0 ? scoreA : scoreB;
+      $('cs-l3-s').textContent = `${n0} GOAL${n0 === 1 ? '' : 'S'} THIS MATCH`;
       l3El.classList.add('on');
       l3Timer = seconds + 0.6;
     }

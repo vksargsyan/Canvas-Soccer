@@ -38,7 +38,7 @@ const frng = makeRng(0xfeed);
 // mode 0: camera-facing billboard, rotated about the view axis
 // mode 1: ribbon — long axis pinned to a world direction, width faces the camera
 // mode 2: ground quad — lies in XZ, yaw about Y
-function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 1 }) {
+function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 1, zBias = 0 }) {
   const base = new THREE.PlaneGeometry(1, 1);
   const geo = new THREE.InstancedBufferGeometry();
   geo.index = base.index;
@@ -68,7 +68,7 @@ function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 
   geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 400);
 
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uMap: { value: map }, uBoost: { value: boost } },
+    uniforms: { uMap: { value: map }, uBoost: { value: boost }, uZBias: { value: zBias } },
     defines: { MODE: mode },
     vertexShader: /* glsl */`
       attribute vec3 iPos;
@@ -77,6 +77,7 @@ function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 
       attribute float iRot;
       attribute vec3 iColor;
       attribute float iAlpha;
+      uniform float uZBias;
       varying vec2 vUv;
       varying vec3 vColor;
       varying float vAlpha;
@@ -104,6 +105,11 @@ function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 
           vec2 q = vec2(position.x * c - position.y * s, position.x * s + position.y * c);
           mv.xy += q * iScale;
         #endif
+        // uZBias pulls the quad toward the camera in view space. The ball's own
+        // motion trail (entities/ball.js) occupies almost exactly the same volume
+        // as a shot streak, and without a bias the two z-fight and the streak
+        // loses. World placement is unchanged, so players still occlude it.
+        mv.z += uZBias;
         gl_Position = projectionMatrix * mv;
       #endif
       }`,
@@ -423,9 +429,10 @@ export function createVfx(scene) {
   // band. Added on top of bright turf, a pink additive layer just resolves to
   // white and the shot loses its signature colour.
   const ribbons = createBatch({
-    map: swooshStrip(), blending: THREE.NormalBlending, capacity: 8, mode: 1, boost: 1.0,
+    map: swooshStrip(), blending: THREE.NormalBlending, capacity: 8, mode: 1, boost: 1.0, zBias: 0.35,
   });
   ribbons.mesh.renderOrder = 24;
+  ribbons.mesh.material.depthWrite = false;
   const glows = createBatch({
     map: softGlow(), blending: THREE.AdditiveBlending, capacity: 12, mode: 0, boost: 1.1,
   });
