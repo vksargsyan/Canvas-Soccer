@@ -108,87 +108,292 @@ function normalFromHeight(height, size, strength) {
 }
 
 // ---------------------------------------------------------------------------
-// TURF — albedo + normal + roughness. Tileable over a 2.5 unit square.
-// Mow stripes are NOT baked here; world/pitch.js builds them as separate
-// alternating stripe meshes so the banding stays crisp at any camera distance.
+// GROUND SURFACES — tileable albedo + normal + roughness for grass / dirt /
+// concrete, plus the non-tiling "macro" map that carries mow stripes, broad
+// discolouration and wear across the whole pitch.
+//
+// The detail tile holds ONLY high-frequency blade/aggregate grain. Everything
+// that varies across the pitch (stripes, goalmouth scuffing, sun sheen) lives
+// in the macro map, and world/pitch.js multiplies the two in one material.
 // ---------------------------------------------------------------------------
 
+const ss = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+const frac = (v) => v - Math.floor(v);
+const mixc = (a, b, t) => [
+  a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t,
+];
+
+/**
+ * Surface recipes. Colours are sRGB bytes: `lo` is the deepest shadowed fibre,
+ * `hi` the brightest sun-caught tip, `tint` a third colour blended into random
+ * clumps so the field never resolves to a two-colour ramp.
+ */
+export const SURFACES = {
+  grass: {
+    tile: 2.6,
+    lo: [20, 56, 6], hi: [100, 152, 38], tint: [114, 132, 32], tintAmt: 0.22,
+    // streaks per tile across U — the mow direction runs along world Z, so the
+    // blades are lines of constant U.
+    bladeFreq: 150, bladeAmp: 0.28, bladeWander: 7.0,
+    speckle: 0, speckleCol: [0, 0, 0],
+    weights: [0.30, 0.26, 0.22],
+    normalStrength: 3.6, rough: [0.62, 0.92],
+    stripes: true,
+    wearCol: [1.60, 1.12, 0.74], wearDark: 0.13, blotchAmt: 0.050,
+    macroBase: [1, 1, 1],
+    vergeMul: [0.58, 0.65, 0.52],
+  },
+  dirt: {
+    tile: 3.4,
+    lo: [104, 78, 54], hi: [196, 168, 132], tint: [150, 128, 88], tintAmt: 0.45,
+    bladeFreq: 0, bladeAmp: 0.0, bladeWander: 0,
+    speckle: 0.055, speckleCol: [88, 68, 48],
+    weights: [0.44, 0.30, 0.26],
+    normalStrength: 2.2, rough: [0.82, 0.99],
+    stripes: false,
+    wearCol: [1.10, 1.02, 0.92], wearDark: 0.14, blotchAmt: 0.200,
+    macroBase: [1, 1, 1],
+    vergeMul: [0.86, 0.84, 0.80],
+  },
+  concrete: {
+    tile: 4.0,
+    lo: [118, 118, 116], hi: [196, 196, 190], tint: [166, 160, 148], tintAmt: 0.22,
+    bladeFreq: 0, bladeAmp: 0.0, bladeWander: 0,
+    speckle: 0.09, speckleCol: [96, 96, 98],
+    weights: [0.40, 0.32, 0.28],
+    normalStrength: 1.5, rough: [0.55, 0.86],
+    stripes: false,
+    wearCol: [0.94, 0.94, 0.96], wearDark: 0.16, blotchAmt: 0.150,
+    macroBase: [1, 1, 1],
+    vergeMul: [0.80, 0.80, 0.80],
+  },
+};
+
+/**
+ * Tileable detail for one surface.
+ * @returns {{map,normalMap,roughnessMap,tile:number}}
+ */
 export function turfTextures(opts = {}) {
-  const size = opts.size || 512;
-  return memo('turf:' + size, () => {
-    const T = tables(4, 1201, 8);
-    const Tf = tables(3, 4402, 32);
-    const height = new Float32Array(size * size);
-    const { c, g } = canvas2d(size, size);
-    const img = g.createImageData(size, size);
-    const { c: rc, g: rg } = canvas2d(size, size);
-    const rimg = rg.createImageData(size, size);
+  const kind = opts.surface || 'grass';
+  const S = opts.size || 2048;
+  const D = SURFACES[kind] || SURFACES.grass;
+  return memo(`turf:${kind}:${S}`, () => {
+    // Coarse clumping is baked at low resolution and bilinearly upsampled — it
+    // is smooth by definition, so full-res fbm there would only cost time.
+    const CS = 256;
+    const Tc = tables(4, 1201 + S, 8);
+    const coarse = new Float32Array(CS * CS);
+    for (let y = 0; y < CS; y++)
+      for (let x = 0; x < CS; x++) coarse[y * CS + x] = fbm(x / CS, y / CS, 4, 8, Tc);
+    const upC = (u, v) => {
+      const fx = u * CS, fy = v * CS;
+      const x0 = Math.floor(fx), y0 = Math.floor(fy);
+      const tx = fx - x0, ty = fy - y0;
+      const i0 = ((x0 % CS) + CS) % CS, j0 = ((y0 % CS) + CS) % CS;
+      const i1 = (i0 + 1) % CS, j1 = (j0 + 1) % CS;
+      return (coarse[j0 * CS + i0] * (1 - tx) + coarse[j0 * CS + i1] * tx) * (1 - ty)
+        + (coarse[j1 * CS + i0] * (1 - tx) + coarse[j1 * CS + i1] * tx) * ty;
+    };
+    const midT = lattice(192, 5501 + S);
+    const fineT = lattice(512, 9203 + S);
+    const specT = lattice(256, 3313 + S);
+    const jitT = lattice(256, 7717 + S);
 
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const u = x / size, v = y / size;
-        const broad = fbm(u, v, 4, 8, T);          // clumping
-        const fine = fbm(u, v, 3, 32, Tf);         // grain
-        // blade streaks: high-frequency along +Z with slight wander
-        const blade = Math.sin((v * size * 0.85) + broad * 9.0) * 0.5 + 0.5;
-        const blade2 = Math.sin((v * size * 2.4) + fine * 14.0) * 0.5 + 0.5;
-        const h = clamp01(broad * 0.32 + fine * 0.24 + blade * 0.24 + blade2 * 0.20);
-        height[y * size + x] = h;
+    const height = new Float32Array(S * S);
+    const { c, g } = canvas2d(S, S);
+    const img = g.createImageData(S, S);
+    const [w0, w1, w2] = D.weights;
+    const wsum = w0 + w1 + w2 + D.bladeAmp;
 
-        // keep albedo variation tight — the mow stripes do the heavy lifting
-        const shade = 0.90 + h * 0.20;
-        const r = clamp01(0.470 * shade) * 255;
-        const gr = clamp01(0.800 * shade) * 255;
-        const b = clamp01(0.330 * shade) * 255;
+    for (let y = 0; y < S; y++) {
+      const v = y / S;
+      for (let x = 0; x < S; x++) {
+        const u = x / S;
+        const cl = upC(u, v);
+        const md = noise2(midT, 192, u * 192, v * 192);
+        const fn = noise2(fineT, 512, u * 512, v * 512);
 
-        const i = (y * size + x) * 4;
-        img.data[i] = r; img.data[i + 1] = gr; img.data[i + 2] = b; img.data[i + 3] = 255;
+        let h = (w0 * cl + w1 * md + w2 * fn);
+        if (D.bladeAmp > 0) {
+          // blades run along +V (world Z), so the stripe pattern varies in U,
+          // wandering with the coarse field so no two rows line up.
+          const wob = cl * D.bladeWander + md * 3.1;
+          const b1 = Math.sin(u * D.bladeFreq * 6.2831853 + wob) * 0.5 + 0.5;
+          const b2 = Math.sin(u * D.bladeFreq * 2.61 * 6.2831853 + md * 9.0) * 0.5 + 0.5;
+          h += D.bladeAmp * (b1 * 0.62 + b2 * 0.38);
+        }
+        h = clamp01(h / wsum);
+        height[y * S + x] = h;
 
-        const rough = clamp01(0.80 + (1 - h) * 0.16) * 255;
-        rimg.data[i] = rough; rimg.data[i + 1] = rough; rimg.data[i + 2] = rough; rimg.data[i + 3] = 255;
+        let col = mixc(D.lo, D.hi, h);
+        if (D.tintAmt > 0) {
+          const t = ss((cl - 0.52) * 2.6) * D.tintAmt;
+          col = mixc(col, D.tint, t);
+        }
+        if (D.speckle > 0) {
+          const sp = noise2(specT, 256, u * 256, v * 256);
+          if (sp > 1 - D.speckle * 3.2) {
+            const k = (sp - (1 - D.speckle * 3.2)) / (D.speckle * 3.2);
+            col = mixc(col, D.speckleCol, k * 0.8);
+          }
+        }
+        // tiny per-texel hue break-up so flat colour is unreachable
+        const j = noise2(jitT, 256, u * 256 * 1.7 + 11, v * 256 * 1.7 + 3) - 0.5;
+        const i = (y * S + x) * 4;
+        img.data[i] = clamp01((col[0] + j * 16) / 255) * 255;
+        img.data[i + 1] = clamp01((col[1] + j * 20) / 255) * 255;
+        img.data[i + 2] = clamp01((col[2] + j * 12) / 255) * 255;
+        img.data[i + 3] = 255;
       }
     }
     g.putImageData(img, 0, 0);
+
+    // roughness at half res — it is a broad property, full res buys nothing
+    const RS = S >> 1;
+    const { c: rc, g: rg } = canvas2d(RS, RS);
+    const rimg = rg.createImageData(RS, RS);
+    for (let y = 0; y < RS; y++) {
+      for (let x = 0; x < RS; x++) {
+        const h = height[(y * 2) * S + x * 2];
+        const cl = upC(x / RS, y / RS);
+        // worn / flattened patches are shinier than upright fibre
+        const r = clamp01(D.rough[0] + (1 - h) * (D.rough[1] - D.rough[0]) - (cl - 0.5) * 0.10);
+        const i = (y * RS + x) * 4;
+        rimg.data[i] = rimg.data[i + 1] = rimg.data[i + 2] = r * 255;
+        rimg.data[i + 3] = 255;
+      }
+    }
     rg.putImageData(rimg, 0, 0);
 
     const map = tex(c, { srgb: true, aniso: 16 });
-    const normalMap = tex(normalFromHeight(height, size, 2.6), { srgb: false, aniso: 8 });
-    const roughnessMap = tex(rc, { srgb: false, aniso: 4 });
-    return { map, normalMap, roughnessMap };
+    const normalMap = tex(normalFromHeight(height, S, D.normalStrength), { srgb: false, aniso: 16 });
+    const roughnessMap = tex(rc, { srgb: false, aniso: 8 });
+    return { map, normalMap, roughnessMap, tile: D.tile };
   });
 }
 
-/** Broad, low-frequency wear/scuff overlay for the whole pitch (alpha only). */
-export function wearTexture() {
-  return memo('wear', () => {
-    const S = 512;
-    const { c, g } = canvas2d(S, S);
-    g.clearRect(0, 0, S, S);
-    const T = tables(4, 777, 4);
-    const img = g.createImageData(S, S);
-    for (let y = 0; y < S; y++) {
-      for (let x = 0; x < S; x++) {
-        const n = fbm(x / S, y / S, 4, 4, T);
-        const i = (y * S + x) * 4;
-        img.data[i] = img.data[i + 1] = img.data[i + 2] = 0;
-        img.data[i + 3] = clamp01((n - 0.55) * 1.1) * 46;
+/**
+ * Whole-pitch macro map. Not tiled — it maps 1:1 onto the ground plane.
+ *
+ *   rgb = linear albedo multiplier, encoded as value/2 (so 0..2 is expressible)
+ *   a   = paint integrity (1 = fresh white line, 0 = scrubbed away)
+ *
+ * Carries the mow stripes, broad discolouration, goalmouth / centre-circle
+ * scuffing, the off-pitch verge, and a very soft sun sheen band.
+ */
+export function pitchMacroTexture(o = {}) {
+  const kind = o.surface || 'grass';
+  const hw = o.halfW ?? 30, hd = o.halfD ?? 20;
+  const mx = o.marginX ?? 5, mz = o.marginZ ?? 5;
+  const stripeW = o.stripeW ?? 5;
+  const D = SURFACES[kind] || SURFACES.grass;
+  const key = `macro:${kind}:${hw}:${hd}:${mx}:${mz}:${stripeW}`;
+  return memo(key, () => {
+    const EX = hw + mx, EZ = hd + mz;
+    const W = 1024, H = Math.round((W * EZ) / EX / 4) * 4;
+    const { c, g } = canvas2d(W, H);
+    const img = g.createImageData(W, H);
+
+    const Tb = tables(4, 2207, 4);      // broad blotches
+    const Tw = tables(3, 8821, 10);     // wear break-up
+    const Tp = tables(3, 4409, 40);     // paint break-up
+    const jitT = lattice(128, 6151);
+
+    // wear ellipses in world space: [cx, cz, rx, rz, strength]
+    const zones = [];
+    if (kind === 'grass' || kind === 'dirt') {
+      for (const s of [-1, 1]) {
+        zones.push([s * (hw - 2.4), 0, 6.2, 8.0, 0.85]);       // goalmouth
+        zones.push([s * (hw - 7.5), 0, 5.0, 10.0, 0.30]);      // six-yard apron
+        zones.push([s * (hw - 8.0), 0, 1.9, 1.9, 0.55]);       // penalty spot scuff
+        zones.push([s * (hw - 15.5), 0, 4.0, 6.0, 0.16]);      // edge of the box
+      }
+      zones.push([0, 0, 3.2, 3.2, 0.34]);                      // kickoff spot
+      zones.push([0, 0, 9.5, 8.0, 0.11]);                      // centre circle traffic
+      zones.push([0, hd - 1.2, 30, 2.4, 0.13]);                // touchline wear
+      zones.push([0, -(hd - 1.2), 30, 2.4, 0.13]);
+    }
+
+    const wearAt = (x, z, n) => {
+      let w = 0;
+      for (let i = 0; i < zones.length; i++) {
+        const [cx, cz, rx, rz, k] = zones[i];
+        const dx = (x - cx) / rx, dz = (z - cz) / rz;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 1.35) w = Math.max(w, k * (1 - ss((d - 0.15) / 1.2)));
+      }
+      // ragged edges — never a clean airbrushed ellipse
+      return clamp01(w * (0.60 + 0.80 * n));
+    };
+
+    for (let py = 0; py < H; py++) {
+      const v = py / H;
+      const z = -EZ + v * 2 * EZ;
+      for (let px = 0; px < W; px++) {
+        const u = px / W;
+        const x = -EX + u * 2 * EX;
+
+        const bl = fbm(u, v, 4, 4, Tb);
+        const wn = fbm(u, v, 3, 10, Tw);
+        const pn = fbm(u, v, 3, 40, Tp);
+        const jt = noise2(jitT, 128, u * 128 * 3.1, v * 128 * 3.1) - 0.5;
+
+        // soft inside-the-lines mask (touchline sits on the boundary)
+        const inside = ss((hw + 0.25 - Math.abs(x)) / 0.5) * ss((hd + 0.25 - Math.abs(z)) / 0.5);
+
+        // Mow stripes are NOT baked here — world/pitch.js evaluates them
+        // analytically in the ground shader so their edges stay crisp at any
+        // camera distance instead of being capped by this map's texel size.
+        let m0 = 1, m1 = 1, m2 = 1;
+
+        // broad discolouration + faint darker patches
+        const ba = D.blotchAmt ?? 0.05;
+        const b = (1 - ba * 0.48) + ba * bl + (wn - 0.5) * (0.045 + ba * 0.9) + jt * 0.022;
+        m0 *= b; m1 *= b; m2 *= b;
+
+        // very soft sun sheen sweeping the pitch — keeps the field from reading flat
+        const sh = Math.exp(-Math.pow((x * 0.34 + z * 0.62 + 3.0) / 24.0, 2));
+        const shk = 1 + 0.042 * sh;
+        m0 *= shk; m1 *= shk; m2 *= shk;
+
+        // wear
+        const w = wearAt(x, z, wn) * inside;
+        if (w > 0.001) {
+          const k = w * 0.9;
+          m0 *= 1 + (D.wearCol[0] - 1) * k;
+          m1 *= 1 + (D.wearCol[1] - 1) * k;
+          m2 *= 1 + (D.wearCol[2] - 1) * k;
+          const dk = 1 - w * D.wearDark;
+          m0 *= dk; m1 *= dk; m2 *= dk;
+        }
+
+        // off-pitch verge: unstriped, darker, slightly bluer in shade
+        if (inside < 1) {
+          const t = 1 - inside;
+          m0 = m0 * (1 - t) + D.vergeMul[0] * (0.94 + 0.14 * bl) * t;
+          m1 = m1 * (1 - t) + D.vergeMul[1] * (0.94 + 0.14 * bl) * t;
+          m2 = m2 * (1 - t) + D.vergeMul[2] * (0.94 + 0.14 * bl) * t;
+        }
+
+        // paint integrity: worn where traffic is heaviest, plus fine flaking
+        const paint = clamp01(0.52 + 0.62 * pn + 0.18 * bl - w * 0.95);
+
+        const i = (py * W + px) * 4;
+        img.data[i] = clamp01(m0 * 0.5) * 255;
+        img.data[i + 1] = clamp01(m1 * 0.5) * 255;
+        img.data[i + 2] = clamp01(m2 * 0.5) * 255;
+        img.data[i + 3] = paint * 255;
       }
     }
     g.putImageData(img, 0, 0);
-    // goalmouth + centre-circle wear
-    g.globalCompositeOperation = 'source-over';
-    const worn = (cx, cy, rx, ry, a) => {
-      const gr = g.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry));
-      gr.addColorStop(0, `rgba(120,96,58,${a})`);
-      gr.addColorStop(0.6, `rgba(120,96,58,${a * 0.35})`);
-      gr.addColorStop(1, 'rgba(120,96,58,0)');
-      g.save(); g.translate(cx, cy); g.scale(rx / Math.max(rx, ry), ry / Math.max(rx, ry));
-      g.translate(-cx, -cy); g.fillStyle = gr; g.fillRect(0, 0, S, S); g.restore();
-    };
-    worn(18, S / 2, 40, 70, 0.22);
-    worn(S - 18, S / 2, 40, 70, 0.22);
-    worn(S / 2, S / 2, 58, 58, 0.09);
-    return tex(c, { srgb: true, aniso: 2 });
+
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    t.colorSpace = THREE.NoColorSpace;
+    t.anisotropy = 8;
+    t.flipY = false;
+    t.needsUpdate = true;
+    return t;
   });
 }
 
