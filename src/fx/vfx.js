@@ -590,7 +590,7 @@ export function createVfx(scene) {
     s.ox = p.x; s.oy = (p.y ?? 0.45) + 0.08; s.oz = p.z;
     s.dx = ux; s.dy = 0; s.dz = uz;
     s.t = 0;
-    s.max = 0.42 + 0.16 * power;
+    s.max = 0.55 + 0.25 * power;
     s.speed = 20 * power + 8;
     s.width = 0.20 + 0.16 * power;
     s.track = !!ball();
@@ -600,7 +600,7 @@ export function createVfx(scene) {
     });
     // strike star at the boot, sized off the power
     flash(0, p.x + ux * 0.18, (p.y ?? 0.45) + 0.12, p.z + uz * 0.18,
-      2.0 + 1.5 * power, 0.24, 0xffffff, frng.range(-1.0, 1.0));
+      2.0 + 1.5 * power, 0.30, 0xffffff, frng.range(-1.0, 1.0));
     for (let i = 0; i < 10; i++) {
       energy.emit({
         x: p.x, y: (p.y ?? 0.45) + frng.range(-0.12, 0.2), z: p.z,
@@ -651,15 +651,15 @@ export function createVfx(scene) {
     // Flare smoke is the part that survives: it keeps rising and spreading for
     // several seconds after the embers are gone, which is what actually reads in
     // a celebration frame.
-    for (let i = 0; i < 6; i++) {
-      const sz = 1.2 + i * 0.55;
+    for (let i = 0; i < 5; i++) {
+      const sz = 1.0 + i * 0.45;
       smoke.add({
-        x: x + frng.range(-0.5, 0.5), y: y + 0.5 + i * 0.75, z: z + frng.range(-0.5, 0.5),
-        w0: sz, w1: sz + 5.5, h0: sz, h1: sz + 5.5,
-        life: frng.range(3.4, 5.2), color: opts.smoke ?? 0xe3edf7, alpha: 0.9,
-        rot: frng.float() * 6.28, spin: frng.range(-0.35, 0.35), ease: 1.5, hold: 0.28,
-        vx: frng.range(-0.35, 0.35), vy: frng.range(1.5, 3.0) - i * 0.12,
-        vz: frng.range(-0.35, 0.35), drag: 0.35,
+        x: x + frng.range(-0.45, 0.45), y: y + 0.5 + i * 0.7, z: z + frng.range(-0.45, 0.45),
+        w0: sz, w1: sz + 2.8, h0: sz, h1: sz + 2.8,
+        life: frng.range(3.0, 4.6), color: opts.smoke ?? 0xdfeaf6, alpha: 0.5,
+        rot: frng.float() * 6.28, spin: frng.range(-0.35, 0.35), ease: 1.5, hold: 0.25,
+        vx: frng.range(-0.3, 0.3), vy: frng.range(1.4, 2.6) - i * 0.1,
+        vz: frng.range(-0.3, 0.3), drag: 0.35,
       });
     }
   }
@@ -678,12 +678,11 @@ export function createVfx(scene) {
     flash(0, p.x, p.y + 1.2, p.z, 8.5, 0.46, 0xfff0c8, 0.5);
     flash(1, p.x, p.y + 1.2, p.z, 7.5, 0.6, 0xffd6ee);
     // The goal cam sits inside the bowl looking back at the mouth, so the pyro
-    // is planted just outside each post rather than out on the touchlines where
-    // it would be behind the lens.
-    pyro(p.x + 1.2, p.y, p.z - 5.2, { count: 24 });
-    pyro(p.x + 1.2, p.y, p.z + 5.2, { count: 24 });
-    pyro(p.x - 7.0, p.y, p.z - 8.5, { count: 18 });
-    pyro(p.x - 7.0, p.y, p.z + 8.5, { count: 18 });
+    // goes BEHIND the goal line where the column reads against the stand. Keep
+    // it off the camera's own position or the smoke just fogs the whole frame.
+    pyro(p.x + 3.4, p.y, p.z - 7.8, { count: 22 });
+    pyro(p.x + 3.4, p.y, p.z + 7.8, { count: 22 });
+    pyro(p.x - 5.0, p.y, p.z + 12.0, { count: 18 });
   }
 
   /** leave a long scrape where a player slid */
