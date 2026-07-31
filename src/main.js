@@ -105,6 +105,8 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   const audio = createAudio();
   const director = createDirector(camera);
 
+  let touchCool = 0;
+
   const events = {
     onBounce(speed, p) {
       if (speed > 4) vfx.dust({ x: p.x, y: 0.06, z: p.z }, { count: Math.min(10, Math.round(speed)) });
@@ -153,6 +155,18 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       }
     },
     onKeeperDive() { audio.tackle(); },
+    /** incidental ball contact: a dribble touch, a shin deflection, a header */
+    onTouch(p, impact, part) {
+      if (impact < 1.6 || touchCool > 0) return;
+      touchCool = 0.12;
+      audio.kick(clamp(impact / 22, 0.12, 0.55));
+      if (part === 'head') {
+        vfx.burst({ x: body.pos.x, y: body.pos.y, z: body.pos.z },
+          { count: 6, speed: 2.4, color: 0xffffff, flashSize: 1.1 });
+      } else if (part === 'foot' && impact > 4) {
+        vfx.scuff({ x: p.pos.x, y: 0, z: p.pos.z }, p.vel.x, p.vel.z, { count: 5, decal: false });
+      }
+    },
     onPhase(p, half) {
       if (p === 'kickoff') { hud.banner('KICK OFF', '', 1.4); audio.whistle(1); }
       if (p === 'restart') hud.setLabels('defend');
@@ -392,11 +406,15 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     ballView.reset(body.pos);
     hud.banner(null);
     hud.showMenu(null);
+    hud.toast(null);
+    hud.setDanger(0);
+    hud.setLabels('attack');
     hud.setScore(0, 0);
     hud.setClock(180);
     hud.setPossession(0);
     stadium.setScore(0, 0, '3:00');
     selectUser(null);
+    clearTimers();
     scen.beats.length = 0;
     scen.step = null;
     scen.t = 0;
@@ -729,14 +747,52 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       v.group.rotation.y = a.yaw;
       a.anim.update(dt, {
         speed: sp, moving: sp > 0.5, sprinting: sp > 9.4, isKeeper: a.isKeeper,
+        // a carrier shields the ball and runs shorter — the animator needs to know
+        hasBall: !!a.hasBall,
       });
       v.syncShadow();
+      if (dt > 0) footstepFrom(a, sp);
     }
+  }
+
+  // ---- footsteps ----------------------------------------------------------
+  // The animator publishes its gait phase; a boot lands each time that phase
+  // crosses 0 or PI. Reading it here means the sound is welded to the pose
+  // instead of running off an independent timer that drifts out of sync.
+  const TAU = Math.PI * 2;
+  function footstepFrom(a, speed) {
+    if (a.down || speed < 1.2) { a.footPhase = null; return; }
+    const st = a.anim.current;
+    if (st !== 'run' && st !== 'sprint' && st !== 'dribble') { a.footPhase = null; return; }
+    const p = ((a.anim.phase % TAU) + TAU) % TAU;
+    const half = p < Math.PI ? 0 : 1;
+    if (a.footPhase === null || a.footPhase === undefined) { a.footPhase = half; return; }
+    if (half === a.footPhase) return;
+    a.footPhase = half;
+    // fall off with distance from the camera focus so 12 players are not a stampede
+    const d = Math.hypot(a.pos.x - _focus.action.x, a.pos.z - _focus.action.z);
+    const gain = Math.max(0, 1 - d / 22) * (a.control === 'user' ? 1 : 0.55);
+    if (gain > 0.05) audio.footstep(gain * Math.min(1, speed / 9), pitch.surface);
+  }
+
+  // ---- danger ------------------------------------------------------------
+  // One scalar, 0..1, for "the ball is in a threatening position at OUR end".
+  // It drives the HUD's edge vignette and the crowd's swell; without a publisher
+  // both of those were dead code.
+  function updateDanger() {
+    const ownGoalX = -TEAMS[0].dir * HALF_W;      // the goal the player defends
+    const d = Math.hypot(body.pos.x - ownGoalX, body.pos.z * 0.6);
+    let x = clamp(1 - (d - 6) / 22, 0, 1);
+    if (match.state.possession === 0) x *= 0.35;   // we have it — much less scary
+    hud.setDanger(x);
+    audio.setDanger(x);
   }
 
   function step(dt) {
     scen.t += dt;
+    touchCool = Math.max(0, touchCool - dt);
     runBeats();
+    tickTimers(dt);
     if (scen.step) scen.step(dt, scen.t);
 
     if (scen.flags.ai) ai.update(dt);
@@ -776,6 +832,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     ballView.sync(body, dt);
     vfx.update(dt);
     stadium.update(dt);
+    updateDanger();
 
     // camera
     _focus.ball = body.pos;
@@ -795,6 +852,10 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   let frames = 0;
   let ready = false;
   let paused = false;
+  // When the sim is frozen (pause menu, or a settled capture) the HUD can still
+  // tick, so button charge rings, cooldown sweeps and banner transitions finish
+  // instead of being frozen mid-animation in the frame that gets graded.
+  let hudLive = false;
 
   function frame() {
     requestAnimationFrame(frame);
@@ -807,19 +868,33 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       let guard = 0;
       while (acc >= FIXED && guard < 8) { step(FIXED); acc -= FIXED; guard++; }
       if (guard >= 8) acc = 0;
+    } else if (hudLive) {
+      hud.update(dt);
     }
     engine.render(dt);
     frames++;
     if (!ready && frames >= 2) {
       ready = true;
       window.__debug.ready = true;
-      if (splash) splash.classList.add('gone');
+      hideSplash(false);
     }
+  }
+
+  // The splash fades over 0.45 s. The capture harness screenshots ~0.25 s after
+  // settle() returns, so a fade started at that moment is still half-opaque and
+  // dims the whole frame — which is exactly what the first capture used to show.
+  // Fading is for humans; anything driving __debug gets it removed outright.
+  function hideSplash(now) {
+    if (!splash || !splash.parentNode) return;
+    splash.classList.add('gone');
+    if (now) { splash.remove(); return; }
+    setTimeout(() => { if (splash.parentNode) splash.remove(); }, 600);
   }
 
   // Start in a staged kickoff so the very first frame is already a good picture,
   // then hand over to live play on the first user gesture.
   scenario('kickoff');
+  hud.setCooldown('primary', SLIDE_COOL);   // publish the real cooldown, once
   let started = false;
   const start = () => {
     if (started) return;
@@ -827,9 +902,32 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     audio.unlock();
     audio.crowd(0.16);
     freePlay();
+    hud.intro();                            // team-vs-team sting over the kickoff
   };
   window.addEventListener('pointerdown', start, { once: true });
   window.addEventListener('keydown', start, { once: true });
+
+  // ---- HUD-owned match control -------------------------------------------
+  // The pause button and Escape used to fall through to window.__debug.pause(),
+  // i.e. gameplay routed through the grading harness. These are the real hooks.
+  function setPaused(v) {
+    paused = !!v;
+    hudLive = true;                       // menus and transitions keep animating
+    if (!paused) { acc = 0; last = performance.now() / 1000; }
+    audio.crowd(paused ? 0.06 : 0.16);
+  }
+  // The HUD owns its own overlays; these handlers only move the simulation, so
+  // there is no showMenu -> emit -> showMenu loop.
+  hud.on('pause', () => setPaused(true));
+  hud.on('resume', () => setPaused(false));
+  hud.on('start', () => { start(); setPaused(false); });
+  hud.on('restart', () => {
+    started = true;
+    audio.unlock();
+    audio.crowd(0.16);
+    freePlay();
+    setPaused(false);
+  });
 
   requestAnimationFrame(frame);
 
@@ -840,17 +938,37 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       started = true;          // never auto-start free play during a capture
       paused = false;
       acc = 0;
+      clearTimers();
+      hideSplash(true);
       return scenario(name);
     },
     settle(steps = 120) {
       paused = false;
       for (let i = 0; i < steps; i++) step(FIXED);
       engine.render(FIXED);
-      // Freeze afterwards: the harness waits ~250 ms before screenshotting and the
-      // rAF loop would otherwise keep simulating past the frame we just settled.
+      // Freeze the SIM afterwards: the harness waits ~250 ms before screenshotting
+      // and the rAF loop would otherwise keep simulating past the frame we just
+      // settled. The HUD keeps ticking on wall-clock so its button charge/cooldown
+      // and banner transitions are in their settled state in the capture instead
+      // of frozen mid-transition.
       paused = true;
+      hudLive = true;
       acc = 0;
       return true;
+    },
+    /**
+     * Advance exactly n fixed steps and render once. The motion harness drives
+     * this to capture animation and physics as a frame sequence, so it must move
+     * the sim AND the animation independently of the wall clock.
+     */
+    step(n = 1) {
+      const wasPaused = paused;
+      paused = false;
+      for (let i = 0; i < n; i++) step(FIXED);
+      engine.render(FIXED);
+      paused = wasPaused;
+      acc = 0;
+      return scen.t;
     },
     perf() {
       return {

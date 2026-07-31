@@ -913,10 +913,17 @@ export function createHud(root) {
   }
 
   function setPaused(v) {
-    try {
-      if (window.__debug && typeof window.__debug.pause === 'function') window.__debug.pause(!!v);
-    } catch (e) { /* ignore */ }
-    emit(v ? 'pause' : 'resume');
+    const evt = v ? 'pause' : 'resume';
+    // Prefer the owner's hook. Routing gameplay through the debug harness is only
+    // a fallback for a host that never wired hud.on('pause'|'resume').
+    const wired = (listeners.pause && listeners.pause.length)
+      || (listeners.resume && listeners.resume.length);
+    if (!wired) {
+      try {
+        if (window.__debug && typeof window.__debug.pause === 'function') window.__debug.pause(!!v);
+      } catch (e) { /* ignore */ }
+    }
+    emit(evt, v);
   }
 
   function togglePause() {
