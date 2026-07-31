@@ -9,14 +9,13 @@ import * as THREE from 'three';
 import { ballSkin } from './ball-texture.js';
 import { BALL_R } from '../core/constants.js';
 
-// Direction the key sun travels, mirroring the engine's main DirectionalLight at
-// (34, 62, 24) aimed at the origin. The contact shadow is projected along it so
-// it sits *beside* the ball the way the reference does, instead of hiding
-// directly underneath where the camera can never see it.
-const SUN = { x: -34, y: -62, z: -24 };
-const SUN_DX = (SUN.x / -SUN.y) * 0.78;
-const SUN_DZ = (SUN.z / -SUN.y) * 0.78;
-const SUN_AZ = Math.atan2(SUN_DZ, SUN_DX);
+// Direction the key sun travels. QUERIED from the engine (`createBall({ sunDir })`)
+// rather than hardcoded, so moving the key light in core/engine.js moves the
+// contact shadow with it instead of silently drifting out of sync. The fallback
+// below only exists so the module still works if nothing passes one in.
+const SUN_FALLBACK = { x: -34, y: -62, z: -24 };
+// how far the projected ellipse leans away from the ball, per unit of height
+const SUN_LEAN = 0.78;
 
 const TRAIL = 20;                 // ribbon samples
 const TRAIL_ON = 11;              // m/s where the trail starts to appear
@@ -25,6 +24,25 @@ const TRAIL_FULL = 28;            // m/s where it is at full strength
 export function createBall(opts = {}) {
   const group = new THREE.Group();
   group.name = 'ball';
+
+  // `sunDir` may be a vector or a function returning one (engine.sunDir).
+  const readSun = () => {
+    const s = typeof opts.sunDir === 'function' ? opts.sunDir() : opts.sunDir;
+    return (s && s.y < -0.05) ? s : SUN_FALLBACK;
+  };
+  let SUN_DX = 0, SUN_DZ = 0, SUN_AZ = 0;
+  function refreshSun() {
+    const s = readSun();
+    SUN_DX = (s.x / -s.y) * SUN_LEAN;
+    SUN_DZ = (s.z / -s.y) * SUN_LEAN;
+    SUN_AZ = Math.atan2(SUN_DZ, SUN_DX);
+  }
+  refreshSun();
+
+  // Goal volumes the contact shadow must not project through. Registered by the
+  // caller; without them a ball sitting in the net still paints an ellipse on the
+  // pitch beyond the goal line.
+  const goalVolumes = [];
 
   // group -> squash (world-axis scale) -> mesh (spin). Scaling the parent means
   // the impact squash always flattens along Y no matter how the ball is rotated.
@@ -212,11 +230,24 @@ export function createBall(opts = {}) {
       0.013,
       body.pos.z + body.pos.y * SUN_DZ,
     );
+    // Once the ball is inside a goal it is lit through the net, and the ellipse
+    // would otherwise land on the pitch *beyond* the goal line where no shadow
+    // can physically be. Fade it out over the last half metre before the line.
+    let occl = 1;
+    for (let i = 0; i < goalVolumes.length; i++) {
+      const g = goalVolumes[i];
+      const inZ = Math.abs(body.pos.z) < g.halfW + 0.35;
+      const past = g.side > 0 ? body.pos.x - g.lineX : g.lineX - body.pos.x;
+      if (inZ && past > -0.5 && body.pos.y < g.height + 0.4) {
+        occl = Math.min(occl, Math.max(0, -past / 0.5));
+      }
+    }
     // tight and dark on the deck, wide and faint the higher the ball climbs;
     // stretched slightly along the sun azimuth, as a real low-sun shadow is
     const s = BALL_R * (2.85 + 5.0 * (1 - k));
     shadow.scale.set(s * 1.22, s, 1);
-    shadowMat.uniforms.uOpacity.value = 0.80 * k * k + 0.05;
+    shadow.visible = occl > 0.01;
+    shadowMat.uniforms.uOpacity.value = (0.80 * k * k + 0.05) * occl;
     shadowMat.uniforms.uCore.value = 0.14 + 0.38 * k;
 
     // --- trail --------------------------------------------------------------
@@ -275,6 +306,20 @@ export function createBall(opts = {}) {
     group, mesh, shadow, trail,
     sync, reset,
     setTrail(v) { trailOn = !!v; },
+    /** re-read the key light (call if the lighting owner moves the sun) */
+    refreshSun,
+    /** goals whose interior must suppress the projected contact shadow */
+    setGoals(goals) {
+      goalVolumes.length = 0;
+      for (const g of goals || []) {
+        goalVolumes.push({
+          side: g.side,
+          lineX: g.posts ? g.posts[0].x : g.side * 30,
+          halfW: g.posts ? Math.abs(g.posts[1].z) : 4,
+          height: g.crossbarY ?? 3,
+        });
+      }
+    },
     dispose() {
       mesh.geometry.dispose(); mesh.material.dispose();
       shadow.geometry.dispose(); shadowMat.dispose();

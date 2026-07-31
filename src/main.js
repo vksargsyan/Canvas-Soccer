@@ -26,6 +26,8 @@ import {
 
 const FIXED = 1 / 60;
 const MAX_FRAME = 0.25;
+const SLIDE_COOL = 1.2;          // seconds between slide tackles — published to the HUD
+const PASS_REACH = 2.2;          // how close the user must be to the ball to pass it
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 function angleLerp(a, b, t) {
@@ -55,7 +57,11 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   const vfx = createVfx(scene);
   vfx.setCamera(camera);
 
-  const ballView = createBall({ style: 'classic' });
+  // The ball reads the key-light direction off the engine rather than keeping its
+  // own copy, and it needs the goal volumes so its faked contact shadow stops at
+  // the goal line instead of projecting onto the pitch beyond it.
+  const ballView = createBall({ style: 'classic', sunDir: engine.sunDir });
+  ballView.setGoals(goals);
   scene.add(ballView.group);
   scene.add(ballView.shadow);
   scene.add(ballView.trail);
@@ -120,7 +126,17 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     },
     onPass(a) {
       vfx.scuff({ x: a.pos.x, y: 0, z: a.pos.z }, TEAMS[a.team].dir, 0, { count: 6 });
-      audio.kick(0.6);
+      audio.pass();
+    },
+    /** the ball hit the net — a goal, or a shot into the side netting */
+    onNet(p, speed) { audio.net(clamp((speed || 8) / 24, 0.25, 1)); },
+    /** goalkeeper stopped it: catch, parry or smother */
+    onKeeperSave(a, kind) {
+      audio.save();
+      director.shake(kind === 'parry' ? 0.22 : 0.12);
+      vfx.burst({ x: a.pos.x, y: 1.0, z: a.pos.z },
+        { count: 10, speed: 3.0, color: 0xffffff, flashSize: 2.0 });
+      hud.toast(kind === 'catch' ? 'CAUGHT!' : 'SAVED!', 1.2);
     },
     onTackle(a) {
       vfx.scuff({ x: a.pos.x, y: 0, z: a.pos.z }, a.vel.x, a.vel.z, { count: 18 });
@@ -137,10 +153,21 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       }
     },
     onKeeperDive() { audio.tackle(); },
-    onPhase(p) {
+    onPhase(p, half) {
       if (p === 'kickoff') { hud.banner('KICK OFF', '', 1.4); audio.whistle(1); }
+      if (p === 'restart') hud.setLabels('defend');
+      if (p === 'halftime') {
+        const s = match.state.score;
+        audio.whistle(2);
+        hud.banner('HALF TIME', '', 2.4);
+        hud.showMenu('half', 'HALF TIME',
+          `${TEAMS[0].name} ${s[0]} — ${s[1]} ${TEAMS[1].name}`);
+        paused = false;   // the break plays out; the menu is informational
+      }
+      if (p === 'play') { if (match.state.half === 2) hud.showMenu(null); }
       if (p === 'fulltime') {
         const s = match.state.score;
+        audio.whistle(3);
         hud.showMenu('end', 'FULL TIME', `${TEAMS[0].name} ${s[0]} — ${s[1]} ${TEAMS[1].name}`);
       }
     },
@@ -174,6 +201,20 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   };
 
   // ---------------------------------------------------------------- control
+  // Deferred actions on the fixed clock. A kick scheduled through this lands on
+  // the animation's contact frame, so the boot is actually on the ball when the
+  // impulse is applied instead of four frames behind it.
+  const timers = [];
+  function after(t, fn) { timers.push({ t, fn }); }
+  function tickTimers(dt) {
+    for (let i = timers.length - 1; i >= 0; i--) {
+      const e = timers[i];
+      e.t -= dt;
+      if (e.t <= 0) { timers.splice(i, 1); e.fn(); }
+    }
+  }
+  function clearTimers() { timers.length = 0; }
+
   let userAgent = null;
   function selectUser(a) {
     for (const x of agents) { x.control = 'ai'; x.view.setSelected(false); }
@@ -195,6 +236,13 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     if (!a || a.down) return;
     const inp = hud.input;
 
+    const nearBall = Math.hypot(body.pos.x - a.pos.x, body.pos.z - a.pos.z);
+    a.hasBall = nearBall < PASS_REACH && body.pos.y < 1.0;
+    // The second button is PASS on the ball and SWITCH off it; the first is SHOOT
+    // on the ball and SLIDE off it. The label swap uses a wider radius than the
+    // action so the shot charge can start building on the approach.
+    hud.setLabels(nearBall < 4.0 && body.pos.y < 1.6 ? 'attack' : 'defend');
+
     // screen space -> world space using the camera's yaw
     const fwd = new THREE.Vector3();
     camera.getWorldDirection(fwd);
@@ -214,35 +262,84 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       const want = speed * Math.min(1, mag);
       a.vel.x += ((wx / l) * want - a.vel.x) * Math.min(1, ACCEL * dt / Math.max(1, want));
       a.vel.z += ((wz / l) * want - a.vel.z) * Math.min(1, ACCEL * dt / Math.max(1, want));
-      if (!a.anim.busy) a.anim.play(inp.sprint ? 'sprint' : 'run');
+      // carrying the ball reads differently from an empty-handed sprint
+      if (!a.anim.busy) a.anim.play(a.hasBall ? 'dribble' : (inp.sprint ? 'sprint' : 'run'));
     } else {
       a.vel.multiplyScalar(Math.max(0, 1 - 8 * dt));
-      if (!a.anim.busy) a.anim.play('idle');
+      if (!a.anim.busy) a.anim.play(a.hasBall ? 'dribble' : 'idle');
     }
 
     const pressed = inp.consume();
-    const near = Math.hypot(body.pos.x - a.pos.x, body.pos.z - a.pos.z);
+    const near = nearBall;
 
-    if (pressed.switchPressed) { autoSelectNext(); }
+    // The second button is PASS while we are on the ball and SWITCH when we are
+    // not — which is exactly what the HUD's own label mode says it is. Before
+    // this, `passPressed` was set by the button and the E key and read by nobody.
+    if (pressed.passPressed && a.hasBall) {
+      passFromUser(a);
+    } else if (pressed.switchPressed) {
+      autoSelectNext();
+    }
+
     if (pressed.slide && a.cool <= 0) {
-      a.cool = 1.2;
+      a.cool = SLIDE_COOL;
+      hud.setCooldown('primary', SLIDE_COOL);
       a.anim.play('tackle', { force: true });
       events.onTackle(a);
     }
 
     // shoot on release of the charge
-    if (!inp.shootHeld && a.shootWasHeld && near < PLAYER_R + BALL_R + 0.5) {
-      const dir = new THREE.Vector3(TEAMS[a.team].dir, 0, 0);
-      const gx = TEAMS[a.team].dir * HALF_W;
-      dir.set(gx - a.pos.x, 0, clamp(-a.pos.z * 0.4, -3, 3));
+    if (!inp.shootHeld && a.shootWasHeld && near < PLAYER_R + BALL_R + 0.9 && !a.kickLock) {
       const power = 16 + a.shootCharge * 18;
-      body.kick(dir, power, 2.4 + a.shootCharge * 3.6, 0);
+      const lift = 2.4 + a.shootCharge * 3.6;
+      // Start the wind-up NOW and apply the impulse on the contact frame, so the
+      // boot visibly meets the ball. Aim is re-evaluated at contact time.
       a.anim.play('kick', { force: true });
-      events.onShot(a, power);
+      const delay = a.anim.contactDelay ?? 0.07;
+      a.kickLock = delay + 0.05;
+      a.cool = Math.max(a.cool, delay + 0.1);
+      after(delay, () => {
+        a.kickLock = 0;
+        const gx = TEAMS[a.team].dir * HALF_W;
+        const dir = new THREE.Vector3(gx - a.pos.x, 0, clamp(-a.pos.z * 0.4, -3, 3));
+        body.kick(dir, power, lift, 0);
+        events.onShot(a, power);
+      });
     }
     a.shootWasHeld = inp.shootHeld;
     a.shootCharge = inp.shootCharge;
     a.cool = Math.max(0, a.cool - dt);
+    if (a.kickLock) a.kickLock = Math.max(0, a.kickLock - dt);
+  }
+
+  /** user pass: pick the best forward teammate and lay it off on the contact frame */
+  function passFromUser(a) {
+    if (a.kickLock) return;
+    const dir = TEAMS[a.team].dir;
+    let best = null, bs = -1e9;
+    for (const m of agents) {
+      if (m === a || m.team !== a.team || m.down || m.isKeeper) continue;
+      const dx = m.pos.x - a.pos.x, dz = m.pos.z - a.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 2.0 || d > 26) continue;
+      // reward players ahead of the ball and roughly in front of the carrier
+      const score = (dx * dir) * 1.5 - Math.abs(dz) * 0.35 - d * 0.25;
+      if (score > bs) { bs = score; best = m; }
+    }
+    a.anim.play('pass', { force: true });
+    const delay = a.anim.passContactDelay ?? 0.07;
+    a.kickLock = delay + 0.05;
+    a.cool = Math.max(a.cool, delay + 0.1);
+    after(delay, () => {
+      a.kickLock = 0;
+      const tx = best ? best.pos.x + best.vel.x * 0.28 : a.pos.x + dir * 12;
+      const tz = best ? best.pos.z + best.vel.z * 0.28 : a.pos.z;
+      const d = Math.hypot(tx - a.pos.x, tz - a.pos.z) || 1;
+      const power = clamp(9 + d * 0.72, 10, 26);
+      body.kick(new THREE.Vector3(tx - a.pos.x, 0, tz - a.pos.z), power, 0.7, 0);
+      events.onPass(a);
+      if (best) selectUser(best);
+    });
   }
 
   function autoSelectNext() {

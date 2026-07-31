@@ -354,9 +354,13 @@ export function createBallBody(cfg = {}) {
     let hit = false;
     let struck = 0;
 
-    // back sheet slopes away from the crossbar: shallow at the top, deep at the foot
-    const v = clamp(1 - pos.y / barY, 0, 1);
-    const sheet = gx + side * (depth * 0.42 + depth * 0.58 * v);
+    // Back sheet slopes away from the crossbar: shallow at the top, deep at the
+    // foot. world/goal.js owns that profile and publishes it as sheetDepthAt(y);
+    // the fallback ramp only runs for a goal object that predates the accessor.
+    const sheetDepth = g.sheetDepthAt
+      ? g.sheetDepthAt(pos.y)
+      : depth * (0.42 + 0.58 * clamp(1 - pos.y / barY, 0, 1));
+    const sheet = gx + side * sheetDepth;
     const pen = side * (pos.x - sheet) + BALL_R;
     if (pen > 0) {
       pos.x -= side * pen * ease;
@@ -429,6 +433,18 @@ export function separatePlayers(players, dt) {
 // player <-> ball
 // ---------------------------------------------------------------------------
 
+// Vertical collider bands for a 2.0 m chibi. `r` scales the horizontal radius,
+// `e` is restitution, `lift` is how much of the closing speed becomes upward
+// velocity, `spin` how much tangential slip becomes yaw spin.
+const BAND_FOOT_Y = 0.42;      // boots / shins
+const BAND_TORSO_Y = 1.18;     // hips, chest, arms
+const BAND_HEAD_Y = 1.90;      // the big chibi head
+const BAND = {
+  foot: { r: 0.72, e: 0.26, lift: 0.06, spin: 1.15, kind: 'foot' },
+  torso: { r: 1.00, e: 0.40, lift: 0.22, spin: 0.90, kind: 'torso' },
+  head: { r: 0.78, e: 0.62, lift: 0.55, spin: 0.55, kind: 'head' },
+};
+
 /**
  * Nudge / dribble contact. Returns the player who touched the ball this step, or null.
  * Deliberate kicks come from sim/match.js and sim/ai.js via body.kick().
@@ -439,15 +455,23 @@ export function separatePlayers(players, dt) {
  */
 export function ballPlayerContact(body, players, dt, events = {}) {
   let touched = null;
-  const reach = PLAYER_R + BALL_R * 0.95;
   for (const p of players) {
     if (p.down) continue;
+    // Three bands, not one cylinder: the boots are narrow and dead, the torso is
+    // wide and soft, the head is narrow and lively. One cutoff made a header and
+    // a shin deflection behave identically.
+    const y = body.pos.y;
+    let band;
+    if (y < BAND_FOOT_Y) band = BAND.foot;
+    else if (y < BAND_TORSO_Y) band = BAND.torso;
+    else if (y < BAND_HEAD_Y) band = BAND.head;
+    else continue;                                  // sails over
+
+    const reach = PLAYER_R * band.r + BALL_R * 0.95;
     const dx = body.pos.x - p.pos.x;
     const dz = body.pos.z - p.pos.z;
     const d2 = dx * dx + dz * dz;
     if (d2 > reach * reach) continue;
-    // torso/head band — above this the ball sails over the player
-    if (body.pos.y > 1.55 + BALL_R) continue;
     const d = Math.sqrt(d2) || 1e-4;
     const nx = dx / d, nz = dz / d;
 
@@ -462,12 +486,13 @@ export function ballPlayerContact(body, players, dt, events = {}) {
     let impact = 0;
     if (vn < 0) {
       // restitution against the body, resolved in the player's frame
-      const e = body.pos.y > 0.95 ? 0.52 : 0.34;
-      body.vel.x -= (1 + e) * vn * nx;
-      body.vel.z -= (1 + e) * vn * nz;
+      body.vel.x -= (1 + band.e) * vn * nx;
+      body.vel.z -= (1 + band.e) * vn * nz;
       // scuffed contact spins the ball
       const vt = -relx * nz + relz * nx;
-      body.spin.y += vt * 0.9;
+      body.spin.y += vt * band.spin;
+      // a head or chest contact pops the ball up; a boot keeps it down
+      if (band.lift > 0) body.vel.y += Math.min(-vn, 14) * band.lift;
       impact = -vn;
     }
     // momentum transfer: a striker running onto the ball drives it on
@@ -489,8 +514,9 @@ export function ballPlayerContact(body, players, dt, events = {}) {
 
     body.lastTouch = p;
     body.lastTouchTeam = p.team;
+    body.lastTouchPart = band.kind;
     touched = p;
-    if (events.onTouch) events.onTouch(p, impact);
+    if (events.onTouch) events.onTouch(p, impact, band.kind);
   }
   return touched;
 }

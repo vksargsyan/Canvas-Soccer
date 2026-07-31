@@ -20,6 +20,7 @@ import { HALF_W, GOAL_HALF_W, GOAL_H, GOAL_DEPTH, POST_R, BALL_R } from '../core
 
 const D_TOP = 1.05;              // how far back the net's top rail sits
 const D_BOT = GOAL_DEPTH;        // how far back the net meets the ground
+const clampNum = (v, a, b) => (v < a ? a : v > b ? b : v);
 const NET_CELL = 0.19;           // world size of one net mesh cell
 
 const NX = 15;                   // back panel columns (across Z)
@@ -291,6 +292,17 @@ export function createGoal(side = 1) {
     ],
     crossbarY: GOAL_H,
     backX,
+    /**
+     * Depth (metres behind the goal line) of the sloping back sheet at height y.
+     * The sim must call this instead of approximating the slope, so the net
+     * response tracks the real geometry if D_TOP / D_BOT ever change.
+     */
+    sheetDepthAt(y) {
+      const v = 1 - clampNum(y / GOAL_H, 0, 1);   // v = 0 at the crossbar
+      return D_TOP + (D_BOT - D_TOP) * v;
+    },
+    depthTop: D_TOP,
+    depthBottom: D_BOT,
     contains,
     impulse: (p, v, s) => { impulse(p.x, p.y, p.z, v.x, v.y, v.z, s); settled = false; },
     update,

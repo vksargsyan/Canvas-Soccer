@@ -289,10 +289,20 @@ export function createEngine(canvas) {
   resize();
   window.addEventListener('resize', resize);
 
+  // Direction the key light TRAVELS (from the lamp toward the pitch), normalised.
+  // Anything that fakes a projected shadow — the ball's contact ellipse, decals —
+  // must read this instead of hardcoding a copy, so moving the key here moves
+  // every faked shadow with it.
+  const sunTravel = new THREE.Vector3();
+  function sunDir() {
+    return sunTravel.copy(sun.target.position).sub(sun.position).normalize();
+  }
+
   return {
     renderer, scene, camera, composer, sun, hemi, rim, bounce, sky,
     bloom, grade,
     render, resize, setQuality, stats,
+    sunDir,
     get quality() { return tier; },
   };
 }
