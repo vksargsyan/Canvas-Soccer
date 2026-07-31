@@ -294,8 +294,8 @@ export function pitchMacroTexture(o = {}) {
   return memo(key, () => {
     const EX = hw + mx, EZ = hd + mz;
     const W = 1024, H = Math.round((W * EZ) / EX / 4) * 4;
-    const { c, g } = canvas2d(W, H);
-    const img = g.createImageData(W, H);
+    // No canvas here on purpose — see the DataTexture note at the end of this function.
+    const img = new ImageData(W, H);
 
     const Tb = tables(4, 2207, 4);      // broad blotches
     const Tw = tables(3, 8821, 10);     // wear break-up
@@ -388,11 +388,22 @@ export function pitchMacroTexture(o = {}) {
         img.data[i + 3] = paint * 255;
       }
     }
-    g.putImageData(img, 0, 0);
 
-    const t = new THREE.CanvasTexture(c);
+    // Upload the bytes directly as a DataTexture rather than round-tripping through
+    // the canvas.
+    //
+    // This map is a data map, not a picture: RGB is an albedo multiplier and ALPHA is
+    // an unrelated paint-integrity mask. A canvas backing store holds RGBA
+    // PREMULTIPLIED, so drawing this through one scales RGB by that alpha — and alpha
+    // goes to ~0 exactly where wear is highest. The goalmouths came back as near-black
+    // (8,11,20) instead of worn brown, painting a large dark blob at each goal.
+    // DataTexture takes the bytes verbatim, so the two channels stay independent.
+    const t = new THREE.DataTexture(img.data, W, H, THREE.RGBAFormat);
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     t.colorSpace = THREE.NoColorSpace;
+    t.magFilter = THREE.LinearFilter;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.generateMipmaps = true;
     t.anisotropy = 8;
     t.flipY = false;
     t.needsUpdate = true;
