@@ -167,9 +167,9 @@ export function headTexture(o = {}) {
     // ---- base skin with a soft top-lit gradient --------------------------
     g.fillStyle = css(skin); g.fillRect(0, 0, W, H);
     const grd = g.createLinearGradient(0, 0, 0, H);
-    grd.addColorStop(0.00, rgba(lighten(skin, 0.30), 0.55));
-    grd.addColorStop(0.34, rgba(hi, 0.22));
-    grd.addColorStop(0.62, 'rgba(0,0,0,0)');
+    grd.addColorStop(0.00, rgba(lighten(skin, 0.16), 0.30));
+    grd.addColorStop(0.30, rgba(hi, 0.10));
+    grd.addColorStop(0.60, 'rgba(0,0,0,0)');
     grd.addColorStop(1.00, rgba(deep, 0.55));
     g.fillStyle = grd; g.fillRect(0, 0, W, H);
 
@@ -187,10 +187,9 @@ export function headTexture(o = {}) {
 
     const cx = FX(0.25);
     // ---- feature anchors (sphere uv) -------------------------------------
-    const V_EYE = 0.530, V_BROW = 0.578, V_NOSE = 0.472, V_MOUTH = 0.410;
+    const V_EYE = 0.558, V_BROW = 0.612, V_NOSE = 0.500, V_MOUTH = 0.443;
     const eyeY = FY(V_EYE);
     const sep = 0.255;                   // eye centre offset, in head radii of arc
-    const eyeDx = sep * AX;
 
     // ---- cranial / cheek shaping ----------------------------------------
     // temple shadow either side of the face
@@ -223,13 +222,41 @@ export function headTexture(o = {}) {
     }
     g.restore();
 
+    // ---- stubble / beard shadow (under the mouth paint, over the skin) ----
+    if (stubble > 0) {
+      const dens = stubble >= 2 ? 1.0 : 0.5;
+      const beardCol = mixHex(skin, darken(brow, 0.10), 0.52 + dens * 0.34);
+      g.save();
+      g.beginPath();
+      g.moveTo(cx - 0.74 * AX, FY(0.615));
+      g.quadraticCurveTo(cx - 0.62 * AX, FY(0.412), cx, FY(0.386));
+      g.quadraticCurveTo(cx + 0.62 * AX, FY(0.412), cx + 0.74 * AX, FY(0.615));
+      g.lineTo(cx + 0.74 * AX, FY(0.225));
+      g.lineTo(cx - 0.74 * AX, FY(0.225));
+      g.closePath();
+      g.clip();
+      g.globalAlpha = 0.40 + dens * 0.45;
+      g.fillStyle = css(beardCol);
+      g.fillRect(cx - 0.8 * AX, FY(0.65), 1.6 * AX, FY(0.18) - FY(0.65));
+      g.globalAlpha = 0.26 + dens * 0.14;
+      const y0 = FY(0.63), y1 = FY(0.20);
+      for (let y = y0; y < y1; y += 3) {
+        for (let x = cx - 0.78 * AX; x < cx + 0.78 * AX; x += 3) {
+          const n = vnoise(x / 3.1, y / 3.1);
+          if (n > 0.60) { g.fillStyle = css(darken(beardCol, 0.40)); g.fillRect(x, y, 2, 2); }
+          else if (n < 0.30) { g.fillStyle = css(lighten(beardCol, 0.22)); g.fillRect(x, y, 2, 2); }
+        }
+      }
+      g.restore();
+    }
+
     // ---- brow ridge shading (the geometry has a real ridge under this) ---
     g.save();
-    g.globalAlpha = 0.32;
+    g.globalAlpha = 0.20;
     for (const s of [-1, 1]) {
       g.fillStyle = rgba(shadow, 1);
       g.beginPath();
-      g.ellipse(cx + s * sep * AX, eyeY - 0.02 * AY, 0.30 * AX, 0.22 * AY, 0, 0, Math.PI * 2);
+      g.ellipse(cx + s * sep * AX, eyeY - 0.03 * AY, 0.27 * AX, 0.17 * AY, 0, 0, Math.PI * 2);
       g.fill();
     }
     g.restore();
@@ -245,9 +272,9 @@ export function headTexture(o = {}) {
     g.restore();
 
     // ---- eyes -------------------------------------------------------------
-    const eyeW = 0.235 * AX, eyeH = 0.150 * AY;
+    const eyeW = 0.200 * AX, eyeH = 0.122 * AY;
     const tilt = [0.00, 0.05, -0.03, 0.07, 0.02, 0.09][variant % 6];
-    const irisR = 0.108 * AX;
+    const irisR = 0.076 * AX;
 
     function drawEye(s) {
       const ex = cx + s * sep * AX;
@@ -256,8 +283,8 @@ export function headTexture(o = {}) {
       g.rotate(s * tilt);
 
       // socket shadow
-      g.fillStyle = rgba(shadow, 0.55);
-      g.beginPath(); g.ellipse(0, 0, eyeW * 1.12, eyeH * 1.20, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = rgba(shadow, 0.16);
+      g.beginPath(); g.ellipse(0, 0, eyeW * 1.20, eyeH * 1.45, 0, 0, Math.PI * 2); g.fill();
 
       // sclera — almond, flatter on top
       g.beginPath();
@@ -272,9 +299,9 @@ export function headTexture(o = {}) {
 
       // sclera shading from the lid
       const sg = g.createLinearGradient(0, -eyeH, 0, eyeH);
-      sg.addColorStop(0, 'rgba(88,72,60,0.55)');
-      sg.addColorStop(0.45, 'rgba(120,105,92,0.10)');
-      sg.addColorStop(1, 'rgba(150,130,115,0.20)');
+      sg.addColorStop(0, 'rgba(96,80,66,0.38)');
+      sg.addColorStop(0.45, 'rgba(140,124,110,0.06)');
+      sg.addColorStop(1, 'rgba(160,142,126,0.14)');
       g.fillStyle = sg; g.fillRect(-eyeW, -eyeH * 1.2, eyeW * 2, eyeH * 2.4);
 
       // iris
@@ -298,10 +325,10 @@ export function headTexture(o = {}) {
       g.beginPath(); g.arc(gx + irisR * 0.30, eyeH * 0.06 + irisR * 0.34, irisR * 0.16, 0, Math.PI * 2); g.fill();
       g.restore();
 
-      // upper lash line, thick and dark
+      // upper lash line
       g.lineCap = 'round'; g.lineJoin = 'round';
-      g.strokeStyle = 'rgba(24,16,12,0.95)';
-      g.lineWidth = eyeH * 0.34;
+      g.strokeStyle = 'rgba(38,25,18,0.92)';
+      g.lineWidth = eyeH * 0.25;
       g.beginPath();
       g.moveTo(-eyeW * 1.02, eyeH * 0.02);
       g.quadraticCurveTo(-eyeW * 0.5, -eyeH * 1.16, 0.02, -eyeH * 1.06);
@@ -369,7 +396,7 @@ export function headTexture(o = {}) {
     const noseW = (0.115 + (variant % 3) * 0.012) * AX;
     // side shadows down the bridge
     g.save();
-    g.globalAlpha = 0.42;
+    g.globalAlpha = 0.55;
     for (const s of [-1, 1]) {
       const ng = g.createLinearGradient(cx + s * noseW * 1.5, 0, cx + s * noseW * 0.35, 0);
       ng.addColorStop(0, rgba(shadow, 0));
@@ -451,49 +478,14 @@ export function headTexture(o = {}) {
     g.beginPath();
     g.ellipse(cx, mY + 0.150 * AY, mW * 0.55, 0.045 * AY, 0, 0, Math.PI * 2); g.fill();
 
-    // ---- stubble / beard shadow ------------------------------------------
-    if (stubble > 0) {
-      g.save();
-      const beardCol = mixHex(skin, brow, 0.62 + stubble * 0.25);
-      g.globalAlpha = 0.55 + stubble * 0.35;
-      g.fillStyle = css(beardCol);
-      g.beginPath();
-      g.moveTo(cx - 0.72 * AX, FY(0.545));
-      g.quadraticCurveTo(cx - 0.70 * AX, FY(0.34), cx, FY(0.305));
-      g.quadraticCurveTo(cx + 0.70 * AX, FY(0.34), cx + 0.72 * AX, FY(0.545));
-      g.lineTo(cx + 0.72 * AX, FY(0.20));
-      g.lineTo(cx - 0.72 * AX, FY(0.20));
-      g.closePath();
-      // knock the mouth back out
-      g.save(); g.clip();
-      g.fillRect(cx - 0.75 * AX, FY(0.60), 1.5 * AX, FY(0.18) - FY(0.60));
-      g.globalCompositeOperation = 'destination-out';
-      g.fillStyle = 'rgba(0,0,0,1)';
-      g.beginPath();
-      g.ellipse(cx, mY + 0.015 * AY, mW * 1.05, 0.10 * AY, 0, 0, Math.PI * 2); g.fill();
-      g.restore();
-      // speckle so it is not a flat mask
-      g.globalCompositeOperation = 'source-over';
-      g.globalAlpha = 0.25;
-      for (let y = FY(0.56); y < FY(0.20); y += 3) {
-        for (let x = cx - 0.72 * AX; x < cx + 0.72 * AX; x += 3) {
-          if (vnoise(x / 3.5, y / 3.5) > 0.62) {
-            g.fillStyle = css(darken(beardCol, 0.35));
-            g.fillRect(x, y, 2, 2);
-          }
-        }
-      }
-      g.restore();
-    }
-
     // ---- ears --------------------------------------------------------------
     // painted at u = 0.5 (+X) and u = 0.0/1.0 (-X); the ear geometry projects here
     const earPositions = [FX(0.5), FX(0.0), FX(0.0) - W];
     for (let i = 0; i < earPositions.length; i++) {
       const ex = earPositions[i];
       const s = i === 0 ? 1 : -1;
-      const eY = FY(0.500);
-      const ew = 0.16 * AX, eh = 0.26 * AY;
+      const eY = FY(0.525);
+      const ew = 0.105 * AX, eh = 0.26 * AY;
       g.save();
       g.translate(ex, eY);
       // outer shading
@@ -681,7 +673,7 @@ export function shirtTexture(o = {}) {
       g.restore();
     }
 
-    weaveOverlay(g, W, H, 0.085);
+    weaveOverlay(g, W, H, 0.050);
     roundShade(g, W, H, 0.25);
 
     // hem
@@ -837,7 +829,7 @@ export function shortsTexture(o = {}) {
 
     // number on the wearer's right-front thigh
     const nf = contrastOn(base) === 0xffffff ? 0xffffff : 0x15181d;
-    outlinedNumber(g, number, W * 0.36, H * 0.55, H * 0.30, nf, darken(trim, 0.2));
+    outlinedNumber(g, number, W * 0.36, H * 0.50, H * 0.25, nf, darken(trim, 0.2));
 
     roundShade(g, W, H, 0.25);
     return tex(c, { aniso: 8 });
