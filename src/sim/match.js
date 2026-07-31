@@ -214,7 +214,7 @@ export function createMatch(ctx) {
 
     // hold long enough for the taker to actually walk onto the ball
     const walk = sp.taker ? Math.hypot(sp.taker.pos.x - x, sp.taker.pos.z - z) / (RUN_SPEED * 0.95) : 0.6;
-    setPhase('restart', clamp(walk + 0.55, 0.9, 3.2));
+    setPhase('restart', clamp(walk + 0.5, 0.9, 2.6));
     if (events.onPhase) events.onPhase(kind, team);
   }
 
@@ -245,7 +245,9 @@ export function createMatch(ctx) {
     ai().strike(taker, state2, tz > taker.pos.z ? 1 : -1, () => {
       const ex = tx - taker.pos.x, ez = tz - taker.pos.z;
       const d = Math.hypot(ex, ez) || 1;
-      if (kind === 'throw') body.place(taker.pos.x, 1.75, taker.pos.z);
+      // Release from the touchline itself, not from the thrower's feet — he
+      // stands OUTSIDE the line, and a ball spawned there is instantly out again.
+      if (kind === 'throw') body.place(sp.x, 1.75, sp.z);
       else body.place(sp.x, BALL_R, sp.z);
       const power = kind === 'throw' ? clamp(d * 1.05, 8, 17)
         : kind === 'goalkick' ? 30

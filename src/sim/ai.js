@@ -470,7 +470,11 @@ export function createAI(ctx) {
       const power = clamp(19 + d * 0.60, 20, 33);
       // a shot from range is lifted so it arrives in the air; close range is driven
       const lift = clamp(2.2 + d * 0.09, 1.6, 4.4) * (look.q > 0.6 ? 0.7 : 1.0);
-      const curl = clamp(-az * 0.9, -7, 7) + wobble(a, 3);
+      // POSITIVE curl bends right RELATIVE TO THE SHOT DIRECTION, so the sign
+      // that bends a shot back toward the goal centre flips with the team's
+      // attacking direction. Without the `dir` factor one side curls it wide.
+      const dir = TEAMS[a.team].dir;
+      const curl = clamp(-az * 0.9 * dir, -7, 7) + wobble(a, 3);
       body.kick(_v, power, lift, curl);
       body.lastTouch = a; body.lastTouchTeam = a.team;
       if (events.onShot) events.onShot(a, power);
@@ -550,9 +554,10 @@ export function createAI(ctx) {
 
   /** ball above knee height and close: head it */
   function tryHeader(a) {
-    if (body.pos.y < 1.25 || body.pos.y > 2.6) return false;
-    if (distToBall(a) > 1.5) return false;
-    if ((a.cool || 0) > 0) return false;
+    if (body.pos.y < 1.35 || body.pos.y > 2.5) return false;
+    if (distToBall(a) > 1.25) return false;
+    if ((a.cool || 0) > 0 || (a.headCool || 0) > 0) return false;
+    a.headCool = 0.85;
     const dir = TEAMS[a.team].dir;
     const look = shotLook(a);
     const attacking = toU(a.team, a.pos.x) > 12;
@@ -584,6 +589,7 @@ export function createAI(ctx) {
 
     a.cool = Math.max(0, (a.cool || 0) - dt);
     a.touchCool = Math.max(0, (a.touchCool || 0) - dt);
+    a.headCool = Math.max(0, (a.headCool || 0) - dt);
 
     // mid-strike: plant and hold the aim, do not run out from under the ball
     if ((a.kickLock || 0) > 0) {
@@ -646,18 +652,7 @@ export function createAI(ctx) {
       }
       seek(a, tx, tz, dt, sp);
       locomote(a, true, far > 4.5);
-
-      // slide tackle: only from behind/beside a real carrier, never a wild lunge
-      if (carrier && carrier.team !== t && d < 2.3 && a.cool <= 0) {
-        const closing = (a.vel.x * (carrier.pos.x - a.pos.x) + a.vel.z * (carrier.pos.z - a.pos.z)) > 0;
-        const chance = dt * (2.4 * (SKILL[a.slot] ?? 0.8)) * (closing ? 1 : 0.3);
-        if (rng.chance(chance)) {
-          a.cool = 1.35;
-          stats.tackles++;
-          if (a.anim) a.anim.play('tackle', { force: true });
-          if (events.onTackle) events.onTackle(a);
-        }
-      }
+      challenge(a, dt, d);
       return;
     }
 
@@ -990,7 +985,7 @@ export function createAI(ctx) {
       // whoever is taking it walks onto the ball
       if (sp && sp.taker === a) {
         const s = Math.sign(sp.z) || 1;
-        const off = sp.kind === 'throw' ? s * 1.15 : 0;
+        const off = sp.kind === 'throw' ? s * 0.8 : 0;
         const dd = seek(a, sp.x - (sp.kind === 'goalkick' ? TEAMS[a.team].dir * 1.0 : 0), sp.z + off,
           dt, RUN_SPEED * 1.1, 0.18);
         face(a, sp.aimX ?? body.pos.x, sp.aimZ ?? body.pos.z);
@@ -1061,6 +1056,7 @@ export function createAI(ctx) {
     for (const a of agents) {
       a.cool = 0;
       a.touchCool = 0;
+      a.headCool = 0;
       a.kickLock = 0;
       a.diving = false;
       a.diveAge = 0;
