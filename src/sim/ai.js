@@ -321,15 +321,19 @@ export function createAI(ctx) {
 
     let u, z = f.z * zSquash + zSlide;
 
+    // A shape defined PURELY relative to the ball has no way out of its own
+    // half: pin a side back and its outlets are pinned back with it, so it can
+    // only ever pass sideways. The midfield and the striker therefore also have
+    // a floor — a height they hold regardless of how deep the ball is.
     if (f.line === 1) {
       // Back pair: one line, goal-side of the ball, never dragged past it.
-      u = clamp(bu + (att ? -15 : -12), -25, att ? 3 : -2);
+      u = clamp(bu + (att ? -14 : -12), -25, att ? 4 : -2);
       // when the ball is wide, the far full-back tucks in to cover the middle
       const wideSide = Math.sign(bz) || 1;
       if (Math.sign(f.z) !== wideSide) z = lerp(z, bz * 0.20, 0.45);
     } else if (f.line === 2) {
       // Midfield: supports the ball, one on each flank, ahead of the back line.
-      u = clamp(bu + (att ? -2 : -3), -20, att ? 17 : 9);
+      u = clamp(Math.max(bu + (att ? -1 : -3), att ? -14 : -20), -20, att ? 18 : 9);
       // the ball-side midfielder pushes wide to give an outlet, the far one tucks
       const wideSide = Math.sign(bz) || 1;
       if (Math.sign(f.z) === wideSide) z = clamp(bz + wideSide * 6.5, -HALF_D + 3, HALF_D - 3);
@@ -337,7 +341,7 @@ export function createAI(ctx) {
     } else {
       // Striker: stays high as the outlet, and when we have the ball he runs
       // into the emptiest channel ahead of it.
-      u = clamp(bu + (att ? 10 : 8), -6, 26);
+      u = clamp(Math.max(bu + (att ? 9 : 7), att ? 3 : -2), -4, 26);
       if (att) z = runChannel(a, toX(t, u));
       else z = clamp(bz * 0.35, -10, 10);
     }
@@ -552,6 +556,50 @@ export function createAI(ctx) {
     a.touchCool = Math.max(0, (a.touchCool || 0) - dt);
   }
 
+  /**
+   * Contest the ball. Without this a carrier simply cannot be dispossessed —
+   * tracking him forever is not defending. Two tiers:
+   *   * a touch-tight defender pokes the ball out of the carrier's stride
+   *   * from a stride further back he commits to a slide, which also knocks the
+   *     ball loose rather than only knocking the man over
+   */
+  function challenge(a, dt, d) {
+    if (!carrier || carrier.team === a.team || carrier === a) return;
+    a.pokeCool = Math.max(0, (a.pokeCool || 0) - dt);
+    const skill = SKILL[a.slot] ?? 0.8;
+
+    if (d < 1.5 && a.pokeCool <= 0) {
+      if (rng.chance(dt * (1.9 + 2.2 * skill))) {
+        a.pokeCool = 0.75;
+        stats.tackles++;
+        // poke it away from the carrier, roughly out toward this defender's side
+        const ax = a.pos.x - carrier.pos.x, az = a.pos.z - carrier.pos.z;
+        _v.set(ax + rng.gauss() * 1.4, 0, az + rng.gauss() * 1.4);
+        if (_v.lengthSq() < 0.05) _v.set(TEAMS[a.team].dir, 0, rng.unit());
+        body.kick(_v, 5.5 + rng.float() * 4.5, 0.2, 0);
+        body.lastTouch = a; body.lastTouchTeam = a.team;
+        carrier.cool = Math.max(carrier.cool || 0, 0.35);
+        carrier = null;
+        return;
+      }
+    }
+
+    if (d < 2.4 && (a.cool || 0) <= 0) {
+      const closing = (a.vel.x * (carrier.pos.x - a.pos.x) + a.vel.z * (carrier.pos.z - a.pos.z)) > 0;
+      if (rng.chance(dt * 2.2 * skill * (closing ? 1 : 0.25))) {
+        a.cool = 1.35;
+        stats.tackles++;
+        _v.set(carrier.pos.x - a.pos.x, 0, carrier.pos.z - a.pos.z);
+        if (_v.lengthSq() < 0.05) _v.set(TEAMS[a.team].dir, 0, 0);
+        body.kick(_v, 9 + rng.float() * 5, 1.6, 0);
+        body.lastTouch = a; body.lastTouchTeam = a.team;
+        carrier = null;
+        if (a.anim) a.anim.play('tackle', { force: true });
+        if (events.onTackle) events.onTackle(a);
+      }
+    }
+  }
+
   /** ball above knee height and close: head it */
   function tryHeader(a) {
     if (body.pos.y < 1.35 || body.pos.y > 2.5) return false;
@@ -601,6 +649,7 @@ export function createAI(ctx) {
     // ---------------- on the ball ----------------
     if (a === carrier) {
       a.hasBall = true;
+      a.carry = (a.carry || 0) + Math.hypot(a.vel.x, a.vel.z) * dt;
       if (a.cool <= 0) {
         const look = shotLook(a);
         const press = pressure(a, 3.0);
@@ -622,7 +671,8 @@ export function createAI(ctx) {
         const p = bestPass(a);
         if (p) {
           const solo = pressure(a, 3.6);
-          const need = solo >= 2 ? 0 : solo >= 1 ? 3.5 : 9.0;
+          // the further he has already run with it, the readier he is to release
+          const need = (solo >= 2 ? 0 : solo >= 1 ? 3.5 : 9.0) - clamp(a.carry - 4, 0, 12) * 0.85;
           if (p.score > need) { doPass(a, p); return; }
         }
       }
@@ -630,6 +680,7 @@ export function createAI(ctx) {
       return;
     }
     a.hasBall = false;
+    a.carry = 0;
 
     // ---------------- loose ball in the air ----------------
     if (d < 1.6 && tryHeader(a)) return;
@@ -667,6 +718,7 @@ export function createAI(ctx) {
       const dd = seek(a, clamp(cx, -HALF_W + 2, HALF_W - 2), clamp(cz, -HALF_D + 2, HALF_D - 2), dt, RUN_SPEED);
       face(a, bx, bz);
       locomote(a, dd > 1.0, dd > 7);
+      challenge(a, dt, d);
       return;
     }
 
@@ -712,7 +764,11 @@ export function createAI(ctx) {
 
     a.cool = Math.max(0, (a.cool || 0) - dt);
     a.reactT = Math.max(0, (a.reactT || 0) - dt);
-    a.diveT = Math.max(0, (a.diveT || 0) - dt);
+    // Saving and re-diving need SEPARATE gates. Sharing one cooldown means the
+    // 0.9 s set when the dive starts also blocks the save it was launched for,
+    // so the keeper flies through the ball every time.
+    a.diveCool = Math.max(0, (a.diveCool || 0) - dt);
+    a.saveCool = Math.max(0, (a.saveCool || 0) - dt);
 
     // ---- holding the ball ------------------------------------------------
     if (a.hold > 0) {
@@ -772,13 +828,13 @@ export function createAI(ctx) {
       && Math.abs(by - handY) < 1.15;
     if (a.diving) a.diveAge = (a.diveAge || 0) + dt;
 
-    if (nearHands && a.cool <= 0 && Math.abs(bx - gx) < 5.5) {
+    if (nearHands && a.saveCool <= 0 && Math.abs(bx - gx) < 6.5) {
       const speed = Math.hypot(body.vel.x, body.vel.y, body.vel.z);
       const central = Math.abs(bz - a.pos.z) < 1.1;
       if (speed < 21 && central && by < 2.1) {
         // clean catch
         a.hold = 1.15;
-        a.cool = 1.4;
+        a.saveCool = 1.4; a.diveCool = 1.2;
         a.diving = false;
         holder = a;
         body.place(a.pos.x - s * 0.55, 1.05, a.pos.z);
@@ -793,7 +849,7 @@ export function createAI(ctx) {
       _v.set(-s * 1.0, 0, away * 1.25);
       body.kick(_v, clamp(speed * 0.45, 7, 15), 3.4, 0);
       body.lastTouch = a; body.lastTouchTeam = t;
-      a.cool = 0.7;
+      a.saveCool = 0.5; a.diveCool = 0.45;
       stats.saves++; stats.parries++;
       if (a.anim && a.anim.current !== 'keeperDive') a.anim.play('keeperDive', { dir: away, force: true });
       if (events.onKeeperSave) events.onKeeperSave(a, 'parry');
@@ -801,7 +857,7 @@ export function createAI(ctx) {
     }
 
     // ---- dive decision ----------------------------------------------------
-    if (onTarget && a.reactT <= 0 && !a.diving && a.cool <= 0 && tHit < 0.85) {
+    if (onTarget && a.reactT <= 0 && !a.diving && a.diveCool <= 0 && tHit < 0.95) {
       const lateral = zHit - a.pos.z;
       if (Math.abs(lateral) > 0.55 || yHit > 1.5) {
         a.diving = true;
@@ -809,7 +865,7 @@ export function createAI(ctx) {
         a.diveDir = Math.sign(lateral) || 1;
         a.diveHigh = yHit > 1.5;
         a.diveTarget = clamp(zHit, -GOAL_HALF_W - 0.9, GOAL_HALF_W + 0.9);
-        a.cool = 0.9;
+        a.diveCool = 1.0;
         stats.dives++;
         if (a.anim) a.anim.play('keeperDive', { dir: a.diveDir, force: true });
         if (events.onKeeperDive) events.onKeeperDive(a);
@@ -842,8 +898,8 @@ export function createAI(ctx) {
       if (a.anim && !a.anim.busy) a.anim.play(dd > 1 ? 'run' : 'keeperIdle');
       a.faceX = -s; a.faceZ = 0;
       // smother a ball at his feet
-      if (Math.hypot(a.pos.x - bx, a.pos.z - bz) < 1.0 && by < 0.9 && a.cool <= 0) {
-        a.hold = 1.0; a.cool = 1.3; holder = a;
+      if (Math.hypot(a.pos.x - bx, a.pos.z - bz) < 1.0 && by < 0.9 && a.saveCool <= 0) {
+        a.hold = 1.0; a.saveCool = 1.3; a.diveCool = 1.0; holder = a;
         stats.saves++; stats.smothers++;
         if (a.anim) a.anim.play('keeperCatch', { force: true });
         if (events.onKeeperSave) events.onKeeperSave(a, 'smother');
@@ -1062,6 +1118,10 @@ export function createAI(ctx) {
       a.diveAge = 0;
       a.hold = 0;
       a.reactT = 0;
+      a.diveCool = 0;
+      a.saveCool = 0;
+      a.pokeCool = 0;
+      a.carry = 0;
       a.shotLive = false;
       a.sawKick = body.kickId;
       a.hasBall = false;

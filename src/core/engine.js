@@ -3,9 +3,18 @@
 //   createEngine(canvas) -> { renderer, scene, camera, composer, render(dt),
 //                             resize(), setQuality(tier), stats }
 //
-// Chain: RenderPass -> UnrealBloomPass -> OutputPass (ACES + sRGB) -> FXAA -> screen.
-// Note that three only applies tone mapping when rendering to the default
-// framebuffer, so with a composer OutputPass owns tone mapping and colour space.
+// Chain:
+//
+//   RenderPass  -> HDR linear scene (MSAA 4x where the driver supports it)
+//   BloomPass   -> floodlights, the ball's specular and every additive VFX bloom
+//   OutputPass  -> ACES filmic tone map + sRGB transfer
+//   GradePass   -> print-film grade (lift/gain/saturation), radial chromatic
+//                  aberration, vignette and a fine grain floor
+//   FXAAPass    -> edge clean-up after the grade, so CA fringes get smoothed too
+//
+// three only tone maps when rendering to the default framebuffer, so with a
+// composer OutputPass owns tone mapping and colour space; the grade therefore
+// runs in display space where lift/gain behave like a colour-grading LUT.
 
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -17,9 +26,88 @@ import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { envMap, skyTexture } from './assets.js';
 
 export const QUALITY_TIERS = {
-  low: { pixelRatio: 1.0, shadow: 1024, bloom: 0.24, msaa: 0, fxaa: true, shadowRadius: 2 },
-  medium: { pixelRatio: 1.0, shadow: 2048, bloom: 0.32, msaa: 4, fxaa: true, shadowRadius: 3 },
-  high: { pixelRatio: 1.5, shadow: 2048, bloom: 0.38, msaa: 4, fxaa: true, shadowRadius: 4 },
+  low: { pixelRatio: 1.0, shadow: 1024, bloom: 0.20, msaa: 0, fxaa: true, grade: true },
+  medium: { pixelRatio: 1.0, shadow: 2048, bloom: 0.26, msaa: 4, fxaa: true, grade: true },
+  high: { pixelRatio: 1.5, shadow: 2048, bloom: 0.30, msaa: 4, fxaa: true, grade: true },
+};
+
+// ---------------------------------------------------------------------------
+// Grade / vignette / chromatic aberration
+// ---------------------------------------------------------------------------
+// The reference has a very specific look: deeply saturated grass, warm skin and
+// kit, cool shadow, and a soft dark corner falloff that keeps the eye on the
+// ball. This is a lift/gamma/gain grade plus a per-channel radial resample, i.e.
+// exactly what a 3D LUT would bake — done analytically so there is no texture to
+// ship and it stays tweakable.
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uAberration: { value: 0.0016 },
+    uVignette: { value: new THREE.Vector2(0.72, 1.34) }, // (inner, power)
+    uVigStrength: { value: 0.36 },
+    uSaturation: { value: 1.16 },
+    uContrast: { value: 1.055 },
+    uLift: { value: new THREE.Vector3(0.006, 0.010, 0.020) },
+    uGain: { value: new THREE.Vector3(1.030, 1.012, 0.972) },
+    uGrain: { value: 0.016 },
+    uTime: { value: 0 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform float uAberration;
+    uniform vec2  uVignette;
+    uniform float uVigStrength;
+    uniform float uSaturation;
+    uniform float uContrast;
+    uniform vec3  uLift;
+    uniform vec3  uGain;
+    uniform float uGrain;
+    uniform float uTime;
+    varying vec2 vUv;
+
+    float hash(vec2 p) {
+      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+    }
+
+    void main() {
+      vec2 c = vUv - 0.5;
+      float r2 = dot(c, c);
+
+      // --- chromatic aberration: transverse only, quadratic with radius, so the
+      // centre of frame (where the ball lives) stays perfectly registered.
+      float k = uAberration * r2 * 4.0;
+      vec3 col;
+      col.r = texture2D(tDiffuse, vUv + c * k).r;
+      col.g = texture2D(tDiffuse, vUv).g;
+      col.b = texture2D(tDiffuse, vUv - c * k).b;
+
+      // --- grade -----------------------------------------------------------
+      col = max(vec3(0.0), col);
+      col = col * uGain + uLift * (1.0 - col);
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, uSaturation);
+      col = (col - 0.5) * uContrast + 0.5;
+
+      // gentle highlight roll so bloom + white kit never clip to a flat plate
+      col = col - 0.055 * col * col * col;
+
+      // --- vignette ---------------------------------------------------------
+      float d = length(c * vec2(1.0, 1.08)) * 1.4142;
+      float v = 1.0 - uVigStrength * pow(smoothstep(uVignette.x, 1.0, d), uVignette.y);
+      col *= v;
+
+      // --- grain: breaks up banding in the sky gradient ---------------------
+      float g = hash(vUv * vec2(1024.0, 1024.0) + uTime) - 0.5;
+      col += g * uGrain * (1.0 - 0.7 * l);
+
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }`,
 };
 
 export function createEngine(canvas) {
@@ -42,7 +130,7 @@ export function createEngine(canvas) {
 
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.20;
+  renderer.toneMappingExposure = 1.02;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.setClearColor(0x8ec6ee, 1);
@@ -68,29 +156,44 @@ export function createEngine(canvas) {
   scene.add(sky);
 
   // --- lighting ------------------------------------------------------------
-  const hemi = new THREE.HemisphereLight(0xcfeaff, 0x4c6f34, 1.35);
+  // Balance note: a chibi head is a large smooth sphere and catches far more of a
+  // hard key than a stubby limb does, which used to blow the faces out to near
+  // white. The fix is a softer key with more of the level carried by the sky
+  // hemisphere and the environment: same overall brightness, much flatter
+  // terminator on spheres. Exposure came down to match and the grade pass puts
+  // the contrast back where the reference has it.
+  const hemi = new THREE.HemisphereLight(0xd6ecff, 0x5c7f42, 1.95);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff4dd, 2.9);
+  const sun = new THREE.DirectionalLight(0xfff2d6, 1.95);
   sun.position.set(34, 62, 24);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -46;
-  sun.shadow.camera.right = 46;
-  sun.shadow.camera.top = 34;
-  sun.shadow.camera.bottom = -34;
+  sun.shadow.camera.left = -44;
+  sun.shadow.camera.right = 44;
+  sun.shadow.camera.top = 33;
+  sun.shadow.camera.bottom = -33;
   sun.shadow.camera.near = 12;
-  sun.shadow.camera.far = 160;
-  sun.shadow.bias = -0.0012;
-  sun.shadow.normalBias = 0.045;
+  sun.shadow.camera.far = 170;
+  // One shadow texel is 88/2048 = 43 mm here. A constant bias of that order is
+  // enough to kill acne on the near-planar turf without lifting contact shadows
+  // off the boots (peter-panning); the normal bias does the rest on curved kit.
+  sun.shadow.bias = -0.00042;
+  sun.shadow.normalBias = 0.024;
   sun.shadow.radius = 3;
   scene.add(sun);
   scene.add(sun.target);
   sun.target.position.set(0, 0, 0);
 
-  const rim = new THREE.DirectionalLight(0x9fc8ff, 0.55);
+  // Cool sky-side rim, and a soft warm bounce from the far stand so the shadow
+  // side of a player never goes flat black.
+  const rim = new THREE.DirectionalLight(0xa8ceff, 0.42);
   rim.position.set(-34, 26, -30);
   scene.add(rim);
+
+  const bounce = new THREE.DirectionalLight(0xffe6c2, 0.26);
+  bounce.position.set(-18, 6, 34);
+  scene.add(bounce);
 
   const env = envMap(renderer);
   if (env) { scene.environment = env; }
@@ -107,11 +210,17 @@ export function createEngine(canvas) {
   const renderPass = new RenderPass(scene, camera);
   composer.addPass(renderPass);
 
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x * 0.5, size.y * 0.5), 0.34, 0.62, 0.86);
+  // radius 0.68 keeps the glow tight enough that the pitch does not haze over,
+  // threshold 0.92 means only genuinely hot pixels (lamps, star flashes, the
+  // ball's specular hit) bloom at all.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x * 0.5, size.y * 0.5), 0.30, 0.68, 0.92);
   composer.addPass(bloom);
 
   const outputPass = new OutputPass();
   composer.addPass(outputPass);
+
+  const grade = new ShaderPass(GradeShader);
+  composer.addPass(grade);
 
   const fxaa = new ShaderPass(FXAAShader);
   composer.addPass(fxaa);
@@ -133,9 +242,9 @@ export function createEngine(canvas) {
       sun.shadow.mapSize.set(q.shadow, q.shadow);
       if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
     }
-    sun.shadow.radius = q.shadowRadius;
     bloom.strength = q.bloom;
     fxaa.enabled = q.fxaa;
+    grade.enabled = q.grade;
     resize();
   }
 
@@ -151,9 +260,15 @@ export function createEngine(canvas) {
     fxaa.material.uniforms.resolution.value.set(1 / (w * pr), 1 / (h * pr));
   }
 
+  // Grain has to be deterministic for the capture harness, so it advances on the
+  // fixed step count rather than on the wall clock.
+  let gradeTick = 0;
+
   function render(dt) {
     tickFps(dt || 1 / 60);
     sky.position.copy(camera.position);
+    gradeTick = (gradeTick + 1) % 64;
+    grade.material.uniforms.uTime.value = gradeTick * 0.137;
     renderer.info.reset();
     composer.render(dt || 1 / 60);
   }
@@ -173,7 +288,8 @@ export function createEngine(canvas) {
   window.addEventListener('resize', resize);
 
   return {
-    renderer, scene, camera, composer, sun, hemi, rim, sky,
+    renderer, scene, camera, composer, sun, hemi, rim, bounce, sky,
+    bloom, grade,
     render, resize, setQuality, stats,
     get quality() { return tier; },
   };
