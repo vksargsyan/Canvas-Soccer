@@ -602,7 +602,11 @@ export function createVfx(scene) {
     s.t = 0;
     s.max = 0.55 + 0.25 * power;
     s.speed = 20 * power + 8;
-    s.width = 0.30 + 0.26 * power;
+    // Reference width check: in minifootball_12 the salmon streak is roughly half
+    // a ball diameter (BALL_R*2 = 0.48) thick. At 0.30+0.26*power it was a slab
+    // three times that, which read as an opaque wedge laid across whoever stood
+    // behind it rather than as a trail welded to the ball.
+    s.width = 0.13 + 0.13 * power;
     s.track = !!ball();
     s.idx = ribbons.add({
       x: p.x, y: s.oy, z: p.z, ax: ux, ay: 0, az: uz,

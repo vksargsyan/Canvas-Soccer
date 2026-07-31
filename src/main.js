@@ -671,10 +671,14 @@ export function boot({ canvas, hudRoot, splash } = {}) {
         keeper.anim.play('keeperDive', { dir: -1, force: true });
         keeper.pos.set(28.4, 0, 0.2);
       };
+      // The settled frame lands at t = 2.0. The last shot has to be late enough
+      // that the ball is still SHORT of the goal line when the shutter opens —
+      // fired at 1.52 it had already travelled 12 m and was in the netting, so
+      // the graded frame showed a dive with no ball in it.
       beat(0.60, fire);
       beat(0.74, dive);
-      beat(1.52, fire);
-      beat(1.66, dive);
+      beat(1.68, fire);
+      beat(1.74, dive);
       scen.step = (dt, t) => {
         // slide the keeper along his dive so he travels toward the corner
         if (keeper.anim.current === 'keeperDive') {
