@@ -33,14 +33,14 @@ const B = 18;            // core rect half-length along Z
 const R_BOARD = 6.0;     // ad boards          -> 34.0 x 24.0
 const R_TRACK = 8.5;     // barrier / bowl lip -> 36.5 x 26.5
 
-const L1_ROWS = 11, L1_RUN = 1.15, L1_RISE = 0.66;
+const L1_ROWS = 14, L1_RUN = 0.92, L1_RISE = 0.55;
 const L1_R0 = R_TRACK + 1.25, L1_Y0 = 1.55;
 
 const FASCIA_R = L1_R0 + L1_ROWS * L1_RUN;              // 22.4
 const FASCIA_Y0 = L1_Y0 + L1_ROWS * L1_RISE;            // 9.11
 const FASCIA_Y1 = FASCIA_Y0 + 5.2;                      // 14.31
 
-const L2_ROWS = 13, L2_RUN = 1.18, L2_RISE = 0.78;
+const L2_ROWS = 17, L2_RUN = 0.96, L2_RISE = 0.63;
 const L2_R0 = FASCIA_R + 1.6, L2_Y0 = FASCIA_Y1;
 const L2_R1 = L2_R0 + L2_ROWS * L2_RUN;                 // 39.34
 const L2_Y1 = L2_Y0 + L2_ROWS * L2_RISE;                // 24.45
@@ -56,15 +56,6 @@ const AISLES_1 = 16, AISLES_2 = 20;
 const CORNER_SEGS = 20, STRAIGHT_STEP = 6.2;
 
 const srng = makeRng(0xb0a7);
-
-// Crowd palette: blocks of home / away / neutral colour, like a real end.
-const HOME = [0xd8262c, 0xe8474d, 0xffffff, 0xf0d0d0, 0x9c1218, 0xf5d020];
-const AWAY = [0x2450c8, 0x3a6ae0, 0xffffff, 0xf5d020, 0x17357f, 0x9fc0ff];
-const NEUTRAL = [0x22a05a, 0xeb6d1f, 0x7c3ec9, 0x28b8c8, 0xe8e8e8, 0x3d3d3d,
-  0x0f8f6d, 0xff9b2f, 0xb21f2a, 0x182444];
-const SKINS = [0xffdcb8, 0xf4c79c, 0xe3ab78, 0xcb8b53, 0xa96b3c, 0x7d4a26, 0x54301a];
-const HAIRS = [0x150d06, 0x2a1a0d, 0x4a2c14, 0x7a4a1e, 0xb98a3e, 0xd8c48a,
-  0x1a1a1a, 0x6b6b6b, 0xc9c9c9, 0x8c2b16];
 
 // --------------------------------------------------------------- ring helpers
 
@@ -208,7 +199,9 @@ function crowdAnim(mat, uniforms, cell) {
       vMapUv = vMapUv * vec2(${cell[0].toFixed(6)}, ${cell[1].toFixed(6)}) + aCell;
     `);
   };
-  mat.customProgramCacheKey = () => 'cs-crowd-billboard';
+  // The cell scale is baked into the shader, so it MUST be part of the cache
+  // key or a second material silently reuses the first one's program.
+  mat.customProgramCacheKey = () => `cs-crowd-${cell[0].toFixed(5)}-${cell[1].toFixed(5)}`;
   return mat;
 }
 
@@ -241,10 +234,10 @@ export function createStadium() {
   const roofTex = TX.roofTexture();
 
   const matConcrete = track(new THREE.MeshStandardMaterial({
-    map: concreteTex, roughness: 0.97, metalness: 0.0, color: 0x9c988e,
+    map: concreteTex, roughness: 0.97, metalness: 0.0, color: 0xa8a39a,
   }));
   const matSeat = track(new THREE.MeshStandardMaterial({
-    map: seatTex, roughness: 0.9, metalness: 0.0, color: 0x9aa0a4,
+    map: seatTex, roughness: 0.92, metalness: 0.0, color: 0x6e7175,
   }));
   const matStair = track(new THREE.MeshStandardMaterial({
     map: stairTex, roughness: 0.94, color: 0x9ba09d,
@@ -364,7 +357,7 @@ export function createStadium() {
       const seats = sampleLoop(pa, SEAT_SP, (i % 2) * 0.5 + i * 0.13);
       for (const s of seats) {
         if (isAisleU(s.frac)) continue;
-        if (srng.float() < (tierIdx === 0 ? 0.055 : 0.10)) continue;
+        if (srng.float() < (tierIdx === 0 ? 0.028 : 0.06)) continue;
         crowd.push({
           x: s.x + s.nx * run * 0.45, z: s.z + s.nz * run * 0.45,
           y, yaw: Math.atan2(-s.nx, -s.nz),
@@ -516,8 +509,8 @@ export function createStadium() {
   {
     const sheet = TX.crowdSheet();
     const n = crowd.length;
-    const geo = new THREE.PlaneGeometry(1.06, 1.12);
-    geo.translate(0, 0.50, 0);
+    const geo = new THREE.PlaneGeometry(1.12, 1.28);
+    geo.translate(0, 0.58, 0);
     const phase = new Float32Array(n);
     const flip = new Float32Array(n);
     const cells = new Float32Array(n * 2);
@@ -561,6 +554,56 @@ export function createStadium() {
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     group.add(mesh);
     disposables.push(mesh);
+  }
+
+  // --- flags waved in the stands -------------------------------------------
+  // Reuses the crowd billboard shader (a 1x1 "sheet"), so they sway with the
+  // crowd and cost one extra draw call.
+  {
+    const picks = [];
+    for (let i = 0; i < crowd.length; i += 233) {
+      const c = crowd[i];
+      if (c.row < 2) continue;
+      picks.push(c);
+    }
+    const n = picks.length;
+    if (n) {
+      const geo = new THREE.PlaneGeometry(2.15, 1.42);
+      geo.translate(0, 1.48, 0);
+      const phase = new Float32Array(n);
+      const flip = new Float32Array(n);
+      const cells = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        phase[i] = srng.range(0, Math.PI * 2);
+        flip[i] = srng.float() < 0.5 ? -1 : 1;
+      }
+      geo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phase, 1));
+      geo.setAttribute('aFlip', new THREE.InstancedBufferAttribute(flip, 1));
+      geo.setAttribute('aCell', new THREE.InstancedBufferAttribute(cells, 2));
+      track(geo);
+      const mat = crowdAnim(track(new THREE.MeshBasicMaterial({
+        map: TX.bannerTexture('#ffffff', '#2450c8'), transparent: false,
+        alphaTest: 0.4, side: THREE.DoubleSide, fog: true,
+      })), uniforms, [1, 1]);
+      const flags = new THREE.InstancedMesh(geo, mat, n);
+      flags.frustumCulled = false;
+      for (let i = 0; i < n; i++) {
+        const c = picks[i];
+        const sc = srng.range(0.85, 1.25);
+        dummy.position.set(c.x, c.y, c.z);
+        dummy.rotation.set(0, c.yaw, 0);
+        dummy.scale.set(sc, sc, sc);
+        dummy.updateMatrix();
+        flags.setMatrixAt(i, dummy.matrix);
+        const k = srng.range(0.9, 1.05);
+        col.setRGB(k, k, k);
+        flags.setColorAt(i, col);
+      }
+      flags.instanceMatrix.needsUpdate = true;
+      if (flags.instanceColor) flags.instanceColor.needsUpdate = true;
+      group.add(flags);
+      disposables.push(flags);
+    }
   }
 
   // --- supporter banners tied to the front barrier --------------------------
@@ -731,40 +774,33 @@ export function createStadium() {
     group.add(pm);
   }
 
-  // dugouts / subs benches on the near touchline
+  // Dugouts / subs benches, tucked behind the ad boards so their roofs never
+  // float over the boards at pitch level but still read from above.
   {
     const shellMat = track(new THREE.MeshStandardMaterial({
-      color: 0x445064, roughness: 0.5, metalness: 0.15, side: THREE.DoubleSide,
+      color: 0x2f3a4e, roughness: 0.55, metalness: 0.15,
     }));
-    const glassMat = track(new THREE.MeshStandardMaterial({
-      color: 0x9fd8ef, roughness: 0.15, metalness: 0.2, transparent: true, opacity: 0.35,
-      side: THREE.DoubleSide,
-    }));
-    const benchMat = track(new THREE.MeshStandardMaterial({ color: 0xc8ced4, roughness: 0.6 }));
-    const zLine = HALF_D + 1.7;
+    const benchMat = track(new THREE.MeshStandardMaterial({ color: 0xc4cad0, roughness: 0.6 }));
+    const zLine = HALF_D + 2.9;
     for (const sx of [-1, 1]) {
       const g = new THREE.Group();
       g.position.set(sx * 11.5, 0, zLine);
       group.add(g);
-      const roof = new THREE.Mesh(track(new THREE.BoxGeometry(7.6, 0.18, 2.1)), shellMat);
-      roof.position.set(0, 1.95, 0);
+      const roof = new THREE.Mesh(track(new THREE.BoxGeometry(6.8, 0.16, 1.9)), shellMat);
+      roof.position.set(0, 1.30, 0);
       roof.castShadow = true;
       g.add(roof);
-      const backW = new THREE.Mesh(track(new THREE.PlaneGeometry(7.6, 1.9)), glassMat);
-      backW.position.set(0, 0.98, 1.0);
-      g.add(backW);
-      for (const ex of [-3.7, 3.7]) {
-        const side = new THREE.Mesh(track(new THREE.PlaneGeometry(2.1, 1.9)), glassMat);
-        side.rotation.y = Math.PI / 2;
-        side.position.set(ex, 0.98, 0);
-        g.add(side);
-      }
-      const bench = new THREE.Mesh(track(new THREE.BoxGeometry(6.9, 0.16, 0.48)), benchMat);
-      bench.position.set(0, 0.58, 0.35);
-      g.add(bench);
-      const back = new THREE.Mesh(track(new THREE.BoxGeometry(6.9, 0.52, 0.12)), benchMat);
-      back.position.set(0, 0.90, 0.66);
+      const back = new THREE.Mesh(track(new THREE.BoxGeometry(6.8, 1.30, 0.14)), shellMat);
+      back.position.set(0, 0.65, 0.90);
       g.add(back);
+      for (const ex of [-3.4, 3.4]) {
+        const post = new THREE.Mesh(track(new THREE.BoxGeometry(0.14, 1.30, 1.9)), shellMat);
+        post.position.set(ex, 0.65, 0);
+        g.add(post);
+      }
+      const bench = new THREE.Mesh(track(new THREE.BoxGeometry(6.2, 0.14, 0.44)), benchMat);
+      bench.position.set(0, 0.50, 0.30);
+      g.add(bench);
     }
   }
 

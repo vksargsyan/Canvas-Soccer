@@ -136,7 +136,7 @@ export const SURFACES = {
     // blades are lines of constant U.
     bladeFreq: 150, bladeAmp: 0.28, bladeWander: 7.0,
     speckle: 0, speckleCol: [0, 0, 0],
-    weights: [0.30, 0.26, 0.22],
+    weights: [0.36, 0.24, 0.18],
     normalStrength: 3.6, rough: [0.62, 0.92],
     stripes: true,
     wearCol: [1.60, 1.12, 0.74], wearDark: 0.13, blotchAmt: 0.050,
@@ -157,7 +157,7 @@ export const SURFACES = {
   },
   concrete: {
     tile: 4.0,
-    lo: [118, 118, 116], hi: [196, 196, 190], tint: [166, 160, 148], tintAmt: 0.22,
+    lo: [92, 92, 92], hi: [172, 172, 166], tint: [150, 146, 136], tintAmt: 0.26,
     bladeFreq: 0, bladeAmp: 0.0, bladeWander: 0,
     speckle: 0.09, speckleCol: [96, 96, 98],
     weights: [0.40, 0.32, 0.28],
@@ -222,7 +222,10 @@ export function turfTextures(opts = {}) {
           const b2 = Math.sin(u * D.bladeFreq * 2.61 * 6.2831853 + md * 9.0) * 0.5 + 0.5;
           h += D.bladeAmp * (b1 * 0.62 + b2 * 0.38);
         }
+        // one smoothstep of contrast: without it the octaves average out into a
+        // soft mottle and the surface reads as noise rather than as fibre
         h = clamp01(h / wsum);
+        h = h * h * (3 - 2 * h);
         height[y * S + x] = h;
 
         let col = mixc(D.lo, D.hi, h);

@@ -155,28 +155,16 @@ export function adBoardTexture() {
       g.shadowColor = 'rgba(2,20,50,0.55)'; g.shadowBlur = 10; g.shadowOffsetY = 5;
       g.fillStyle = '#ffffff';
       g.font = 'italic 900 78px "Trebuchet MS", Arial Black, sans-serif';
-      g.fillText('CANVAS', 0, -40);
-      g.fillText('SOCCER', 0, 44);
+      g.fillText('CANVAS', 0, -42);
+      g.fillText('SOCCER', 0, 42);
       g.restore();
 
       // crest
       g.save();
-      g.translate(ox + unit * 0.72, H * 0.48);
-      g.scale(1.32, 1.32);
+      g.translate(ox + unit * 0.76, H * 0.47);
+      g.scale(2.05, 2.05);
       g.shadowColor = 'rgba(2,20,50,0.5)'; g.shadowBlur = 8; g.shadowOffsetY = 4;
       drawCrest(g);
-      g.restore();
-
-      // small tagline chevrons
-      g.save();
-      g.globalAlpha = 0.5;
-      g.fillStyle = '#8ed0ff';
-      for (let i = 0; i < 3; i++) {
-        const cx = ox + unit * 0.93 + i * 22;
-        g.beginPath();
-        g.moveTo(cx, H * 0.34); g.lineTo(cx + 14, H * 0.5); g.lineTo(cx, H * 0.66);
-        g.lineTo(cx + 7, H * 0.5); g.closePath(); g.fill();
-      }
       g.restore();
     }
 
@@ -357,7 +345,9 @@ export function crowdSheet() {
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     return {
       texture: t, cols: COLS, rows: ROWS,
-      groups: { home: [0, 1], away: [2, 3], neutral: [4, 5] },
+      // NOTE: textures are uploaded with flipY, so aCell row r samples canvas
+      // row (ROWS-1-r). These indices are already in aCell space.
+      groups: { home: [5, 4], away: [3, 2], neutral: [1, 0] },
     };
   });
 }

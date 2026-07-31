@@ -35,11 +35,14 @@ const PAINT_T = 0.20;
 const SPOT_R = 0.17;
 const PEN_ARC_R = 6.2;
 
-// Ground plane extents. Deliberately runs out to the stadium apron so the strip
-// of grass between the touchline and the ad boards is the same shaded, grained
-// material as the pitch instead of a flat green ring.
-const EX = APRON_X;
-const EZ = APRON_Z;
+// Ground extents. The surface deliberately runs past the touchline all the way
+// to the perimeter boards, so the verge between the pitch and the hoardings is
+// the same grained, shaded material as the pitch rather than a flat green ring.
+// The outline is an offset rounded rectangle so it follows the stadium bowl's
+// radiused corners instead of poking out past them.
+const MARGIN = Math.max(APRON_X - HALF_W, APRON_Z - HALF_D, 6.3);
+const EX = HALF_W + MARGIN;
+const EZ = HALF_D + MARGIN;
 
 const f = (n) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
 
@@ -152,7 +155,7 @@ export function createPitch(opts = {}) {
   const group = new THREE.Group();
   group.name = 'pitch';
 
-  let surface = opts.surface || 'concrete';
+  let surface = opts.surface || 'grass';
 
   const uniforms = {
     uMacro: { value: null },
@@ -197,8 +200,26 @@ export function createPitch(opts = {}) {
   // distinct cache key so this program is never shared with a plain standard mat
   mat.customProgramCacheKey = () => 'pitch-surface-v1';
 
-  const geo = new THREE.PlaneGeometry(EX * 2, EZ * 2, 1, 1);
-  geo.rotateX(-Math.PI / 2);
+  // Offset rounded rectangle. ShapeGeometry emits UVs equal to the shape's local
+  // XY, i.e. metres, so the detail tile repeats every `tile` world units with a
+  // plain 1/tile repeat and never stretches at the rounded corners.
+  const geo = (() => {
+    const s = new THREE.Shape();
+    const r = MARGIN;
+    s.moveTo(-EX + r, -EZ);
+    s.lineTo(EX - r, -EZ);
+    s.quadraticCurveTo(EX, -EZ, EX, -EZ + r);
+    s.lineTo(EX, EZ - r);
+    s.quadraticCurveTo(EX, EZ, EX - r, EZ);
+    s.lineTo(-EX + r, EZ);
+    s.quadraticCurveTo(-EX, EZ, -EX, EZ - r);
+    s.lineTo(-EX, -EZ + r);
+    s.quadraticCurveTo(-EX, -EZ, -EX + r, -EZ);
+    s.closePath();
+    const g = new THREE.ShapeGeometry(s, 10);
+    g.rotateX(-Math.PI / 2);
+    return g;
+  })();
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'pitchSurface';
@@ -211,10 +232,10 @@ export function createPitch(opts = {}) {
   function applySurface(kind) {
     surface = kind;
     const turf = turfTextures({ surface: kind });
-    const rx = (EX * 2) / turf.tile, rz = (EZ * 2) / turf.tile;
+    const rp = 1 / turf.tile;   // UVs are in metres — see the geometry above
     for (const t of [turf.map, turf.normalMap, turf.roughnessMap]) {
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      t.repeat.set(rx, rz);
+      t.repeat.set(rp, rp);
       t.needsUpdate = true;
     }
     mat.map = turf.map;
