@@ -5,8 +5,8 @@
 //            kitStyle, bootColor, build }
 //
 // Proportions (total height 2.0 world units, chibi bobblehead):
-//   sole 0.00 -> ankle 0.06 -> knee 0.34 -> hip 0.64 -> shoulder 1.02
-//   head centre 1.546, chin 1.186, crown 2.02  ->  head is 0.83 tall == 42 %.
+//   sole 0.00 -> ankle 0.06 -> knee 0.34 -> hip 0.64 -> shoulder 1.07
+//   head centre 1.525, chin 1.144, crown 2.026 -> head is 0.88 tall == 44 %.
 //
 // The rig exposes named bones (plain Object3D): root, hips, torso, head,
 // armL/R, forearmL/R, thighL/R, shinL/R, footL/R. animation.js drives only these.
@@ -39,8 +39,9 @@ const THIGH_L = 0.30;
 const SHIN_L = 0.28;
 const TORSO_H = 0.47;
 const HEAD_BONE_Y = 0.50;       // relative to the torso bone
-const HEAD_CENTER = 0.406;      // relative to the head bone
-const HEAD_SY = 1.03, HEAD_SZ = 0.95;
+const HEAD_CENTER = 0.385;      // relative to the head bone
+// egg, not beachball: taller than it is wide, flattened front-to-back
+const HEAD_SX = 0.90, HEAD_SY = 1.09, HEAD_SZ = 0.93;
 const JAW_TAPER = 0.24;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -168,7 +169,7 @@ function skullPoint(az, th, lift = 0) {
   const st = Math.sin(th), ct = Math.cos(th);
   const nx = st * Math.sin(az), ny = ct, nz = st * Math.cos(az);
   const m = HEAD_R * (skullR(nx, ny, nz) + lift);
-  return [nx * m, ny * m * HEAD_SY, nz * m * HEAD_SZ];
+  return [nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ];
 }
 
 function buildHead() {
@@ -179,7 +180,7 @@ function buildHead() {
     const r = Math.hypot(x, y, z) || 1e-6;
     const nx = x / r, ny = y / r, nz = z / r;
     const m = skullR(nx, ny, nz) * HEAD_R;
-    pos.setXYZ(i, nx * m, ny * m * HEAD_SY, nz * m * HEAD_SZ);
+    pos.setXYZ(i, nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ);
   }
   // warp the sphere's own (seam-correct) UVs into face-dense texture space
   const uv = g.getAttribute('uv');
@@ -190,39 +191,45 @@ function buildHead() {
   return g;
 }
 
+/** UV-project in the round frame, then squash with the skull — keeps paint aligned */
+function finishFacePart(parts) {
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  projectUV(m, 0);
+  m.scale(HEAD_SX, HEAD_SY, HEAD_SZ);
+  m.computeVertexNormals();
+  m.translate(0, HEAD_CENTER, 0);
+  return m;
+}
+
 function buildNose(w = 1) {
   const parts = [];
   const R = HEAD_R;
   const add = (g, sx, sy, sz, x, y, z) => { g.scale(sx, sy, sz); g.translate(x, y, z); parts.push(g); };
-  add(new THREE.SphereGeometry(R * 0.100, 10, 8), 0.80 * w, 2.20, 1.00, 0, R * 0.055, R * 0.845);
-  add(new THREE.SphereGeometry(R * 0.118, 12, 9), 1.02 * w, 0.92, 1.05, 0, -R * 0.095, R * 0.895);
+  // bridge, tip, wings — sized so the tip clears the skull by ~0.12 R
+  add(new THREE.SphereGeometry(R * 0.110, 10, 8), 0.78 * w, 2.30, 1.00, 0, R * 0.075, R * 0.855);
+  add(new THREE.SphereGeometry(R * 0.140, 12, 10), 1.00 * w, 0.94, 1.06, 0, -R * 0.075, R * 0.910);
   for (const s of [-1, 1]) {
-    add(new THREE.SphereGeometry(R * 0.076, 8, 6), 1.0, 0.86, 0.92,
-      s * R * 0.090 * w, -R * 0.118, R * 0.840);
+    add(new THREE.SphereGeometry(R * 0.090, 8, 6), 1.0, 0.88, 0.92,
+      s * R * 0.105 * w, -R * 0.105, R * 0.845);
   }
-  const m = mergeGeometries(parts, false);
-  parts.forEach((p) => p.dispose());
-  m.translate(0, HEAD_CENTER, 0);
-  return m;
+  return finishFacePart(parts);
 }
 
 function buildEars() {
   const parts = [];
   const R = HEAD_R;
   for (const s of [-1, 1]) {
-    const outer = new THREE.SphereGeometry(R * 0.250, 10, 10);
-    outer.scale(0.42, 1.00, 0.66);
-    outer.translate(s * R * 1.005, -R * 0.015, -R * 0.055);
+    const outer = new THREE.SphereGeometry(R * 0.255, 10, 10);
+    outer.scale(0.44, 1.00, 0.66);
+    outer.translate(s * R * 1.010, R * 0.010, -R * 0.055);
     parts.push(outer);
-    const lobe = new THREE.SphereGeometry(R * 0.108, 8, 6);
-    lobe.scale(0.48, 1.0, 0.78);
-    lobe.translate(s * R * 0.985, -R * 0.215, -R * 0.045);
+    const lobe = new THREE.SphereGeometry(R * 0.110, 8, 6);
+    lobe.scale(0.50, 1.0, 0.78);
+    lobe.translate(s * R * 0.990, -R * 0.190, -R * 0.045);
     parts.push(lobe);
   }
-  const m = mergeGeometries(parts, false);
-  parts.forEach((p) => p.dispose());
-  m.translate(0, HEAD_CENTER, 0);
-  return m;
+  return finishFacePart(parts);
 }
 
 /** neck: its own cylindrical UVs sample the dark band at the bottom of the face map */
@@ -261,9 +268,9 @@ function hairShell({ inner, outer, puff, nu = 30, nv = 8 }) {
       const th = t0 + (t1 - t0) * t;
       const st = Math.sin(th), ct = Math.cos(th);
       const nx = st * sa, ny = ct, nz = st * ca;
-      const tuck = 1 - 0.06 * smooth(0.70, 1.0, t);
-      const m = HEAD_R * (skullR(nx, ny, nz) * tuck + puff(az, t));
-      pos.push(nx * m, ny * m * HEAD_SY, nz * m * HEAD_SZ);
+      const rim = smooth(0.76, 1.0, t);
+      const m = HEAD_R * (skullR(nx, ny, nz) * (1 - 0.17 * rim) + puff(az, t) * (1 - rim));
+      pos.push(nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ);
       nor.push(nx, ny, nz);
       shade.push(0.52 * t + 0.16 * Math.sin(az * 7 + t * 3) + 0.14);
     }
@@ -368,7 +375,8 @@ function buildHairGeo(style) {
         outer: line(49, 104),
         nv: 11,
         puff: (az, t) => 0.075 * (1 - smooth(0.62, 1.0, t)) + 0.016
-          + 0.34 * Math.max(0, front(az)) ** 1.6 * bump((t - 0.26) / 0.34),
+          + 0.21 * clamp((front(az) + 0.30) / 1.30, 0, 1) ** 0.9
+            * Math.sin(clamp(t / 0.62, 0, 1) * Math.PI) ** 0.7,
       }));
       break;
 
@@ -392,9 +400,16 @@ function buildHairGeo(style) {
         inner: () => 0,
         outer: line(56, 104),
         nu: 34, nv: 10,
-        puff: (az, t) => (0.30 + 0.055 * Math.sin(az * 5) + 0.04 * Math.sin(az * 11 + 1.3)
-          + 0.03 * Math.sin(t * 9 + az * 3)) * (1 - smooth(0.58, 1.0, t)) + 0.018,
+        puff: (az, t) => (0.34 + 0.06 * Math.sin(az * 5) + 0.05 * Math.sin(az * 11 + 1.3)
+          + 0.04 * Math.sin(t * 9 + az * 3)) * (1 - smooth(0.58, 1.0, t)) + 0.018,
       }));
+      for (let i = 0; i < 30; i++) {
+        const az = hs(i * 5 + 9) * TAU;
+        const rimA = line(56, 104)(az) / D2R;
+        const th = (6 + hs(i * 13 + 2) * (rimA - 16)) * D2R;
+        parts.push(onSkull(blobGeo(HEAD_R * (0.13 + 0.05 * hs(i * 3 + 7)), 7), az, th,
+          0.30 + 0.06 * hs(i * 17 + 1)));
+      }
       break;
 
     case 'dreads':
@@ -474,22 +489,23 @@ function buildHairGeo(style) {
  * is buried inside the skull (puff < 0), so no sheet stretches across the head.
  */
 function buildBeard(density = 1) {
-  const inArc = (az) => Math.cos(az) > -0.12;
-  const top = (az) => (72 - 10 * Math.cos(az)) * D2R;
+  const inArc = (az) => Math.cos(az) > -0.10;
+  // sideburn starts high by the ear (74 deg) and drops to below the lip at the chin
+  const top = (az) => (74 + 30 * Math.max(0, Math.cos(az))) * D2R;
   const chin = hairShell({
     inner: top,
-    outer: (az) => (inArc(az) ? (116 + (16 + 18 * density) * Math.cos(az)) * D2R : top(az)),
+    outer: (az) => (inArc(az) ? (114 + (12 + 12 * density) * Math.cos(az)) * D2R : top(az)),
     nu: 28, nv: 7,
     puff: (az, t) => (inArc(az)
-      ? (0.018 + 0.055 * density) * Math.sin(Math.min(1, t * 1.08) * Math.PI) + 0.012
-      : -0.10),
+      ? (0.020 + 0.060 * density) * Math.sin(Math.min(1, t * 1.05) * Math.PI) + 0.016
+      : -0.12),
   });
-  const mtop = () => 96 * D2R;
+  const mtop = () => 90 * D2R;
   const tache = hairShell({
     inner: mtop,
-    outer: (az) => (Math.cos(az) > 0.60 ? 107 * D2R : mtop(az)),
+    outer: (az) => (Math.cos(az) > 0.62 ? 99 * D2R : mtop(az)),
     nu: 22, nv: 3,
-    puff: (az, t) => (Math.cos(az) > 0.60 ? 0.05 * Math.sin(t * Math.PI) + 0.018 : -0.10),
+    puff: (az, t) => (Math.cos(az) > 0.62 ? 0.05 * Math.sin(t * Math.PI) + 0.020 : -0.10),
   });
   return mergeShaded([ensureUv(chin), ensureUv(tache)]);
 }
@@ -590,11 +606,11 @@ export function createPlayer(cfg = {}) {
 
   // ---- shorts (mid-thigh) -------------------------------------------------
   const shortsGeo = lathe([
-    [0.00, 0.298, -0.170],
-    [0.12, 0.322, -0.140],
-    [0.40, 0.320, -0.085],
-    [0.72, 0.314, -0.015],
-    [1.00, 0.294, 0.048],
+    [0.00, 0.316, -0.212],
+    [0.14, 0.324, -0.175],
+    [0.44, 0.316, -0.100],
+    [0.76, 0.306, -0.022],
+    [1.00, 0.292, 0.048],
   ], 20, 12);
   shortsGeo.scale(1, 1, 0.86);
   addMesh(hips, shortsGeo,
@@ -603,21 +619,21 @@ export function createPlayer(cfg = {}) {
       { rough: 0.88, repeat: [5, 2], normalScale: 0.5 }), true);
 
   // plug the open bottom of the shorts lathe
-  const gusset = blobGeo(0.27, 12);
-  gusset.scale(1, 0.52, 0.86);
-  gusset.translate(0, -0.135, 0);
+  const gusset = blobGeo(0.30, 12);
+  gusset.scale(1, 0.50, 0.86);
+  gusset.translate(0, -0.175, 0);
   addMesh(hips, ensureUv(gusset), skinMat(skin));
 
   // ---- torso --------------------------------------------------------------
   const torsoGeo = lathe([
     [0.00, 0.302, -0.030],
-    [0.10, 0.318, 0.030],
-    [0.32, 0.334, 0.170],
-    [0.56, 0.354, 0.315],
-    [0.74, 0.363, 0.420],
-    [0.87, 0.318, 0.495],
-    [0.95, 0.210, 0.540],
-    [1.00, 0.040, 0.562],
+    [0.10, 0.320, 0.030],
+    [0.32, 0.342, 0.170],
+    [0.56, 0.368, 0.315],
+    [0.76, 0.384, 0.428],
+    [0.88, 0.330, 0.502],
+    [0.95, 0.215, 0.546],
+    [1.00, 0.040, 0.566],
   ], 24, 16);
   torsoGeo.scale(1, 1, 0.80);
   const torsoMesh = addMesh(torso, torsoGeo,
@@ -628,8 +644,8 @@ export function createPlayer(cfg = {}) {
   // ---- head ---------------------------------------------------------------
   const headParts = [
     buildHead(),
-    projectUV(buildNose(1 + (faceVariant % 3) * 0.08), HEAD_CENTER),
-    projectUV(buildEars(), HEAD_CENTER),
+    buildNose(1 + (faceVariant % 3) * 0.08),
+    buildEars(),
     buildNeck(),
   ];
   const headMerged = mergeGeometries(headParts, false);
@@ -673,7 +689,7 @@ export function createPlayer(cfg = {}) {
     const side = s < 0 ? 'L' : 'R';
     const arm = new THREE.Object3D();
     arm.name = 'arm' + side;
-    arm.position.set(s * 0.322, TORSO_H - 0.08, 0);
+    arm.position.set(s * 0.345, TORSO_H - 0.075, 0);
     torso.add(arm);
     bones['arm' + side] = arm;
 

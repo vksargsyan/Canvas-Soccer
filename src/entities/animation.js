@@ -29,8 +29,10 @@
 //   arm.z     outward is NEGATIVE for side 'L' (x<0), POSITIVE for side 'R'
 //   rootPitch +lean forward (pivot at the feet)
 //   rootRoll  +tips the top toward -X (the character's right)
-// Everything pivots at the feet, so no pose is ever allowed to push geometry
-// under the turf: rootY is clamped >= 0 for every grounded state.
+// Everything pivots at the feet, and a grounding pass at the end of update()
+// raises the root until the lowest boot point sits on the turf. That is why no
+// state can bury the character in the pitch (the old tackle/knocked bug) and
+// why push-off actually lifts the body during a run.
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2;
@@ -48,6 +50,12 @@ const NB = BONES.length;
 
 // side sign: which way is "outward" for the shoulder Z rotation
 const SIDE = { L: -1, R: 1 };
+
+// Pre-built bone-name lookup so the per-frame pose code never builds a string.
+const KEY = {
+  L: { thigh: 'thighL', shin: 'shinL', foot: 'footL', arm: 'armL', fore: 'forearmL' },
+  R: { thigh: 'thighR', shin: 'shinR', foot: 'footR', arm: 'armR', fore: 'forearmR' },
+};
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -185,7 +193,7 @@ const C_SHIN = [0, 0.20, 0.18, 1.05, 0.45, 1.10, 0.80, 0.60, 1, 0.20];
 
 /* GETUP — roll to a side, push up on one hand, plant, rise with an overshoot. */
 const G_PITCH = [0, -1.30, 0.22, -1.05, 0.50, -0.62, 0.78, -0.10, 0.90, 0.10, 1, 0.02];
-const G_ROOTY = [0, 0.17, 0.30, 0.14, 0.58, 0.06, 0.80, 0.0, 1, 0];
+const G_ROOTY = [0, 0.14, 0.30, 0.085, 0.58, 0.025, 0.80, 0.0, 1, 0];
 const G_TORSO = [0, 0.18, 0.30, 0.42, 0.60, 0.36, 0.84, -0.08, 1, 0.04];
 const G_THIGH = [0, -0.05, 0.24, -0.70, 0.52, -0.95, 0.78, -0.30, 0.92, 0.10, 1, 0.02];
 const G_SHIN = [0, 0.40, 0.24, 1.30, 0.52, 1.45, 0.78, 0.45, 1, 0.12];
@@ -276,6 +284,7 @@ export function createAnimator(rig) {
 
   let phase = 0;                // gait phase, radians. 0 = side R foot strike
   let sprintMix = 0;
+  let gaitAmp = RUN_AMP;
   let speedSm = 0, lastSpeed = 0, accelSm = 0;
   let yawRateSm = 0, lastYaw = null;
   let planted = 0;              // 0..1 how upright the character is
@@ -324,9 +333,9 @@ export function createAnimator(rig) {
 
   /** keep the sole flat on the turf for a stance leg */
   function levelFoot(side, extra) {
-    const th = gen['thigh' + side][0];
-    const sh = gen['shin' + side][0];
-    gen['foot' + side][0] = -(gen.rootPitch + gen.hips[0] + th + sh) + extra;
+    const th = gen[KEY[side].thigh][0];
+    const sh = gen[KEY[side].shin][0];
+    gen[KEY[side].foot][0] = -(gen.rootPitch + gen.hips[0] + th + sh) + extra;
   }
 
   function armSplay(l, r) {
@@ -342,9 +351,9 @@ export function createAnimator(rig) {
   const SOLE = -0.045;        // boot underside in the rest pose
   function footLow(side) {
     const a0 = live.rootPitch + live.hips[0];
-    const t = a0 + live['thigh' + side][0];
-    const s = t + live['shin' + side][0];
-    const f = s + live['foot' + side][0];
+    const t = a0 + live[KEY[side].thigh][0];
+    const s = t + live[KEY[side].shin][0];
+    const f = s + live[KEY[side].foot][0];
     const yHip = (HIP_Y + live.hipsY) * Math.cos(live.rootPitch);
     const yKnee = yHip - 0.30 * Math.cos(t);
     const yAnk = yKnee - 0.28 * Math.cos(s);
@@ -359,10 +368,11 @@ export function createAnimator(rig) {
   function poseIdle(t) {
     const T = t + seed;
     const br = Math.sin(T * 1.9);                 // breathing
+    const bob = Math.sin(T * 3.1);                // light on the toes
     const sway = Math.sin(T * 0.72);              // weight shift between feet
     const sway2 = Math.sin(T * 0.72 - 0.9);
 
-    gen.hipsY = -0.016 + br * 0.011;
+    gen.hipsY = -0.016 + br * 0.011 + bob * 0.010;
     gen.hipsX = sway * 0.030;
     gen.hips[1] = sway * 0.09;
     gen.hips[2] = -sway * 0.055;
@@ -376,17 +386,17 @@ export function createAnimator(rig) {
 
     gen.armL[0] = -0.06 + sway2 * 0.10;
     gen.armR[0] = -0.06 - sway2 * 0.10;
-    armSplay(0.17 + br * 0.02, 0.17 + br * 0.02);
+    armSplay(0.25 + br * 0.02, 0.23 + br * 0.02);
     gen.forearmL[0] = -0.42 - Math.max(0, sway2) * 0.10;
     gen.forearmR[0] = -0.42 - Math.max(0, -sway2) * 0.10;
 
     // staggered athletic stance: feet apart, toes out, knees softly bent
     gen.thighL[0] = -0.12 + sway * 0.055;
     gen.thighR[0] = 0.05 - sway * 0.055;
-    gen.thighL[2] = SIDE.L * (0.14 + sway * 0.02);
-    gen.thighR[2] = SIDE.R * (0.14 - sway * 0.02);
-    gen.shinL[0] = 0.22 - sway * 0.05;
-    gen.shinR[0] = 0.15 + sway * 0.05;
+    gen.thighL[2] = SIDE.L * (0.26 + sway * 0.03);
+    gen.thighR[2] = SIDE.R * (0.26 - sway * 0.03);
+    gen.shinL[0] = 0.22 - sway * 0.05 - bob * 0.030;
+    gen.shinR[0] = 0.15 + sway * 0.05 - bob * 0.030;
     gen.footL[1] = SIDE.L * 0.18;
     gen.footR[1] = SIDE.R * 0.18;
     levelFoot('L', 0.02);
@@ -451,15 +461,17 @@ export function createAnimator(rig) {
         ? lerp(0.50, -0.30, smoothi(q / 0.55))
         : lerp(-0.30, -0.20, smoothi((q - 0.55) / 0.45));
     }
-    gen['thigh' + side][0] = th;
-    gen['shin' + side][0] = kn;
-    gen['foot' + side][0] = ft;
+    gen[KEY[side].thigh][0] = th;
+    gen[KEY[side].shin][0] = kn;
+    gen[KEY[side].foot][0] = ft;
   }
 
   function poseLocomotion(fast) {
     const mix = fast ? 1 : 0;
-    const amp = lerp(RUN_AMP, SPR_AMP, mix);
-    const kneeMax = lerp(1.42, 1.75, mix);
+    // gaitAmp is solved in update() from the actual ground speed, so a jog gets
+    // short strides and a sprint gets long ones instead of one canned length.
+    const amp = gaitAmp;
+    const kneeMax = lerp(1.42, 1.75, mix) * clamp(amp / lerp(RUN_AMP, SPR_AMP, mix), 0.62, 1.06);
     const duty = lerp(RUN_DUTY, SPR_DUTY, mix);
     const bob = lerp(0.045, 0.070, mix);
     const armAmp = lerp(0.62, 0.92, mix);
@@ -530,17 +542,17 @@ export function createAnimator(rig) {
     gen.head[0] = track(u, K_HEAD);
     gen.head[1] = -sgn * track(u, K_TORSO_TWIST) * 0.45;
 
-    gen['thigh' + K][0] = track(u, K_THIGH) * g;
-    gen['shin' + K][0] = Math.max(0, track(u, K_SHIN) * g);
-    gen['foot' + K][0] = track(u, K_FOOT);
-    gen['thigh' + K][1] = -sgn * 0.10 * g;
+    gen[KEY[K].thigh][0] = track(u, K_THIGH) * g;
+    gen[KEY[K].shin][0] = Math.max(0, track(u, K_SHIN) * g);
+    gen[KEY[K].foot][0] = track(u, K_FOOT);
+    gen[KEY[K].thigh][1] = -sgn * 0.10 * g;
 
-    gen['thigh' + P][0] = track(u, K_PTHIGH);
-    gen['shin' + P][0] = Math.max(0.04, track(u, K_PSHIN));
+    gen[KEY[P].thigh][0] = track(u, K_PTHIGH);
+    gen[KEY[P].shin][0] = Math.max(0.04, track(u, K_PSHIN));
     levelFoot(P, 0.04);
 
-    gen['arm' + P][0] = track(u, K_ARM_OPP) * g;
-    gen['arm' + K][0] = track(u, K_ARM_SAME) * g;
+    gen[KEY[P].arm][0] = track(u, K_ARM_OPP) * g;
+    gen[KEY[K].arm][0] = track(u, K_ARM_SAME) * g;
     armSplay(0.40 * g + 0.12, 0.40 * g + 0.12);
     gen.forearmL[0] = -0.55 - Math.max(0, -gen.armL[0]) * 0.5;
     gen.forearmR[0] = -0.55 - Math.max(0, -gen.armR[0]) * 0.5;
@@ -551,10 +563,10 @@ export function createAnimator(rig) {
     poseLocomotion(sprintMix > 0.5);
     const K = footSide >= 0 ? 'R' : 'L';
     const w = Math.sin(Math.PI * smoothi(u));          // 0 -> 1 -> 0
-    const t = gen['thigh' + K];
+    const t = gen[KEY[K].thigh];
     t[0] = lerp(t[0], -0.62, w);
-    gen['shin' + K][0] = lerp(gen['shin' + K][0], 0.16, w);
-    gen['foot' + K][0] = lerp(gen['foot' + K][0], 0.24, w);
+    gen[KEY[K].shin][0] = lerp(gen[KEY[K].shin][0], 0.16, w);
+    gen[KEY[K].foot][0] = lerp(gen[KEY[K].foot][0], 0.24, w);
     gen.torso[0] += w * 0.10;
     gen.head[0] += w * 0.14;
     gen.squash += w * 0.02;
@@ -575,18 +587,18 @@ export function createAnimator(rig) {
     gen.head[0] = track(u, T_HEAD);
     gen.head[1] = sgn * 0.24;
 
-    gen['thigh' + E][0] = track(u, T_ETHIGH);
-    gen['shin' + E][0] = Math.max(0.05, track(u, T_ESHIN));
-    gen['foot' + E][0] = track(u, T_EFOOT);
-    gen['thigh' + E][2] = sgn * 0.10;
+    gen[KEY[E].thigh][0] = track(u, T_ETHIGH);
+    gen[KEY[E].shin][0] = Math.max(0.05, track(u, T_ESHIN));
+    gen[KEY[E].foot][0] = track(u, T_EFOOT);
+    gen[KEY[E].thigh][2] = sgn * 0.10;
 
-    gen['thigh' + T][0] = track(u, T_TTHIGH);
-    gen['shin' + T][0] = Math.max(0.05, track(u, T_TSHIN));
-    gen['foot' + T][0] = 0.18;
+    gen[KEY[T].thigh][0] = track(u, T_TTHIGH);
+    gen[KEY[T].shin][0] = Math.max(0.05, track(u, T_TSHIN));
+    gen[KEY[T].foot][0] = 0.18;
 
     // trailing arm braces back, leading arm swings up and across
-    gen['arm' + T][0] = track(u, T_ARM_UP);
-    gen['arm' + E][0] = track(u, T_ARM_BACK);
+    gen[KEY[T].arm][0] = track(u, T_ARM_UP);
+    gen[KEY[E].arm][0] = track(u, T_ARM_BACK);
     armSplay(0.55, 0.55);
     gen.forearmL[0] = -0.55;
     gen.forearmR[0] = -0.45;
@@ -737,19 +749,19 @@ export function createAnimator(rig) {
     gen.head[2] = -s * 0.22;
     gen.head[1] = s * 0.18;
 
-    gen['arm' + LEAD][2] = SIDE[LEAD] * track(u, D_ARM_LEAD);
-    gen['arm' + TRAIL][2] = SIDE[TRAIL] * track(u, D_ARM_TRAIL);
-    gen['arm' + LEAD][0] = -0.20;
-    gen['arm' + TRAIL][0] = -0.10;
+    gen[KEY[LEAD].arm][2] = SIDE[LEAD] * track(u, D_ARM_LEAD);
+    gen[KEY[TRAIL].arm][2] = SIDE[TRAIL] * track(u, D_ARM_TRAIL);
+    gen[KEY[LEAD].arm][0] = -0.20;
+    gen[KEY[TRAIL].arm][0] = -0.10;
     gen.forearmL[0] = -0.12;
     gen.forearmR[0] = -0.12;
 
-    gen['thigh' + LEAD][0] = track(u, D_THIGH_LEAD);
-    gen['shin' + LEAD][0] = Math.max(0.05, track(u, D_SHIN_LEAD));
-    gen['thigh' + TRAIL][0] = track(u, D_THIGH_TRAIL);
-    gen['shin' + TRAIL][0] = Math.max(0.05, track(u, D_SHIN_TRAIL));
-    gen['thigh' + LEAD][2] = SIDE[LEAD] * 0.26;
-    gen['thigh' + TRAIL][2] = SIDE[TRAIL] * 0.14;
+    gen[KEY[LEAD].thigh][0] = track(u, D_THIGH_LEAD);
+    gen[KEY[LEAD].shin][0] = Math.max(0.05, track(u, D_SHIN_LEAD));
+    gen[KEY[TRAIL].thigh][0] = track(u, D_THIGH_TRAIL);
+    gen[KEY[TRAIL].shin][0] = Math.max(0.05, track(u, D_SHIN_TRAIL));
+    gen[KEY[LEAD].thigh][2] = SIDE[LEAD] * 0.26;
+    gen[KEY[TRAIL].thigh][2] = SIDE[TRAIL] * 0.14;
     gen.footL[0] = 0.30; gen.footR[0] = 0.30;
   }
 
@@ -859,15 +871,20 @@ export function createAnimator(rig) {
     if (locomotion) {
       const fast = current === 'sprint';
       const duty = fast ? SPR_DUTY : RUN_DUTY;
-      // The contact travels 2*halfStride while the leg is down, so stance must
-      // last exactly that long: cycles/s = speed * duty / stride. Solving it
-      // this way is what stops the boots from skating over the turf.
-      const stride = 2 * halfStride(fast ? SPR_AMP : RUN_AMP);
+      const baseAmp = fast ? SPR_AMP : RUN_AMP;
       // scenario setups park players in 'run' with zero velocity; give them a
       // nominal gait so they read as athletes instead of statues.
       const eff = rawSpeed > 0.8 ? rawSpeed : (fast ? 10.4 : 7.0);
+      // short strides for a jog, long ones for a sprint
+      const k = clamp(eff / (fast ? 11.6 : 8.2), 0.22, 1.30);
+      const wantAmp = clamp(baseAmp * Math.sqrt(k), 0.40, baseAmp * 1.06);
+      gaitAmp += (wantAmp - gaitAmp) * (step > 0 ? 1 - Math.exp(-step * 8) : 1);
+      // The contact travels 2*halfStride while the leg is down, so stance must
+      // last exactly that long: cycles/s = speed * duty / stride. Solving it
+      // this way is what stops the boots from skating over the turf.
+      const stride = 2 * halfStride(gaitAmp);
       let cyc = (eff * duty) / stride;
-      cyc = clamp(cyc, 0.9, 3.9);
+      cyc = clamp(cyc, 0.8, 4.2);
       phase += step * cyc * TAU;
       if (phase > TAU * 1024) phase -= TAU * 1024;
     } else if (current === 'idle' || current === 'keeperIdle') {
@@ -966,7 +983,7 @@ export function createAnimator(rig) {
     let wantIk = 1;
     if (current === 'knocked' || current === 'keeperDive') wantIk = 0;
     else if (current === 'tackle') wantIk = smoothi((u - 0.78) / 0.22);
-    else if (current === 'getup') wantIk = smoothi((u - 0.55) / 0.45);
+    else if (current === 'getup') wantIk = smoothi((u - 0.32) / 0.34);
     ikW += (wantIk - ikW) * (step > 0 ? 1 - Math.exp(-step * 16) : 1);
     if (ikW > 0.01) {
       const lo = Math.min(footLow('L'), footLow('R'));
