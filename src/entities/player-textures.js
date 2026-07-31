@@ -87,8 +87,8 @@ function vnoise(x, y) {
 
 /** Broad, evenly spaced skin range — the reference roster is diverse. */
 export const SKIN_TONES = [
-  0xffd9bd, 0xf6c9a4, 0xeeb489, 0xdd9b6d, 0xc4834f,
-  0xa96a3c, 0x8a5330, 0x6b3d22, 0x4e2c18,
+  0xf3c5a2, 0xe8b48d, 0xd9a074, 0xc78a5c, 0xb0754a,
+  0x96603a, 0x7c4d2c, 0x60391f, 0x472817,
 ];
 
 export const HAIR_COLORS = [
@@ -160,15 +160,16 @@ export function headTexture(o = {}) {
     const { c, g } = canvas2d(FACE_W, FACE_H);
     const W = FACE_W, H = FACE_H;
 
-    const shadow = mixHex(skin, 0x5d2a18, 0.34);
-    const deep = mixHex(skin, 0x40180d, 0.52);
-    const hi = lighten(skin, 0.22);
+    const base = darken(skin, 0.10);
+    const shadow = mixHex(base, 0x5d2a18, 0.34);
+    const deep = mixHex(base, 0x40180d, 0.52);
+    const hi = lighten(base, 0.20);
 
     // ---- base skin with a soft top-lit gradient --------------------------
-    g.fillStyle = css(skin); g.fillRect(0, 0, W, H);
+    g.fillStyle = css(base); g.fillRect(0, 0, W, H);
     const grd = g.createLinearGradient(0, 0, 0, H);
-    grd.addColorStop(0.00, rgba(lighten(skin, 0.16), 0.30));
-    grd.addColorStop(0.30, rgba(hi, 0.10));
+    grd.addColorStop(0.00, rgba(lighten(base, 0.10), 0.22));
+    grd.addColorStop(0.30, rgba(hi, 0.08));
     grd.addColorStop(0.74, 'rgba(0,0,0,0)');
     grd.addColorStop(1.00, rgba(deep, 0.42));
     g.fillStyle = grd; g.fillRect(0, 0, W, H);
@@ -225,7 +226,7 @@ export function headTexture(o = {}) {
     // ---- stubble / beard shadow (under the mouth paint, over the skin) ----
     if (stubble > 0) {
       const dens = stubble >= 2 ? 1.0 : 0.5;
-      const beardCol = mixHex(skin, darken(brow, 0.10), 0.52 + dens * 0.34);
+      const beardCol = mixHex(base, darken(brow, 0.10), 0.52 + dens * 0.34);
       const beardPath = () => {
         g.beginPath();
         g.moveTo(cx - 0.70 * AX, FY(0.545));
@@ -276,7 +277,7 @@ export function headTexture(o = {}) {
     g.restore();
 
     // ---- eyes -------------------------------------------------------------
-    const eyeW = 0.176 * AX, eyeH = 0.106 * AY;
+    const eyeW = 0.168 * AX, eyeH = 0.100 * AY;
     const tilt = [0.00, 0.05, -0.03, 0.07, 0.02, 0.09][variant % 6];
     const irisR = 0.088 * AX;
 
@@ -383,8 +384,8 @@ export function headTexture(o = {}) {
       g.fillStyle = css(darken(brow, 0.10)); g.fill();
       // a couple of stray hairs so the brow is not a flat blob
       g.save(); g.clip();
-      g.strokeStyle = rgba(lighten(brow, 0.35), 0.5);
-      g.lineWidth = Math.max(1.5, bt * 0.11);
+      g.strokeStyle = rgba(lighten(brow, 0.30), 0.20);
+      g.lineWidth = Math.max(1.2, bt * 0.08);
       for (let i = 0; i < 6; i++) {
         const t = i / 5;
         const px = -bw + t * bw * 1.9;
@@ -435,7 +436,7 @@ export function headTexture(o = {}) {
       g.ellipse(cx + s * noseW * 0.78, noseY + 0.070 * AY, noseW * 0.30, 0.030 * AY, s * 0.4, 0, Math.PI * 2);
       g.fill();
     }
-    g.fillStyle = rgba(lighten(skin, 0.45), 0.55);
+    g.fillStyle = rgba(lighten(base, 0.45), 0.55);
     g.beginPath();
     g.ellipse(cx, noseY - 0.005 * AY, noseW * 0.55, 0.045 * AY, 0, 0, Math.PI * 2); g.fill();
 
@@ -449,7 +450,7 @@ export function headTexture(o = {}) {
     g.beginPath();
     g.moveTo(cx, noseY + 0.085 * AY); g.lineTo(cx, mY - 0.075 * AY); g.stroke();
     // lips
-    const lip = mixHex(skin, 0x9b3a34, 0.42);
+    const lip = mixHex(base, 0x9b3a34, 0.42);
     g.fillStyle = css(lip);
     g.beginPath();
     g.moveTo(cx - mW, mY);
@@ -500,8 +501,8 @@ export function headTexture(o = {}) {
       g.fillStyle = rgba(shadow, 0.30);
       g.beginPath(); g.ellipse(0, 0, ew * 1.15, eh * 1.05, 0, 0, Math.PI * 2); g.fill();
       // concha bowl
-      g.fillStyle = rgba(deep, 0.45);
-      g.beginPath(); g.ellipse(-s * ew * 0.10, eh * 0.06, ew * 0.55, eh * 0.55, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = rgba(deep, 0.60);
+      g.beginPath(); g.ellipse(-s * ew * 0.10, eh * 0.06, ew * 0.52, eh * 0.52, 0, 0, Math.PI * 2); g.fill();
       // helix rim highlight
       g.strokeStyle = rgba(hi, 0.55);
       g.lineWidth = Math.max(2, ew * 0.16);
@@ -516,7 +517,7 @@ export function headTexture(o = {}) {
 
     // ---- scalp: slightly desaturated on top so a bald head is not flat ----
     const sg2 = g.createLinearGradient(0, 0, 0, FY(0.72));
-    sg2.addColorStop(0, rgba(mixHex(skin, 0x6b4a35, 0.20), 0.45));
+    sg2.addColorStop(0, rgba(mixHex(base, 0x6b4a35, 0.20), 0.35));
     sg2.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = sg2; g.fillRect(0, 0, W, FY(0.72));
 
@@ -837,7 +838,7 @@ export function shortsTexture(o = {}) {
 
     // number on the wearer's right-front thigh
     const nf = contrastOn(base) === 0xffffff ? 0xffffff : 0x15181d;
-    outlinedNumber(g, number, W * 0.36, H * 0.42, H * 0.23, nf, darken(trim, 0.2));
+    outlinedNumber(g, number, W * 0.345, H * 0.36, H * 0.215, nf, darken(trim, 0.2));
 
     roundShade(g, W, H, 0.25);
     return tex(c, { aniso: 8 });

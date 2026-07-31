@@ -13,7 +13,10 @@ export const GOAL_H = 3;                   // crossbar height
 export const GOAL_DEPTH = 2.5;             // how far the net runs behind the line
 export const POST_R = 0.13;
 
-export const BALL_R = 0.42;
+// Ball radius. In the reference the ball reads at roughly a quarter of player
+// height; 0.42 made it beach-ball sized. Physics in sim/physics.js is tuned for
+// this value — do not change it without retuning there.
+export const BALL_R = 0.24;
 export const PLAYER_H = 2.0;
 export const PLAYER_R = 0.5;               // collision radius
 export const TEAM_SIZE = 6;                // 5 outfield + 1 keeper

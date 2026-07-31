@@ -73,12 +73,12 @@ function fabricMat(key, map, { rough = 0.86, repeat = [4, 3], normalScale = 0.55
 }
 
 const skinMat = (skin) => sharedMat('skin:' + skin, () => new THREE.MeshStandardMaterial({
-  color: skin, roughness: 0.70, metalness: 0.0,
+  color: skin, roughness: 0.80, metalness: 0.0,
 }));
 
 // one material for every head of hair — the colour lives in vertex colours
 const hairMat = () => sharedMat('hair', () => new THREE.MeshStandardMaterial({
-  color: 0xffffff, vertexColors: true, roughness: 0.55, metalness: 0.0,
+  color: 0xffffff, vertexColors: true, roughness: 0.68, metalness: 0.0,
 }));
 
 const bootMat = () => sharedMat('boot', () => new THREE.MeshStandardMaterial({
@@ -221,8 +221,8 @@ function buildEars() {
   const R = HEAD_R;
   for (const s of [-1, 1]) {
     const outer = new THREE.SphereGeometry(R * 0.255, 10, 10);
-    outer.scale(0.44, 1.00, 0.66);
-    outer.translate(s * R * 1.010, R * 0.010, -R * 0.055);
+    outer.scale(0.40, 0.93, 0.62);
+    outer.translate(s * R * 0.995, R * 0.005, -R * 0.055);
     parts.push(outer);
     const lobe = new THREE.SphereGeometry(R * 0.110, 8, 6);
     lobe.scale(0.50, 1.0, 0.78);
@@ -256,7 +256,7 @@ function buildNeck() {
  *              negative buries the strip inside the head (used to hide the
  *              collapsed columns of a partial shell like a beard).
  */
-function hairShell({ inner, outer, puff, nu = 30, nv = 8 }) {
+function hairShell({ inner, outer, puff, nu = 30, nv = 8, shadeBias = 0 }) {
   const pos = [], nor = [], shade = [], idx = [];
   const rows = nv + 1;
   for (let i = 0; i <= nu; i++) {
@@ -268,11 +268,13 @@ function hairShell({ inner, outer, puff, nu = 30, nv = 8 }) {
       const th = t0 + (t1 - t0) * t;
       const st = Math.sin(th), ct = Math.cos(th);
       const nx = st * sa, ny = ct, nz = st * ca;
-      const rim = smooth(0.76, 1.0, t);
-      const m = HEAD_R * (skullR(nx, ny, nz) * (1 - 0.17 * rim) + puff(az, t) * (1 - rim));
+      // The rim must never graze the scalp or the two surfaces z-fight into a
+      // dashed fringe. Scale the whole radius down late and hard instead.
+      const rim = smooth(0.84, 1.0, t);
+      const m = HEAD_R * (skullR(nx, ny, nz) + puff(az, t)) * (1 - 0.26 * rim);
       pos.push(nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ);
       nor.push(nx, ny, nz);
-      shade.push(0.52 * t + 0.16 * Math.sin(az * 7 + t * 3) + 0.14);
+      shade.push(0.50 * t + 0.075 * Math.sin(az * 9 + t * 2.2) + 0.16 + shadeBias);
     }
   }
   for (let i = 0; i < nu; i++) {
@@ -296,7 +298,7 @@ function mergeShaded(parts) {
   for (const p of parts) {
     const n = p.getAttribute('position').count;
     const s = p.userData.shade;
-    for (let i = 0; i < n; i++) shades.push(s ? s[i] : 0.46);
+    for (let i = 0; i < n; i++) shades.push(s ? s[i] : 0.38);
     p.userData.shade = null;
   }
   if (parts.length === 1) { parts[0].userData.shade = shades; return parts[0]; }
@@ -311,8 +313,8 @@ function shadeHair(geo, color) {
   const shade = geo.userData.shade;
   const n = geo.getAttribute('position').count;
   const arr = new Float32Array(n * 3);
-  const light = new THREE.Color(lighten(color, 0.34)).convertSRGBToLinear();
-  const dark = new THREE.Color(darken(color, 0.55)).convertSRGBToLinear();
+  const light = new THREE.Color(lighten(color, 0.18)).convertSRGBToLinear();
+  const dark = new THREE.Color(darken(color, 0.50)).convertSRGBToLinear();
   for (let i = 0; i < n; i++) {
     const t = clamp(shade ? shade[i] : 0.45, 0, 1);
     arr[i * 3] = light.r + (dark.r - light.r) * t;
@@ -349,7 +351,7 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: line(50, 102),
-        puff: () => 0.024,
+        puff: () => 0.040,
       }));
       break;
 
@@ -357,7 +359,8 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: line(47, 108),
-        puff: (az, t) => 0.065 * (1 - smooth(0.28, 0.90, t)) + 0.014,
+        puff: (az, t) => 0.065 * (1 - smooth(0.28, 0.90, t)) + 0.034,
+        shadeBias: 0.18,
       }));
       break;
 
@@ -365,7 +368,7 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: (az) => line(53, 104)(az) + 3.5 * Math.sin(az * 6) * D2R,
-        puff: (az, t) => 0.085 * (1 - smooth(0.55, 1.0, t)) + 0.016,
+        puff: (az, t) => 0.085 * (1 - smooth(0.55, 1.0, t)) + 0.036,
       }));
       break;
 
@@ -374,9 +377,9 @@ function buildHairGeo(style) {
         inner: () => 0,
         outer: line(49, 104),
         nv: 11,
-        puff: (az, t) => 0.075 * (1 - smooth(0.62, 1.0, t)) + 0.016
-          + 0.21 * clamp((front(az) + 0.30) / 1.30, 0, 1) ** 0.9
-            * Math.sin(clamp(t / 0.62, 0, 1) * Math.PI) ** 0.7,
+        puff: (az, t) => 0.075 * (1 - smooth(0.62, 1.0, t)) + 0.036
+          + 0.17 * clamp((front(az) + 0.20) / 1.20, 0, 1) ** 1.1
+            * Math.sin(clamp(t / 0.55, 0, 1) * Math.PI) ** 0.8,
       }));
       break;
 
@@ -384,7 +387,7 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: line(52, 100),
-        puff: (az, t) => 0.10 * (1 - smooth(0.74, 1.0, t)) + 0.016,
+        puff: (az, t) => 0.10 * (1 - smooth(0.74, 1.0, t)) + 0.036,
       }));
       // lumps scattered across the whole cap, not a bead necklace at the rim
       for (let i = 0; i < 26; i++) {
@@ -401,14 +404,14 @@ function buildHairGeo(style) {
         outer: line(56, 104),
         nu: 34, nv: 10,
         puff: (az, t) => (0.34 + 0.06 * Math.sin(az * 5) + 0.05 * Math.sin(az * 11 + 1.3)
-          + 0.04 * Math.sin(t * 9 + az * 3)) * (1 - smooth(0.58, 1.0, t)) + 0.018,
+          + 0.04 * Math.sin(t * 9 + az * 3)) * (1 - smooth(0.58, 1.0, t)) + 0.038,
       }));
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 44; i++) {
         const az = hs(i * 5 + 9) * TAU;
         const rimA = line(56, 104)(az) / D2R;
-        const th = (6 + hs(i * 13 + 2) * (rimA - 16)) * D2R;
-        parts.push(onSkull(blobGeo(HEAD_R * (0.13 + 0.05 * hs(i * 3 + 7)), 7), az, th,
-          0.30 + 0.06 * hs(i * 17 + 1)));
+        const th = (5 + hs(i * 13 + 2) * (rimA - 7)) * D2R;
+        parts.push(onSkull(blobGeo(HEAD_R * (0.085 + 0.030 * hs(i * 3 + 7)), 6), az, th,
+          0.31 + 0.045 * hs(i * 17 + 1)));
       }
       break;
 
@@ -416,15 +419,15 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: line(53, 100),
-        puff: (az, t) => 0.075 * (1 - smooth(0.74, 1.0, t)) + 0.018,
+        puff: (az, t) => 0.075 * (1 - smooth(0.74, 1.0, t)) + 0.038,
       }));
-      for (let i = 0; i < 14; i++) {
-        const az = 0.95 + (i / 14) * (TAU - 1.9);
-        const len = 0.28 + 0.14 * hs(i * 5 + 2);
-        const strand = new THREE.CylinderGeometry(HEAD_R * 0.070, HEAD_R * 0.050, len, 6, 1);
+      for (let i = 0; i < 16; i++) {
+        const az = 1.95 + (i / 15) * (TAU - 3.9);
+        const len = 0.26 + 0.16 * hs(i * 5 + 2);
+        const strand = new THREE.CylinderGeometry(HEAD_R * 0.078, HEAD_R * 0.058, len, 6, 1);
         strand.translate(0, -len * 0.46, 0);
-        strand.rotateZ(Math.sin(az) * 0.22);
-        parts.push(onSkull(strand, az, (74 + 14 * hs(i * 9 + 4)) * D2R, 0.055));
+        strand.rotateZ(Math.sin(az) * 0.18);
+        parts.push(onSkull(strand, az, (78 + 18 * hs(i * 9 + 4)) * D2R, 0.045));
       }
       break;
 
@@ -432,7 +435,7 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: line(53, 112),
-        puff: (az, t) => 0.055 * (1 - smooth(0.60, 1.0, t)) + 0.016,
+        puff: (az, t) => 0.055 * (1 - smooth(0.60, 1.0, t)) + 0.036,
       }));
       const knot = blobGeo(HEAD_R * 0.32, 12);
       knot.scale(1, 0.88, 1);
@@ -448,7 +451,7 @@ function buildHairGeo(style) {
         inner: () => 0,
         outer: line(50, 150),
         nv: 13,
-        puff: (az, t) => 0.055 * (1 - smooth(0.90, 1.0, t)) + 0.018
+        puff: (az, t) => 0.055 * (1 - smooth(0.90, 1.0, t)) + 0.038
           + 0.13 * Math.max(0, -front(az)) * smooth(0.28, 1.0, t),
       }));
       break;
@@ -458,18 +461,19 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: line(56, 104),
-        puff: () => 0.016,
+        puff: () => 0.044,
+        shadeBias: 0.34,
       }));
       // crest: a chunky ridge over the crown, front to back
-      for (let i = 0; i <= 11; i++) {
-        const s = i / 11;                      // 0 front, 1 back
-        const ang = (s - 0.5) * 2;             // -1 .. 1
+      for (let i = 0; i <= 12; i++) {
+        const s = i / 12;                      // 0 front hairline, 1 nape
+        const ang = (s - 0.42) / 0.58;         // crown sits at s = 0.42
         const az = ang < 0 ? 0 : Math.PI;
-        const th = Math.abs(ang) * 74 * D2R;
-        const h = Math.sin(Math.min(1, 0.08 + s * 0.98) * Math.PI) ** 0.5;
-        const blade = blobGeo(HEAD_R * 0.17, 8);
-        blade.scale(0.55, 0.55 + h * 1.5, 1.25);
-        parts.push(onSkull(blade, az, th, h * 0.30));
+        const th = Math.abs(ang) * (ang < 0 ? 46 : 62) * D2R;
+        const h = Math.sin(s ** 0.8 * Math.PI) ** 0.55;
+        const blade = blobGeo(HEAD_R * 0.185, 9);
+        blade.scale(0.90, 0.55 + h * 1.30, 1.30);
+        parts.push(onSkull(blade, az, th, h * 0.26));
       }
       break;
     }
@@ -478,7 +482,7 @@ function buildHairGeo(style) {
       parts.push(hairShell({
         inner: () => 0,
         outer: line(51, 102),
-        puff: (az, t) => 0.06 * (1 - smooth(0.60, 1.0, t)) + 0.016,
+        puff: (az, t) => 0.06 * (1 - smooth(0.60, 1.0, t)) + 0.036,
       }));
   }
   return mergeShaded(parts.map(ensureUv));
@@ -497,7 +501,7 @@ function buildBeard(density = 1) {
     outer: (az) => (inArc(az) ? (114 + (12 + 12 * density) * Math.cos(az)) * D2R : top(az)),
     nu: 28, nv: 7,
     puff: (az, t) => (inArc(az)
-      ? (0.020 + 0.060 * density) * Math.sin(Math.min(1, t * 1.05) * Math.PI) + 0.016
+      ? (0.020 + 0.060 * density) * Math.sin(Math.min(1, t * 1.05) * Math.PI) + 0.032
       : -0.12),
   });
   const mtop = () => 90 * D2R;
@@ -505,7 +509,7 @@ function buildBeard(density = 1) {
     inner: mtop,
     outer: (az) => (Math.cos(az) > 0.62 ? 99 * D2R : mtop(az)),
     nu: 22, nv: 3,
-    puff: (az, t) => (Math.cos(az) > 0.62 ? 0.05 * Math.sin(t * Math.PI) + 0.020 : -0.10),
+    puff: (az, t) => (Math.cos(az) > 0.62 ? 0.05 * Math.sin(t * Math.PI) + 0.036 : -0.10),
   });
   return mergeShaded([ensureUv(chin), ensureUv(tache)]);
 }
@@ -536,8 +540,8 @@ function buildBoot(main, accent, sole) {
   collar.translate(0, 0.056, -0.028);
   parts.push(tint(collar, accent));
 
-  const plate = new THREE.BoxGeometry(0.192, 0.028, 0.350);
-  plate.translate(0, -0.046, 0.048);
+  const plate = new THREE.BoxGeometry(0.178, 0.024, 0.318);
+  plate.translate(0, -0.048, 0.050);
   parts.push(tint(plate, sole));
 
   for (const s of [-1, 1]) {
@@ -658,7 +662,7 @@ export function createPlayer(cfg = {}) {
           skin, variant: faceVariant, browColor: hairColor,
           eyeColor: EYE_COLORS[eyeIdx], stubble: beard,
         }),
-        roughness: 0.60, metalness: 0.0,
+        roughness: 0.85, metalness: 0.0,
       })), true);
 
   // ---- hair + beard -------------------------------------------------------
@@ -712,11 +716,11 @@ export function createPlayer(cfg = {}) {
     const foreGeo = lathe([
       [0.00, 0.032, -0.250],
       [0.07, 0.076, -0.238],
-      [0.18, 0.099, -0.210],
-      [0.32, 0.084, -0.174],
-      [0.46, 0.076, -0.144],
-      [0.72, 0.084, -0.074],
-      [0.92, 0.094, -0.012],
+      [0.18, 0.106, -0.210],
+      [0.32, 0.089, -0.174],
+      [0.46, 0.082, -0.144],
+      [0.72, 0.090, -0.074],
+      [0.92, 0.099, -0.012],
       [1.00, 0.050, 0.016],
     ], 14, 14);
     {   // flatten the hand into a paddle (and inflate it for a keeper glove)
