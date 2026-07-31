@@ -727,7 +727,12 @@ export function createVfx(scene) {
 
     // --- streaks: head chases the ball, tail stays at the strike point ------
     const bn = ball();
-    if (bn) ballPos.setFromMatrixPosition(bn.matrixWorld);
+    // updateWorldMatrix, not a bare matrixWorld read: the capture harness runs
+    // 120 simulation steps between renders, and three only refreshes matrixWorld
+    // during render. Reading it directly gave a ball position one render stale —
+    // during a settle that is 2 seconds of staleness, which stretched the shot
+    // streak from the boot to wherever the ball had been two scenarios ago.
+    if (bn) { bn.updateWorldMatrix(true, false); ballPos.setFromMatrixPosition(bn.matrixWorld); }
     for (const s of streaks) {
       if (!s.live) continue;
       s.t += dt;
