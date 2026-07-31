@@ -6,7 +6,7 @@
 //                         setTrail(b), dispose() }
 
 import * as THREE from 'three';
-import { ballSkin, contactShadowTexture, trailTexture } from './ball-texture.js';
+import { ballSkin } from './ball-texture.js';
 import { BALL_R } from '../core/constants.js';
 
 // Direction the key sun travels, mirroring the engine's main DirectionalLight at
@@ -49,16 +49,40 @@ export function createBall(opts = {}) {
   squash.add(mesh);
 
   // ---- contact shadow -----------------------------------------------------
-  const shadow = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, 1),
-    new THREE.MeshBasicMaterial({
-      map: contactShadowTexture(),
-      transparent: true,
-      depthWrite: false,
-      opacity: 0.62,
-      color: 0x0a1408,
-    }),
-  );
+  // The falloff is evaluated in the fragment shader rather than sampled from a
+  // texture: it stays perfectly smooth at any on-screen size, costs no texture
+  // memory, and there is no mip chain to go soft on a ball this small.
+  const shadowMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(0x0c1a07) },
+      uOpacity: { value: 0.8 },
+      uCore: { value: 0.5 },
+    },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: /* glsl */`
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      uniform float uCore;
+      varying vec2 vUv;
+      void main() {
+        vec2 p = vUv * 2.0 - 1.0;
+        float d = length(p);
+        // solid umbra out to uCore, then a soft penumbra to the rim. On the deck
+        // the umbra is wide and dark; the higher the ball, the more it is all
+        // penumbra — which is what "tightens as it nears the ground" means.
+        float a = (1.0 - smoothstep(uCore, 1.0, d)) * uOpacity;
+        if (a <= 0.004) discard;
+        gl_FragColor = vec4(uColor, a);
+      }`,
+    transparent: true,
+    depthWrite: false,
+  });
+  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), shadowMat);
   shadow.rotation.set(-Math.PI / 2, 0, -SUN_AZ);
   shadow.renderOrder = 3;
   shadow.frustumCulled = false;
@@ -97,7 +121,6 @@ export function createBall(opts = {}) {
   const trailMat = new THREE.ShaderMaterial({
     uniforms: {
       uColor: { value: new THREE.Color(0xdff0ff) },
-      uMap: { value: trailTexture() },
     },
     vertexShader: /* glsl */`
       attribute vec3 aDir;
@@ -122,13 +145,17 @@ export function createBall(opts = {}) {
       }`,
     fragmentShader: /* glsl */`
       uniform vec3 uColor;
-      uniform sampler2D uMap;
       varying float vA;
       varying vec2 vUv;
       void main() {
-        float a = texture2D(uMap, vUv).a * vA;
+        // soft across the ribbon, fading out along its length — analytic so the
+        // taper stays clean however few samples the strip has
+        float v = vUv.y * 2.0 - 1.0;
+        float across = pow(max(0.0, 1.0 - v * v), 0.8);
+        float along = pow(max(0.0, 1.0 - vUv.x), 1.5);
+        float a = across * along * vA;
         if (a <= 0.003) discard;
-        gl_FragColor = vec4(uColor * (0.7 + 0.6 * a), a);
+        gl_FragColor = vec4(uColor * (0.65 + 0.7 * a), a);
       }`,
     transparent: true,
     depthWrite: false,
@@ -187,9 +214,10 @@ export function createBall(opts = {}) {
     );
     // tight and dark on the deck, wide and faint the higher the ball climbs;
     // stretched slightly along the sun azimuth, as a real low-sun shadow is
-    const s = BALL_R * (2.30 + 5.2 * (1 - k));
+    const s = BALL_R * (2.85 + 5.0 * (1 - k));
     shadow.scale.set(s * 1.22, s, 1);
-    shadow.material.opacity = 0.62 * k * k * k + 0.045;
+    shadowMat.uniforms.uOpacity.value = 0.80 * k * k + 0.05;
+    shadowMat.uniforms.uCore.value = 0.14 + 0.38 * k;
 
     // --- trail --------------------------------------------------------------
     for (let i = history.length - 1; i > 0; i--) history[i].copy(history[i - 1]);
@@ -249,7 +277,7 @@ export function createBall(opts = {}) {
     setTrail(v) { trailOn = !!v; },
     dispose() {
       mesh.geometry.dispose(); mesh.material.dispose();
-      shadow.geometry.dispose(); shadow.material.dispose();
+      shadow.geometry.dispose(); shadowMat.dispose();
       trailGeo.dispose(); trailMat.dispose();
     },
   };
