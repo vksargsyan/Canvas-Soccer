@@ -35,11 +35,24 @@ import {
 // slot 0 is always the keeper — the integrator indexes agents as team*6 + slot.
 export const FORMATION = [
   { role: 'GK', line: 0, x: -27.0, z: 0.0 },
-  { role: 'LB', line: 1, x: -16.0, z: -6.8 },
-  { role: 'RB', line: 1, x: -16.0, z: 6.8 },
-  { role: 'LM', line: 2, x: -3.0, z: -9.5 },
-  { role: 'RM', line: 2, x: -3.0, z: 9.5 },
+  { role: 'LB', line: 1, x: -16.0, z: -8.0 },
+  { role: 'RB', line: 1, x: -16.0, z: 8.0 },
+  { role: 'LM', line: 2, x: -3.0, z: -11.0 },
+  { role: 'RM', line: 2, x: -3.0, z: 11.0 },
   { role: 'ST', line: 3, x: 9.0, z: 0.0 },
+];
+
+// Kickoff pictures, also in attacking space. The side taking the kick puts a
+// striker on the ball with a midfielder square to him; the side receiving sits
+// behind the halfway line. Clamping the ordinary formation into a half instead
+// piles three defenders onto the centre spot, which hands them the kickoff.
+export const KICKOFF_ATTACK = [
+  { x: -27.0, z: 0.0 }, { x: -17.0, z: -8.0 }, { x: -17.0, z: 8.0 },
+  { x: -8.0, z: -8.5 }, { x: -8.0, z: 8.5 }, { x: -1.3, z: 0.5 },
+];
+export const KICKOFF_DEFEND = [
+  { x: -27.0, z: 0.0 }, { x: -19.0, z: -8.0 }, { x: -19.0, z: 8.0 },
+  { x: -10.0, z: -9.5 }, { x: -10.0, z: 9.5 }, { x: -4.5, z: 0.0 },
 ];
 
 // Per-slot competence. Deterministic (no RNG) so shape never depends on stream
@@ -63,6 +76,13 @@ export function createAI(ctx) {
 
   const home = new THREE.Vector3();
   const api = {};                 // returned; `api.match` is set by the integrator
+
+  // Behaviour counters — not gameplay, but the only way to tell whether the AI
+  // is actually doing football things without watching it for ten minutes.
+  const stats = {
+    shots: 0, passes: 0, clears: 0, headers: 0, tackles: 0,
+    dives: 0, saves: 0, catches: 0, parries: 0, smothers: 0, distributions: 0,
+  };
 
   // ---- deferred actions ----------------------------------------------------
   // A kick scheduled here lands on the animation's contact frame.
@@ -225,13 +245,16 @@ export function createAI(ctx) {
       let best = null, bd = 1e9, second = null, sd = 1e9;
       for (const a of agents) {
         if (a.team !== t || a.isKeeper || a.down) continue;
+        // The human's player is driven by the stick, so he is never counted as
+        // the AI presser — otherwise a stationary human leaves his side with
+        // nobody closing the ball down.
+        if (a.control === 'user') continue;
         // cost = time to reach the intercept point, with hysteresis for the
         // incumbent so the roles do not flicker between two equidistant players
         interceptPoint(a, SPRINT_SPEED, _v);
         let c = Math.hypot(_v.x - a.pos.x, _v.z - a.pos.z);
         if (a === s.chaser) c -= 2.6;
         if (a === carrier) c -= 6.0;
-        if (a.control === 'user') c += 3.0;   // the human is not an AI presser
         if (c < bd) { sd = bd; second = best; bd = c; best = a; } else if (c < sd) { sd = c; second = a; }
       }
       s.chaser = best;
@@ -291,31 +314,30 @@ export function createAI(ctx) {
     const bz = body.pos.z;
     const att = s.hasBall;
 
-    // Lateral compression: the block slides toward the ball but stays compact,
-    // and it compresses harder when defending.
-    const zSlide = clamp(bz * (att ? 0.34 : 0.46), -8, 8);
-    const zSquash = att ? 0.92 : 0.74;
+    // Lateral compression: the block slides toward the ball but keeps its width.
+    // Sliding too hard is what turns a 2-2-1 into a five-man huddle.
+    const zSlide = clamp(bz * (att ? 0.30 : 0.42), -6, 6);
+    const zSquash = att ? 0.95 : 0.82;
 
     let u, z = f.z * zSquash + zSlide;
 
     if (f.line === 1) {
-      // Back pair: hold a line goal-side of the ball, never dragged past it.
-      const linePush = att ? bu - 13 : bu - 7.5;
-      u = clamp(linePush, -25, att ? 4 : -1.5);
-      // when the ball is wide, the far full-back tucks in
+      // Back pair: one line, goal-side of the ball, never dragged past it.
+      u = clamp(bu + (att ? -15 : -12), -25, att ? 3 : -2);
+      // when the ball is wide, the far full-back tucks in to cover the middle
       const wideSide = Math.sign(bz) || 1;
-      if (Math.sign(f.z) !== wideSide) z = lerp(z, bz * 0.22, 0.55);
+      if (Math.sign(f.z) !== wideSide) z = lerp(z, bz * 0.20, 0.45);
     } else if (f.line === 2) {
       // Midfield: supports the ball, one on each flank, ahead of the back line.
-      u = clamp(att ? bu - 1.0 : bu - 0.5, -20, att ? 18 : 10);
+      u = clamp(bu + (att ? -2 : -3), -20, att ? 17 : 9);
       // the ball-side midfielder pushes wide to give an outlet, the far one tucks
       const wideSide = Math.sign(bz) || 1;
-      if (Math.sign(f.z) === wideSide) z = clamp(bz + wideSide * 6.0, -HALF_D + 3, HALF_D - 3);
-      else z = lerp(z, -wideSide * 4.5, 0.5);
+      if (Math.sign(f.z) === wideSide) z = clamp(bz + wideSide * 6.5, -HALF_D + 3, HALF_D - 3);
+      else z = lerp(z, -wideSide * 6.0, 0.5);
     } else {
       // Striker: stays high as the outlet, and when we have the ball he runs
       // into the emptiest channel ahead of it.
-      u = clamp(att ? bu + 8.5 : bu + 6.0, -8, 26);
+      u = clamp(bu + (att ? 10 : 8), -6, 26);
       if (att) z = runChannel(a, toX(t, u));
       else z = clamp(bz * 0.35, -10, 10);
     }
@@ -394,11 +416,12 @@ export function createAI(ctx) {
       const w = o.isKeeper ? 1.5 : 0.95;
       if (off < clear) clear = Math.max(0, off - w);
     }
-    // quality: near + open + not from an impossible angle
-    const range = clamp(1 - (d - 6) / 22, 0, 1);
+    // quality: near + open + not from an impossible angle. Range dominates, so
+    // the AI does not fire hopefully from 26 m every time the lane is clean.
+    const range = clamp(1 - (d - 6) / 20, 0, 1);
     const lane = clamp(clear / 2.2, 0, 1);
-    const angle = clamp(1 - (Math.abs(a.pos.z) - 4) / 16, 0, 1);
-    return { z: bestZ, dist: d, q: range * 0.42 + lane * 0.38 + angle * 0.20 };
+    const angle = clamp(1 - (Math.abs(a.pos.z) - 4) / 15, 0, 1);
+    return { z: bestZ, dist: d, q: range * 0.55 + lane * 0.30 + angle * 0.15 };
   }
 
   /** best pass: openness of the lane, of the receiver, and progression */
@@ -438,8 +461,10 @@ export function createAI(ctx) {
   function doShoot(a, look) {
     const gx = attackX(a.team);
     const foot = a.pos.z > look.z ? -1 : 1;
+    stats.shots++;
     strike(a, 'kick', foot, () => {
-      const az = look.z + wobble(a, 1.5);
+      // aim error grows with range, so long-range efforts miss the way they should
+      const az = look.z + wobble(a, 1.4 + look.dist * 0.075);
       _v.set(gx - a.pos.x, 0, az - a.pos.z);
       const d = _v.length();
       const power = clamp(19 + d * 0.60, 20, 33);
@@ -454,6 +479,7 @@ export function createAI(ctx) {
   }
 
   function doPass(a, p, opts = {}) {
+    stats.passes++;
     const foot = p.z > a.pos.z ? 1 : -1;
     strike(a, 'pass', foot, () => {
       const ex = p.x + wobble(a, 1.6), ez = p.z + wobble(a, 1.6);
@@ -470,6 +496,7 @@ export function createAI(ctx) {
   }
 
   function doClear(a) {
+    stats.clears++;
     const dir = TEAMS[a.team].dir;
     // hoof it upfield and toward the nearer touchline, away from our own goal
     const wide = (Math.sign(a.pos.z) || rng.sign()) * 9;
@@ -529,6 +556,7 @@ export function createAI(ctx) {
     const dir = TEAMS[a.team].dir;
     const look = shotLook(a);
     const attacking = toU(a.team, a.pos.x) > 12;
+    stats.headers++;
     strike(a, 'header', 1, () => {
       if (attacking && look.q > 0.34) {
         _v.set(attackX(a.team) - a.pos.x, 0, look.z - a.pos.z);
@@ -580,9 +608,9 @@ export function createAI(ctx) {
           return;
         }
         // shoot when the picture is good
-        if (look.q > 0.52 && look.dist < 26) { doShoot(a, look); return; }
-        // a hopeful effort when pressed inside range
-        if (look.q > 0.34 && look.dist < 17 && press >= 1) { doShoot(a, look); return; }
+        if (look.q > 0.60 && look.dist < 24) { doShoot(a, look); return; }
+        // a snap effort when pressed inside range
+        if (look.q > 0.44 && look.dist < 15 && press >= 1) { doShoot(a, look); return; }
 
         // pass under pressure, or when a clearly better option exists
         const p = bestPass(a);
@@ -625,6 +653,7 @@ export function createAI(ctx) {
         const chance = dt * (2.4 * (SKILL[a.slot] ?? 0.8)) * (closing ? 1 : 0.3);
         if (rng.chance(chance)) {
           a.cool = 1.35;
+          stats.tackles++;
           if (a.anim) a.anim.play('tackle', { force: true });
           if (events.onTackle) events.onTackle(a);
         }
@@ -759,6 +788,7 @@ export function createAI(ctx) {
         holder = a;
         body.place(a.pos.x - s * 0.55, 1.05, a.pos.z);
         body.lastTouch = a; body.lastTouchTeam = t;
+        stats.saves++; stats.catches++;
         if (a.anim) a.anim.play('keeperCatch', { force: true });
         if (events.onKeeperSave) events.onKeeperSave(a, 'catch');
         return;
@@ -769,6 +799,7 @@ export function createAI(ctx) {
       body.kick(_v, clamp(speed * 0.45, 7, 15), 3.4, 0);
       body.lastTouch = a; body.lastTouchTeam = t;
       a.cool = 0.7;
+      stats.saves++; stats.parries++;
       if (a.anim && a.anim.current !== 'keeperDive') a.anim.play('keeperDive', { dir: away, force: true });
       if (events.onKeeperSave) events.onKeeperSave(a, 'parry');
       return;
@@ -784,6 +815,7 @@ export function createAI(ctx) {
         a.diveHigh = yHit > 1.5;
         a.diveTarget = clamp(zHit, -GOAL_HALF_W - 0.9, GOAL_HALF_W + 0.9);
         a.cool = 0.9;
+        stats.dives++;
         if (a.anim) a.anim.play('keeperDive', { dir: a.diveDir, force: true });
         if (events.onKeeperDive) events.onKeeperDive(a);
       }
@@ -817,6 +849,7 @@ export function createAI(ctx) {
       // smother a ball at his feet
       if (Math.hypot(a.pos.x - bx, a.pos.z - bz) < 1.0 && by < 0.9 && a.cool <= 0) {
         a.hold = 1.0; a.cool = 1.3; holder = a;
+        stats.saves++; stats.smothers++;
         if (a.anim) a.anim.play('keeperCatch', { force: true });
         if (events.onKeeperSave) events.onKeeperSave(a, 'smother');
       }
@@ -848,6 +881,7 @@ export function createAI(ctx) {
 
   /** keeper releases the ball: roll it to a full-back, or punt it long */
   function distribute(a) {
+    stats.distributions++;
     const t = a.team;
     const dir = TEAMS[t].dir;
     holder = null;
@@ -895,14 +929,10 @@ export function createAI(ctx) {
     }
 
     if (!sp || sp.kind === 'kickoff') {
-      // kickoff: attacking team gets a striker on the ball and a mid in support,
-      // defending team sits behind halfway, everyone outside the circle
-      let x = f.x * dir, z = f.z;
       const mine = sp ? sp.team === t : false;
-      if (mine && f.role === 'ST') { x = -dir * 1.3; z = 0.4; }
-      else if (mine && f.line === 2) { x = -dir * 5.5; z = f.z * 0.7; }
-      else if (!mine) x = clamp(x, dir > 0 ? -HALF_W + 3 : 3.4, dir > 0 ? -3.4 : HALF_W - 3);
-      out.set(clamp(x, -HALF_W + 2, HALF_W - 2), 0, clamp(z, -HALF_D + 2, HALF_D - 2));
+      const k = (mine ? KICKOFF_ATTACK : KICKOFF_DEFEND)[a.slot] || KICKOFF_DEFEND[0];
+      out.set(clamp(toX(t, k.x), -HALF_W + 2, HALF_W - 2), 0,
+        clamp(k.z, -HALF_D + 2, HALF_D - 2));
       return out;
     }
 
@@ -1058,7 +1088,7 @@ export function createAI(ctx) {
   }
 
   Object.assign(api, {
-    update, reset, homeFor, bestPass, bestSwitch, after, deadBallSpot, strike, seek,
+    update, reset, homeFor, bestPass, bestSwitch, after, deadBallSpot, strike, seek, stats,
     chaserOf(t) { return side[t].chaser; },
     coverOf(t) { return side[t].cover; },
     carrierOf(t) { return carrier && carrier.team === t ? carrier : null; },

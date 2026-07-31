@@ -22,7 +22,7 @@ import {
   HALF_W, HALF_D, MATCH_SECONDS, KICKOFF_HOLD, GOAL_HOLD, TEAMS, BALL_R,
   GOAL_HALF_W, BOX_W, BOX_D, RUN_SPEED,
 } from '../core/constants.js';
-import { FORMATION } from './ai.js';
+import { KICKOFF_ATTACK, KICKOFF_DEFEND } from './ai.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const HALF_SECONDS = MATCH_SECONDS / 2;
@@ -69,21 +69,17 @@ export function createMatch(ctx) {
   }
 
   // -------------------------------------------------------------------------
-  /** put every agent on its formation slot for a kickoff */
+  /**
+   * Put every agent on its kickoff slot. The two pictures are authored (see
+   * ai.js) rather than derived by clamping the open-play formation into a half —
+   * clamping stacks three defenders on the centre spot and gifts them the ball.
+   */
   function formationReset(team) {
     for (const a of agents) {
-      const f = FORMATION[a.slot] || FORMATION[0];
+      const k = (a.team === team ? KICKOFF_ATTACK : KICKOFF_DEFEND)[a.slot] || KICKOFF_DEFEND[0];
       const dir = TEAMS[a.team].dir;
-      let x = f.x * dir;
-      let z = f.z;
-      if (a.team !== team) {
-        // defending side sits back behind the halfway line
-        x = clamp(x, dir > 0 ? -HALF_W + 3 : 3.4, dir > 0 ? -3.4 : HALF_W - 3);
-      } else if (f.role === 'ST') {
-        x = -dir * 1.3; z = 0.4;
-      } else if (f.line === 2) {
-        x = -dir * 5.5; z = f.z * 0.7;
-      }
+      const x = k.x * dir;
+      const z = k.z;
       a.pos.set(clamp(x, -HALF_W + 2, HALF_W - 2), 0, clamp(z, -HALF_D + 2, HALF_D - 2));
       a.vel.set(0, 0, 0);
       a.down = false;
@@ -370,6 +366,7 @@ export function createMatch(ctx) {
     formationReset,
     get phase() { return state.phase; },
     get setPiece() { return sp; },
+    get ai() { return ctx.ai; },
     /** force a phase without running the transition (scenario staging) */
     setPhase(p, h = 0) { setPhase(p, h); delivered = true; if (p === 'play') clearSetPiece(); },
   };

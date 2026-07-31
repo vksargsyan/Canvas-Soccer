@@ -49,7 +49,6 @@ const NET_PUSH = 34;             // how fast the mesh pushes the ball back out (
 const NET_E = 0.045;             // the net returns almost none of the shot
 const NET_DRAG = 9.0;            // tangential drag inside the net (1/s)
 
-const _v = new THREE.Vector3();
 const _m = new THREE.Vector3();
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -82,7 +81,9 @@ export function createBallBody(cfg = {}) {
       body.grounded = pos.y <= BALL_R + 1e-3;
       body.inNet = false;
       goalLatch[0] = goalLatch[1] = false;
-      outLatch = 0;
+      // grace period: a restart that drops the ball on the touchline must not
+      // immediately re-trigger the out-of-play event that caused it
+      outLatch = 0.35;
       return body;
     },
 
