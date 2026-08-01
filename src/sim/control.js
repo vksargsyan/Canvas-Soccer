@@ -17,39 +17,55 @@
 // pitch. A ball a player CARRIES is a different model, and it is a well known
 // one. Two mechanisms, both implemented here:
 //
-// 1. THE DRIBBLE POCKET (a servo, not an impulse)
-//    The carrier keeps the ball in a pocket AHEAD of him whose distance scales
-//    with speed. A touch does not apply a fixed impulse; it SOLVES for the pace
-//    that puts the ball in the pocket at the moment of the NEXT touch, given
-//    where the player will be by then and how much a rolling ball loses to the
-//    grass on the way:
+// 1. THE DRIBBLE POCKET (an impulse, and nothing but an impulse)
+//    A touch is a foot on a ball: one pace, applied once, along a direction he
+//    chooses. It is deliberately BLIND to where the ball will be next frame and
+//    to how far away it is now, and that is the whole design.
 //
-//        D = |target - ball|,  T = 1 / touchRate
-//        u = D/T + 0.5 * a_roll * T          (constant-deceleration solve)
+//        u = s + push(s)            push = PUSH_BASE + PUSH_PER_MS * s
 //
-//    That is self-correcting. If the last touch ran away, D shrinks on the next
-//    one and the ball is under-hit until the man is back on it. In steady state
-//    D = s*T (the player's own stride) so u = s + 0.5*a_roll*T — barely faster
-//    than the man, which is what a carried ball looks like. The gap peaks at
-//    (u - s)^2 / (2 a_roll) above the pocket, so `GAP_CEILING` below is enforced
-//    by capping u at exactly the value that solves that expression. The ball is
-//    therefore mathematically unable to get further away than the ceiling on a
-//    controlled touch, which is what makes the metric hold rather than hoping.
+//    Nothing else runs. Between touches the ball's position comes entirely from
+//    sim/physics.js — velocity, skid, roll, drag — and the player's transform
+//    has no say in it whatsoever.
 //
-//    Touches land on FOOTFALLS, not every frame and not on a fixed timer: the
-//    stride phase advances at a rate tied to running speed (~1.25 Hz at a walk,
-//    ~2.3 Hz at a sprint) and a touch fires when the phase wraps. That rhythm —
-//    ball, stride, stride, ball — is what reads as a human carrying it. Between
-//    touches nothing here runs; the ball just rolls under sim/physics.js.
+//    THIS FILE USED TO DO THE OPPOSITE and it is worth spelling out, because the
+//    result passed every metric and was obviously fake. The old touch SOLVED for
+//    the pace that would put the ball in a speed-scaled pocket at the instant of
+//    the next touch: u = D/T + 0.5*a*T for D = |pocket - ball|. That is a servo.
+//    In steady state it forces D = s*T, so u - s = 0.5*a*T, so the gap peaks at
+//    only a*T^2/8 above the pocket — 4 cm at a sprint. Measured on the old code
+//    the gap sat between 0.588 m and 0.73 m for an entire five second run and
+//    the ball was ahead on 100% of frames. Not a dribble. A ball on a stick.
+//    Any "put the ball where it ought to be" term reintroduces that, however it
+//    is dressed up, so there is none here.
 //
-//    Speed loosens control three ways: a longer pocket, a bigger touch error,
-//    and turn swing. A carried ball keeps its old line for a beat when the man
+//    RHYTHM comes from the ball, not from a timer. A touch needs two things: a
+//    FOOTFALL (a stride phase tied to running speed, so contact lands on a step)
+//    and the ball actually within playing distance of his boot. Push it out and
+//    he cannot touch it again until he has run it down — which is exactly the
+//    ball-out / chase / ball-out cycle a carry is made of. Measured at a sprint
+//    the gap now swings 0.6 m -> 1.1 m and back roughly three times a second at
+//    a walk, 1.4 times a second flat out.
+//
+//    A dribble touch is STABBED, not rolled. body.kick() leaves a ball with the
+//    exact topspin for a true roll, which is right for a pass and wrong for a
+//    knock-on: it means the only thing slowing the ball is rolling resistance,
+//    so a touch big enough to see takes two seconds to come back. So the touch
+//    keeps only a fraction of that spin (TOUCH_SKID) and the ball skids before
+//    it bites — sim/physics.js already models the contact patch properly, and
+//    MU_SLIDE puts ~9.4 m/s^2 on a sliding ball against 2.35 for a rolling one.
+//    The ball surges out and checks up. That is what makes a big touch and a
+//    fast touch rate compatible instead of a straight trade.
+//
+//    Speed loosens control three ways: a longer push, a bigger touch error, and
+//    turn swing. A carried ball keeps its old line for a beat when the man
 //    changes direction, so the touch lands on the OUTSIDE of the turn, scaled by
-//    turn rate * speed. And a touch taken with the ball already wide of his new
-//    line, at pace, is the one allowed to break the ceiling and run genuinely
-//    loose — so turning hard at a sprint can cost possession, while the same
-//    turn at a walk cannot. Measured: a 150 deg turn at a sprint swings the
-//    pocket from 0.98 m to 1.29 m and occasionally puts it out of reach.
+//    turn rate * speed — and the harder he is turning the less the touch is
+//    allowed to correct the ball back onto his new line, so it genuinely runs
+//    wide of him rather than snapping in front of his chest. And a touch taken
+//    with the ball already wide of his line, at pace, is the one allowed to
+//    break the ceiling and run loose — so turning hard at a sprint can cost
+//    possession, while the same turn at a walk cannot.
 //
 // 2. THE FIRST TOUCH (kill it, do not bounce it)
 //    sim/physics.js resolves a ball against a player as a restitution collision
@@ -57,8 +73,9 @@
 //    a pass played to feet — the ball pings off at 60% of its arrival pace and
 //    the receiver chases it. So a controlled reception is intercepted BEFORE the
 //    collider ever sees it (this module runs inside the AI step, physics runs
-//    after) and re-solved with the same servo as a dribble touch: the incoming
-//    pace is killed and the ball is dropped into the pocket, ready to run with.
+//    after): the incoming pace is killed outright and replaced with the same
+//    kind of impulse a dribble touch uses, knocked into his stride ready to run
+//    with. Same rule as above — the trap sets a velocity, never a position.
 //
 //    A perfect trap every time is robotic, so difficulty is scored — arrival
 //    speed, angle (a ball over the shoulder is far harder than one into the
@@ -83,79 +100,148 @@ import {
   BALL_R, PLAYER_R, HALF_W, HALF_D, RUN_SPEED, SPRINT_SPEED,
 } from '../core/constants.js';
 
-// --- pocket geometry --------------------------------------------------------
-// How far ahead of the man the ball sits, walking -> sprinting. The floor is not
-// arbitrary: sim/physics.js resolves a boot-height contact at
-// PLAYER_R * 0.72 + BALL_R * 0.95 = 0.588 m, so a pocket tighter than that hands
-// the ball back to the collider every frame — which both spams contacts and
-// re-applies the collider's momentum transfer that this module exists to avoid.
-// The pocket therefore starts just outside the boot band and opens with pace.
-export const CONTACT_R = PLAYER_R * 0.72 + BALL_R * 0.95;
-const POCKET_WALK = 0.78;
-const POCKET_SPRINT = 0.96;
-const POCKET_LOOSE = 0.04;        // extra slack while genuinely sprinting
+// --- reach ------------------------------------------------------------------
+// sim/physics.js resolves a boot-height contact at PLAYER_R*0.72 + BALL_R*0.95,
+// so this is the closest the ball is ever allowed to sit: the collider pushes it
+// back out to exactly here, which makes it the floor of every gap this module
+// can produce.
+export const CONTACT_R = PLAYER_R * 0.72 + BALL_R * 0.95;   // 0.588 m
+
+// How far from his boot the ball may be and still be PLAYABLE. This is the gate
+// that gives the pocket its rhythm: push the ball out and there is simply no
+// touch available until he has run it back down. It is the difference between
+// "touch every 0.4 s because a timer said so" and "touch it when you get to it".
+// A man at full pelt can stretch a little further for it than a man jogging.
+const REACH_WALK = 0.72;
+const REACH_SPRINT = 0.88;
+// If a touch leaves the ball hanging just out of reach — he matched its pace
+// instead of running it down — he lunges for it rather than letting it drift.
+const REACH_STRETCH = 1.14;
+const TOUCH_STALE = 0.85;         // s without a touch before he stretches
+const STRETCH_OFF = 1.20;         // rad across his body before he throws a leg at it
+const FOOT_BAND = 0.09;           // m past the collider radius that counts as "on his boot"
 
 // The hard ceiling on how far a controlled touch may ever put the ball. Kept
 // under sim/ai.js's CARRY_R (PLAYER_R + BALL_R + 0.42 = 1.16 m) on purpose: past
 // that radius the AI stops recognising him as the carrier, the carry logic drops
 // out and the ball is loose again. A carry model that quietly loses its own
-// possession flag every few strides is worse than no carry model.
-const GAP_CEILING = 1.12;
+// possession flag every few strides is worse than no carry model. This bounds
+// the IMPULSE — it caps how hard he may hit it — it does not place the ball.
+const GAP_CEILING = 1.35;
+
+// --- the touch --------------------------------------------------------------
+// Pace over his own, so the ball runs away from him and he has to catch it. It
+// scales with speed, which is what makes the pocket run longer at a sprint: at a
+// walk the ball barely leaves his feet, flat out it is knocked a full stride in
+// front and he sprints onto it.
+const PUSH_BASE = 0.55;           // m/s of pace over his own, standing still
+const PUSH_PER_MS = 0.34;        // ...and per m/s he is running
+const PUSH_PRESSED = 0.74;        // shorter, safer touches with a man on him
+
+// Share of true rolling spin a stabbed touch leaves on the ball. body.kick()
+// hands out the exact topspin for a true roll (right for a pass, wrong for a
+// knock-on); keeping only a fraction of it means the ball skids before it bites,
+// and sim/physics.js puts MU_SLIDE * g ~ 9.4 m/s^2 on a sliding ball against
+// ROLL_RES 2.35 on a rolling one. The touch surges out and checks up, which is
+// what lets it be big enough to see and still come back inside a stride.
+const TOUCH_SKID = 0.6;
+
+// Share of the ball's existing SIDEWAYS momentum a touch leaves on it. A boot
+// cannot teleport a rolling ball onto a new line, and pretending it can is the
+// second half of welding the ball to the player: it lets him turn through ninety
+// degrees and find the ball already back in front of him. See strikeBall().
+const TOUCH_KEEP = 0.6;
+
+// Effective deceleration of a touched ball over the stride that follows, used
+// ONLY to bound the impulse against GAP_CEILING — never to place the ball or to
+// time anything. Not a free parameter: it is ROLL_RES (2.35) plus the quadratic
+// drag term at dribbling pace plus the skid check-up, measured against
+// sim/physics.js at 12-14 m/s.
+const TOUCH_DECEL = 6.4;
 
 // --- stride ----------------------------------------------------------------
-// Footfall frequency. A walking player touches it about every three quarters of
-// a second; a sprinter is on it every stride cycle.
-const TOUCH_HZ_BASE = 1.25;
-const TOUCH_HZ_PER_MS = 0.100;
-const TOUCH_HZ_MIN = 1.25;
-const TOUCH_HZ_MAX = 2.35;
-const TOUCH_REFRACTORY = 0.30;    // s; two touches can never land closer than this
+// Footfall frequency — how often a boot is on the ground and therefore able to
+// play the ball. NOT the touch rate: most footfalls come round with the ball
+// still out in front and nothing happens. The touch rate falls out of the ball's
+// own run-out, quantised to these.
+const STRIDE_HZ_BASE = 1.90;
+const STRIDE_HZ_PER_MS = 0.115;
+const STRIDE_HZ_MIN = 1.90;
+const STRIDE_HZ_MAX = 3.20;
+const STRIDE_STANCE = 0.42;       // share of the stride cycle with a boot on the deck
+const TOUCH_REFRACTORY = 0.22;    // s; two touches can never land closer than this
+const STRETCH_REFRACTORY = 0.10;  // ...but a leg thrown at a leaving ball may be quicker
 
-// Deceleration of a rolling ball on grass: sim/physics.js ROLL_RES (2.35 m/s^2)
-// plus a small allowance for the quadratic drag term, which matters at pace.
-const ROLL_DECEL = 2.62;
+const SWING_K = 0.019;            // rad of turn swing, per (rad/s * m/s)
+const SWING_MAX = 0.42;           // rad of swing on the hardest turn
+const SWING_OFF_FADE = 0.80;      // rad off his line at which swing is done
 
-const LEAD = 1.00;                // how much of the player's own travel to lead by
-const SWING_K = 0.030;            // turn swing, per (rad/s * m/s)
-const SWING_MAX = 0.55;           // m of lateral swing on the hardest turn
+// How hard a touch drags a ball that has drifted off his line back onto it. This
+// is a DIRECTION choice and only a direction choice — he aims the touch across
+// himself, he does not decide where the ball ends up. Turning hard costs him the
+// correction: mid-turn the ball keeps running wide instead of snapping in front.
+const LINE_PULL = 0.85;
+const LINE_PULL_TURN = 0.55;      // share of it lost per rad/s of turn
+const LINE_PULL_MIN = 0.35;       // ...but he never stops trying to keep it
+// The run-out a touch is aimed over, which is what turns a lateral offset into a
+// sane angle. See the aim block in carry() for why this is not just "a stride".
+const AIM_BASE = 1.20;
+const AIM_PER_MS = 0.28;
+// The most a touch may be aimed off the line he is actually running. A body
+// turns at roughly 2 rad/s at a sprint (sim/locomotion.js), so half a radian is
+// about what he can come round onto before the ball has stopped; at a walk he
+// can turn on it far more freely.
+const AIM_OFF_SPRINT = 0.50;
+const AIM_OFF_WALK = 1.30;
+// How a touch turns from a knock-on into a recovery as the ball goes wide.
+const RECOVER_ON = 0.45;          // rad off his line where it starts
+const RECOVER_SPAN = 0.85;        // rad over which it is fully a recovery
+const RECOVER_AIM = 0.74;         // share of the aim run-out it takes off
+const RECOVER_KEEP = 0.85;        // share of the kept sideways momentum it kills
+const CORRECT_MAX = 1.05;         // rad — a touch is never swung backwards
+const RECOVER_PUSH = 0.80;        // share of the power a stretched leg has not got
+
+const EDGE_TURN = 2.4;            // m from a line at which touches turn infield
+const EDGE_TURN_K = 1.5;          // how hard the aim swings away from it
 
 // Turning hard at pace must be able to cost you the ball, or a carry is a
 // guarantee and there is no reason to ever slow down. Only a touch taken with
 // the ball already wide of his line, at pace, may break GAP_CEILING — out to
 // LOOSE_CEILING, which is loose enough that sim/ai.js drops him as the carrier
 // and the ball is genuinely there to be won.
-// A MISCUE. Not every touch comes off the laces: at pace, one in a dozen or so
-// is taken with the wrong part of the boot, and it goes ACROSS him rather than
-// in front of him — far enough off his line to be outside his own shoulder, and
-// soft, because a stubbed contact does not fly. He runs past it and has to check
-// back for it. This is the only thing in the model that can put the ball behind
-// the man carrying it, and without it the ball sat inside 23 degrees of his
-// facing on every frame of every run: a pocket that never breathes sideways,
-// which is what `aheadFraction` reading exactly 1.000 was reporting.
-const SCUFF_P = 0.26;             // scaled by pace and by how raw he is
-const SCUFF_MIN = 0.30;           // rad across himself, at the least
-const SCUFF_SPAN = 0.35;          // ...and up to this much more
-const SCUFF_PACE = 0.35;          // share of the pace he meant to put on it
-
 const LOOSE_OFF_ON = 0.42;        // rad off his line before a touch can be heavy
 const LOOSE_OFF_SPAN = 0.85;      // rad over that at which it is as loose as it gets
 const LOOSE_CEILING = 2.30;       // m a heavy touch may put it — loose enough to lose
+
+// The ordinary scuffed touch: across the ball rather than through it. See the
+// block in carry() — this is what stops a straight-line carry being a ball on
+// a stick, and it is the same event that gives a defender something to press.
+const SCUFF_K = 0.44;             // rate, per (pace * lack of competence)
+const SCUFF_TIGHT = 0.12;         // share of that rate that survives on a ball at his feet
+const SCUFF_MAX = 0.20;           // never more than one touch in five
+const SCUFF_ANG = 0.34;           // rad it goes across him, minimum
+const SCUFF_ANG_SPAN = 0.16;      // ...and the spread above that
+const SCUFF_PACE = 0.88;          // share of his own pace the ball is left with
+const SCUFF_REFRACTORY = 0.44;    // s before he has his feet back under him
 
 // --- receiving --------------------------------------------------------------
 const TRAP_R = 1.15;              // reach at which a player can take a ball down
 const TRAP_MIN_SPEED = 2.4;       // below this the ball is a loose roll, not a pass
 const TRAP_MIN_CLOSING = 1.5;     // m/s of closing speed before it is a reception
 const TRAP_MAX_HEIGHT = 1.45;     // above this it is a header, not a trap
-const TRAP_SETTLE = 0.34;         // s the good touch has to put it in the pocket
+const TRAP_PUSH = 0.62;           // share of a dribble knock a settling touch is
+const TRAP_PULL = 0.90;           // how squarely he takes it back onto his line
 const TRAP_KEEP = 0.16;           // share of arrival pace a scruffy touch leaves on
 const TRAP_COOLDOWN = 0.35;       // s before the same man may re-take the ball
 const GATHER_MIN_SPEED = 2.5;     // m/s he must be running to gather a dead ball
 const SELF_RECOVER = 0.55;        // s before the last toucher may reclaim his own ball
+const SELF_KEEP_R = 3.20;         // m out to which his own dribble touch is still his
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 const _v = new THREE.Vector3();
+const _w = new THREE.Vector3();
 
 export function createBallControl(ctx) {
   const agents = ctx.agents;
@@ -180,6 +266,15 @@ export function createBallControl(ctx) {
         touches: 0,
         trapQ: 1,
         badTouch: false,
+        // Is the ball he last touched one he is CARRYING? A ball he knocked in
+        // front of himself on purpose is not a ball arriving at him, and the
+        // reception path below must leave it alone: run a first touch on your own
+        // dribble and every few strides you roll for a bad one and knock your own
+        // ball into the corner — which is precisely how this module used to lose
+        // possession for reasons that looked like nothing at all. Cleared by a
+        // heavy touch, so that one is genuinely there to be won.
+        carrying: false,
+        scuffed: false,             // the last touch came off the wrong part of the boot
       };
       state.set(a, st);
     }
@@ -205,38 +300,102 @@ export function createBallControl(ctx) {
     return n;
   }
 
-  /** pocket distance for a player travelling at `s` */
-  function pocketFor(s, sprint) {
+  /**
+   * How strongly a touch taken this close to a line has to be turned back
+   * infield. Zero over most of the pitch, 1 on the paint.
+   */
+  function edgeBias(v, half) {
+    const in_ = half - EDGE_TURN - Math.abs(v);
+    if (in_ >= 0) return 0;
+    return Math.sign(v) * clamp(-in_ / EDGE_TURN, 0, 1);
+  }
+
+  /** how far in front of his boot a ball is still playable at speed `s` */
+  function reachFor(s) {
     const f = clamp(s / SPRINT_SPEED, 0, 1);
-    let p = POCKET_WALK + (POCKET_SPRINT - POCKET_WALK) * f;
-    if (sprint) p += POCKET_LOOSE * f;
-    return p;
+    return REACH_WALK + (REACH_SPRINT - REACH_WALK) * f;
   }
 
   /**
-   * The pace that carries the ball from where it is to (tx, tz) in T seconds,
-   * given it is decelerating on the grass the whole way — and never more pace
-   * than would push it past GAP_CEILING from the man before it slows down.
-   *
-   *   gap_peak = gap_now + (u - s)^2 / (2 a)   =>   u_max = s + sqrt(2 a headroom)
-   *
-   * This one line is what stops a touch turning back into a boot up the pitch.
+   * How hard he knocks it, as pace OVER his own. This is the entire strength
+   * model: a function of how fast he is running and nothing else. It never sees
+   * the ball's position, so it cannot become a spring.
    */
-  function solvePace(a, tx, tz, T, s, gapNow) {
-    const dx = tx - body.pos.x, dz = tz - body.pos.z;
-    const d = Math.hypot(dx, dz);
-    let u = d / T + 0.5 * ROLL_DECEL * T;
-    const headroom = Math.max(0.02, GAP_CEILING - gapNow);
-    const uMax = s + Math.sqrt(2 * ROLL_DECEL * headroom);
-    u = clamp(u, 0.25, uMax);
-    return { u, dx: d < 1e-4 ? 0 : dx / d, dz: d < 1e-4 ? 0 : dz / d, d };
+  function pushFor(s, pressed) {
+    const p = PUSH_BASE + PUSH_PER_MS * Math.max(0, s);
+    return pressed ? p * PUSH_PRESSED : p;
   }
 
-  /** put the ball on its way, and record the contact against `a` */
-  function strikeBall(a, st, dx, dz, u, lift = 0) {
+  /**
+   * The most pace a touch may carry without putting the ball further than
+   * `ceil` from him before he is back level with it. The ball leaves at
+   * dir * u + w, where w is whatever the touch did not take off it, so what has
+   * to be bounded is the speed RELATIVE to him:
+   *
+   *   gap_peak = gap_now + |v_rel|^2 / (2 a)   =>   |v_rel| <= sqrt(2 a headroom)
+   *
+   * A bound on the impulse, evaluated once, at the instant of contact. It is the
+   * only thing in the touch that reads the current gap at all, and all it can do
+   * is hit it softer — it can never pull the ball in, and it never touches the
+   * direction.
+   */
+  function paceCap(dirX, dirZ, wx, wz, gapNow, ceil) {
+    const rvMax = Math.sqrt(2 * TOUCH_DECEL * Math.max(0.02, ceil - gapNow));
+    // |dir*u + w| = rvMax  ->  u^2 + 2u(dir.w) + |w|^2 - rvMax^2 = 0
+    const b = dirX * wx + dirZ * wz;
+    const c = wx * wx + wz * wz - rvMax * rvMax;
+    const disc = b * b - c;
+    // No pace at all satisfies the bound — the ball is already going to end up
+    // further away than the ceiling whatever he does, usually because it is
+    // behind him and he is sprinting. The cap has nothing to say, so it says
+    // nothing. (Returning the softest touch here instead was a real bug: it
+    // stopped the ball stone dead behind a man at ten metres a second, and he
+    // then had to turn round and run four metres back to it.)
+    if (disc <= 0) return Infinity;
+    return Math.max(0.2, -b + Math.sqrt(disc));
+  }
+
+  /**
+   * The part of the ball's current velocity that a touch along (dx, dz) does NOT
+   * take off it — see strikeBall()'s `keep`.
+   */
+  function keptMomentum(dx, dz, keep, out) {
+    const along = body.vel.x * dx + body.vel.z * dz;
+    out.x = (body.vel.x - along * dx) * keep;
+    out.z = (body.vel.z - along * dz) * keep;
+    return out;
+  }
+
+  /**
+   * Put the ball on its way, and record the contact against `a`.
+   *
+   * `skid` is how much of a true roll the ball leaves with: 1 is body.kick()'s
+   * own exact-roll topspin (a passed ball, which keeps running), lower means the
+   * ball slides on the grass first and checks up hard. A dribble touch is a stab
+   * and skids; a trap sets it rolling.
+   *
+   * `keep` is the share of the ball's EXISTING sideways momentum that survives
+   * the contact. body.kick() overwrites the velocity outright, which is right
+   * for a struck pass and wrong for a boot brushing a ball that is already
+   * rolling: it lets a touch swing the ball through ninety degrees in one frame,
+   * so a man can turn on a sixpence and the ball is simply always in front of
+   * him. Leaving some of the old line on is what makes turning at pace a real
+   * decision — the ball runs wide of his new heading and he has to come back
+   * across for it, or lose it.
+   */
+  function strikeBall(a, st, dx, dz, u, lift = 0, skid = 1, keep = 0) {
     _v.set(dx, 0, dz);
     if (_v.lengthSq() < 1e-8) _v.set(a.faceX || 0, 0, a.faceZ || 1);
+    _v.y = 0;
+    _v.normalize();
+    if (keep > 0) keptMomentum(_v.x, _v.z, keep, _w);
     body.kick(_v, u, lift, 0);
+    if (keep > 0) { body.vel.x += _w.x; body.vel.z += _w.z; }
+    if (skid < 1 && lift <= 0.01) {
+      // bleed the rolling spin only; sidespin is nobody's business here
+      body.spin.x *= skid;
+      body.spin.z *= skid;
+    }
     body.lastTouch = a;
     body.lastTouchTeam = a.team;
     body.lastTouchPart = 'foot';
@@ -256,7 +415,11 @@ export function createBallControl(ctx) {
    *   aimX, aimZ   the point he is steering toward (the caller already has it)
    *   opts.sprint  is he flat out
    *   opts.skill   0..1 competence, drives touch error
-   *   opts.pressed is a defender on him (tightens the pocket)
+   *   opts.pressed is a defender on him (shortens the touch)
+   *
+   * On most frames this does nothing at all: it advances his stride phase and
+   * returns. The ball is out in front rolling on its own and there is no touch
+   * to take. That is the point.
    *
    * Returns true on a frame where the ball was actually touched.
    */
@@ -274,6 +437,30 @@ export function createBallControl(ctx) {
     if (hl < 0.05) { hx = a.faceX || 0; hz = a.faceZ || 1; hl = Math.hypot(hx, hz) || 1; }
     hx /= hl; hz /= hl;
 
+    // He cannot play it somewhere he cannot follow. Callers hand in a steering
+    // target that can jump a long way in a single frame — sim/ai.js re-picks
+    // from a fan of directions every step — while a body at ten metres a second
+    // turns at about two radians a second and no faster. Knocking the ball down
+    // a line he is not on and cannot get onto inside a stride is not a dribble,
+    // it is a kick into the corner, and the gap it opens is unbounded because
+    // the two of them are simply running apart. So the aim is limited to the
+    // angle he could actually turn through while the ball is out.
+    if (s > 1.5) {
+      const vx = a.vel.x / s, vz = a.vel.z / s;
+      const cos = clamp(vx * hx + vz * hz, -1, 1);
+      const lim = AIM_OFF_SPRINT
+        + (AIM_OFF_WALK - AIM_OFF_SPRINT) * (1 - clamp(s / SPRINT_SPEED, 0, 1));
+      const off0 = Math.acos(cos);
+      if (off0 > lim) {
+        // rotate the travel direction `lim` toward the steering line
+        const sgn = (vx * hz - vz * hx) < 0 ? 1 : -1;   // toward r = (hz,-hx)
+        const c = Math.cos(lim * sgn), sn = Math.sin(lim * sgn);
+        const nx = vx * c + vz * sn;
+        const nz = -vx * sn + vz * c;
+        hx = nx; hz = nz;
+      }
+    }
+
     // ---- turn rate of that line ----
     const yaw = Math.atan2(hx, hz);
     if (st.hasHeading) {
@@ -287,60 +474,117 @@ export function createBallControl(ctx) {
     st.hasHeading = true;
 
     const sprint = opts.sprint !== undefined ? !!opts.sprint : s > RUN_SPEED * 1.02;
-    let pocket = pocketFor(s, sprint);
-    if (opts.pressed) pocket *= 0.88;          // shorten the stride under contact
 
     // ---- stride phase ----
-    const hz_ = clamp(TOUCH_HZ_BASE + TOUCH_HZ_PER_MS * s, TOUCH_HZ_MIN, TOUCH_HZ_MAX);
+    // A boot can only play the ball while it is ON THE GROUND. The stride runs
+    // at a speed-scaled rate and a foot is planted for the first STRIDE_STANCE
+    // of each cycle; the rest of the time he is between steps and there is
+    // nothing to touch it with. That window is what lets the ball arrive at the
+    // wrong moment: if it comes back to him mid-flight he runs on and takes it a
+    // beat later, level with his hip instead of out in front — the overrun that
+    // every real dribble is full of and no timer ever produces.
+    const hz_ = clamp(STRIDE_HZ_BASE + STRIDE_HZ_PER_MS * s, STRIDE_HZ_MIN, STRIDE_HZ_MAX);
     st.phase += hz_ * dt;
+    if (st.phase >= 1) st.phase -= 1;
+    st.phase = clamp(st.phase, 0, 1);
+    const planted = st.phase < STRIDE_STANCE;
 
     const gapx = body.pos.x - a.pos.x, gapz = body.pos.z - a.pos.z;
     const gap = Math.hypot(gapx, gapz);
     const since = t - st.lastTouchT;
+    // How far off the line he is running the ball has ended up. Dead ahead is a
+    // ball he is carrying; across his body is a ball he is losing.
+    const off = Math.acos(clamp((gapx * hx + gapz * hz) / Math.max(0.05, gap), -1, 1));
 
-    let want = false;
-    if (st.phase >= 1) { st.phase -= 1; want = true; }
-    // recovery touch: it is running away from him between strides. The trigger
-    // sits inside GAP_CEILING rather than at some multiple of the pocket,
-    // because past the ceiling sim/ai.js has already stopped calling him the
-    // carrier and this function is no longer running at all.
-    if (!want && gap > Math.min(pocket * 1.2, GAP_CEILING - 0.10)) want = true;
-    // it has come back under his feet — poke it out in front again
-    if (!want && gap < CONTACT_R * 1.02 && s > 1.0) want = true;
+    // ---- is there a touch to take? ----
+    // He can only play a ball that is at his feet. Between touches the ball is
+    // out in front and there is nothing to do but run — which is the whole
+    // reason the gap breathes instead of sitting still.
+    const reach = reachFor(s);
+    let want = planted && gap <= reach;
+    // it is on his boot — play it, whatever the stride is doing, because the
+    // alternative is the collider playing it for him
+    if (!want && gap < CONTACT_R + FOOT_BAND && s > 1.0) want = true;
+    // It has gone across his body and is running away from his line. He throws a
+    // leg at it — off balance, out of stride, but it is that or lose it, and
+    // sim/ai.js stops calling this function altogether at CARRY_R (1.16 m), so
+    // there are only a few frames in which anything can be done at all. This is
+    // the whole answer to a scuffed touch: it genuinely gets away from his front
+    // for a beat, and then he reaches out and drags it back.
+    let stretch = false;
+    if (!want && gap <= REACH_STRETCH && off > STRETCH_OFF) { want = true; stretch = true; }
+    // he has matched its pace instead of running it down and it is hanging just
+    // out of range: stretch for that too rather than letting it drift away
+    if (!want && since > TOUCH_STALE && gap <= REACH_STRETCH) { want = true; stretch = true; }
 
-    if (since < TOUCH_REFRACTORY) want = false;
-    if (gap > 2.6) want = false;               // this is a chase, not a carry
+    // A stretch is not part of the rhythm — it is a leg thrown at a ball that is
+    // leaving — so it does not have to wait for the stride to come round again.
+    // A scuff costs him a beat: he is off balance and the ball is on the wrong
+    // side of him, and until he has got his feet back under himself there is
+    // nothing he can do but watch it run across him. That pause is the whole
+    // reason a scuff shows up in the picture at all — take it away and he simply
+    // re-takes the ball on the next step and nothing ever happened.
+    const refr = st.scuffed ? SCUFF_REFRACTORY : TOUCH_REFRACTORY;
+    if (since < (stretch ? STRETCH_REFRACTORY : refr)) want = false;
     if (body.pos.y > BALL_R + 0.45) want = false;   // bouncing: not his to place
     if ((a.kickLock || 0) > 0) want = false;   // mid-strike, the boot is committed
-    // A pass or a shot he has just struck is GONE. Without this the carry servo
-    // reels his own release back into the pocket a frame later, and no ball ever
-    // leaves a player's feet.
+    // A pass or a shot he has just struck is GONE. Without this the carry reels
+    // his own release back in a frame later and no ball ever leaves a player's
+    // feet.
     if (t - st.kickedAt < 0.4) want = false;
 
-    st.phase = clamp(st.phase, 0, 1);
     if (!want) return false;
 
-    // ---- where the touch must put it ----
-    // Ahead of where he WILL be, not where he is: by the time the next stride
-    // comes round he has covered s*T, and a touch aimed at his current feet is
-    // a touch he runs past.
-    const T = 1 / hz_;
-    const px = a.pos.x + a.vel.x * T * LEAD;
-    const pz = a.pos.z + a.vel.z * T * LEAD;
+    // ---- which way he knocks it ----
+    // ONE angle off his own line, and that is the whole of the aim. Nothing here
+    // decides how far the ball goes or when it arrives.
+    //
+    // In this yaw convention (+yaw rotates the heading toward (hz, -hx)) the
+    // right-hand vector is r = (hz, -hx), so a positive angle knocks it right.
+    const rx = hz, rz = -hx;
+    const lat = gapx * rx + gapz * rz;          // signed offset from his line
 
-    // A carried ball keeps its old line for a beat: the harder and faster he
-    // turns, the wider the touch lands on the outside of the turn. In this yaw
-    // convention (+yaw rotates the heading toward (hz, -hx)) the outside of the
-    // turn is -sign(turn) along that vector.
+    // Back onto his line. The angle is small because the ball runs a long way on
+    // one touch: a ball 0.4 m off his line with four metres of run-out in front
+    // of it needs about six degrees, not the twenty a straight "aim at a point a
+    // stride ahead" gives — that one over-corrects, sends the ball across his
+    // body and out the other side, and loses possession for reasons that read as
+    // random. AIM_LEN is that run-out, and it grows with pace.
+    // The wider the ball has ended up, the more of the touch is about getting it
+    // BACK rather than getting it forward. A ball dead ahead is knocked on down
+    // the same long line; a ball out at eighty degrees is played square into his
+    // stride, which means aiming at a point a stride ahead of him instead of
+    // four metres ahead — a much bigger angle — and killing the sideways run it
+    // already has rather than leaving it on.
+    const recover = clamp((off - RECOVER_ON) / RECOVER_SPAN, 0, 1);
+    const aimLen = (AIM_BASE + AIM_PER_MS * s) * (1 - RECOVER_AIM * recover);
+    // Turning hard costs him the correction — mid-turn the ball keeps running
+    // wide instead of being snapped back in front of him.
+    const pull = LINE_PULL
+      * clamp(1 - Math.abs(st.turn) * LINE_PULL_TURN, LINE_PULL_MIN, 1)
+      * (1 + recover);
+    // Bounded: a touch is a foot going forward through the ball. However far off
+    // his line it has ended up he never swings at it backwards.
+    const correct = clamp(Math.atan2(-lat * pull, aimLen), -CORRECT_MAX, CORRECT_MAX);
+    // How far off his line the ball already is. It gates both terms below.
+    // A carried ball keeps its old line for a beat when the man changes
+    // direction, so the touch lands on the OUTSIDE of the turn. But only while
+    // the ball is still in front of him: a ball already out at forty degrees
+    // across his body is one he plays back into his stride, not one he knocks
+    // further into the corner. Without that fade the swing compounds — each
+    // touch puts it wider than the last — and he loses it to arithmetic rather
+    // than to a decision.
     const swing = clamp(-st.turn * s * SWING_K, -SWING_MAX, SWING_MAX)
-      * (sprint ? 1.35 : 1.0);
+      * (sprint ? 1.35 : 1.0)
+      * clamp(1 - off / SWING_OFF_FADE, 0, 1);
 
-    let tx = px + hx * pocket + hz * swing;
-    let tz = pz + hz * pocket - hx * swing;
-    tx = clamp(tx, -HALF_W + 0.5, HALF_W - 0.5);
-    tz = clamp(tz, -HALF_D + 0.5, HALF_D - 0.5);
-
-    const sol = solvePace(a, tx, tz, T, s, gap);
+    // ---- how hard ----
+    // Speed in, pace out. It never sees the gap. The one thing that takes power
+    // off it is a ball that has got away across his body: a leg thrown out at
+    // something beside his hip has no swing behind it, and a full-blooded knock
+    // struck off balance at sixty degrees to his own line does not rescue the
+    // situation, it fires the ball into the next postcode.
+    const push = pushFor(s, opts.pressed) * (1 - RECOVER_PUSH * recover);
 
     // ---- touch error ----
     // Scruffiness rises with pace and falls with competence. A sprinter turning
@@ -356,32 +600,68 @@ export function createBallControl(ctx) {
     // is a reach across the body. Dead ahead is free; wide of the line at pace is
     // where a touch is allowed to break the pocket ceiling and run loose. A man
     // at a walk can spin on the ball all day — there is no momentum in it — so
-    // pace gates the whole term.
-    const off = Math.acos(clamp((gapx * hx + gapz * hz) / Math.max(0.05, gap), -1, 1));
+    // pace gates the whole term. `off` is measured above, at the gate.
     const fast = clamp((s - RUN_SPEED * 0.7) / (SPRINT_SPEED - RUN_SPEED * 0.7), 0, 1);
     const loose = clamp((off - LOOSE_OFF_ON) / LOOSE_OFF_SPAN, 0, 1)
       * fast * clamp(1.25 - skill, 0, 1) * 1.9;
     const heavy = loose > 0 && rng.float() < loose;
 
-    // ...and the miscue, which is a different failure from a heavy touch: heavy
-    // is the right idea hit too hard, this is the wrong part of the boot. It is
-    // gated on pace and competence, so a good player at a jog never produces one.
-    const scuffed = rng.float() < SCUFF_P * fast * clamp(1.35 - skill, 0, 1);
-    const scuff = scuffed
-      ? (rng.float() < 0.5 ? -1 : 1) * (SCUFF_MIN + rng.float() * SCUFF_SPAN)
+    // ---- and the ordinary one that simply is not clean ----
+    // Not every touch comes off the middle of the boot. At pace the foot catches
+    // the ball across its face instead of through it: it goes across him at an
+    // angle AND under-hit, so it dies under his own stride, ends up level with
+    // his hip rather than out in front, and he has to check back onto it. This
+    // is the ordinary scruffiness a running dribble is full of. It is also the
+    // only thing in a straight-line carry that puts the ball behind the line of
+    // his shoulders — a man running straight with a clean touch every time has
+    // the ball in front of him on literally every frame, which is what a welded
+    // ball looks like whatever the pocket is doing. Rate rises with pace and
+    // with how hard he is turning, and falls with competence.
+    // The touch that gets away from a man is the one taken at FULL STRETCH — toe
+    // end of the boot, ball at the edge of what he can reach, no weight behind
+    // it. A ball sitting under his feet he can always place. So the rate rises
+    // with how far out the ball is when he reaches it, and with how hard he is
+    // turning at the time.
+    const strain = clamp((gap - CONTACT_R) / Math.max(0.05, reach - CONTACT_R), 0, 1);
+    const scuffP = clamp(SCUFF_K * (SCUFF_TIGHT + (1 - SCUFF_TIGHT) * strain)
+      * (1.25 - skill) * (1 + Math.min(1.2, Math.abs(st.turn) * 0.4)), 0, SCUFF_MAX);
+    const scuff = !heavy && rng.float() < scuffP;
+    const scuffAng = scuff
+      ? (rng.float() < 0.5 ? -1 : 1) * (SCUFF_ANG + rng.float() * SCUFF_ANG_SPAN)
       : 0;
 
-    const ang = rng.gauss() * 0.06 * err + (heavy ? rng.gauss() * 0.16 : 0) + scuff;
+    const ang = correct + swing + scuffAng
+      + rng.gauss() * 0.06 * err + (heavy ? rng.gauss() * 0.16 : 0);
     const ca = Math.cos(ang), sa = Math.sin(ang);
-    const dx = sol.dx * ca - sol.dz * sa;
-    const dz = sol.dx * sa + sol.dz * ca;
-    let u = sol.u * (1 + rng.gauss() * 0.055 * err);
-    if (scuffed) u *= SCUFF_PACE;        // stubbed, not struck: it does not fly
+    let dx = hx * ca + rx * sa;
+    let dz = hz * ca + rz * sa;
+    // He does not knock it into the stand. Near a line the touch is turned back
+    // infield — a change of direction and nothing else; the pace it is struck
+    // with is untouched. (The servo this replaced got the same effect for free
+    // by clamping its target point inside the pitch.)
+    const ebx = edgeBias(body.pos.x, HALF_W), ebz = edgeBias(body.pos.z, HALF_D);
+    if (ebx || ebz) {
+      dx -= ebx * EDGE_TURN_K; dz -= ebz * EDGE_TURN_K;
+      const dl = Math.hypot(dx, dz) || 1;
+      dx /= dl; dz /= dl;
+    }
+    let u = s + push * (1 + rng.gauss() * 0.10 * err);
     if (heavy) u += (0.5 + rng.float()) * (1 + loose);
+    // A scuffed touch leaves the ball SLOWER than the man, not faster. That is
+    // the whole character of it: the ball dies under his stride, he runs past it
+    // and it ends up level with his hip. An under-hit that is still quicker than
+    // he is just a shorter pocket, and the ball stays obediently in front.
+    if (scuff) u = Math.max(0.8, s * SCUFF_PACE);
+    // The only reading of the gap in the whole touch, and it can only hit it
+    // SOFTER. Never a pull, never a placement.
     const ceil = heavy ? LOOSE_CEILING : GAP_CEILING;
-    u = clamp(u, 0.2, s + Math.sqrt(2 * ROLL_DECEL * Math.max(0.02, ceil - gap)));
+    const keep = TOUCH_KEEP * (1 - RECOVER_KEEP * recover);
+    keptMomentum(dx, dz, keep, _w);
+    u = Math.min(u, paceCap(dx, dz, _w.x - a.vel.x, _w.z - a.vel.z, gap, ceil));
 
-    strikeBall(a, st, dx, dz, u, 0);
+    strikeBall(a, st, dx, dz, u, 0, TOUCH_SKID, keep);
+    st.carrying = !heavy;
+    st.scuffed = scuff;
     if (a.anim && a.anim.play) a.anim.play('dribble', { force: true });
     if (events.onCarryTouch) events.onCarryTouch(a, u);
     return true;
@@ -412,9 +692,11 @@ export function createBallControl(ctx) {
   }
 
   /**
-   * Take an arriving ball down. On a good touch the pace is killed and the ball
-   * is dropped straight into the dribble pocket; on a bad one a chunk of the
-   * pace survives and it squirts off line.
+   * Take an arriving ball down. On a good touch the arrival pace is killed
+   * outright and replaced with a short knock into his stride — the same impulse
+   * a dribble touch uses, softer, so he is running with it rather than watching
+   * it bounce off. On a bad one a chunk of the pace survives and it squirts off
+   * line.
    */
   function firstTouch(a, opts = {}) {
     const st = stateOf(a);
@@ -433,17 +715,24 @@ export function createBallControl(ctx) {
     st.badTouch = !good;
 
     if (good) {
-      // settle it into the pocket, exactly as a dribble touch would
-      const pocket = pocketFor(s, false);
-      const T = TRAP_SETTLE;
-      const tx = clamp(a.pos.x + a.vel.x * T * LEAD + hx * pocket, -HALF_W + 0.5, HALF_W - 0.5);
-      const tz = clamp(a.pos.z + a.vel.z * T * LEAD + hz * pocket, -HALF_D + 0.5, HALF_D - 0.5);
+      // Knock it into his stride: forward along his line, dragged back onto it
+      // by however far off to one side the ball has arrived.
       const gap = gapTo(a);
-      const sol = solvePace(a, tx, tz, T, s, Math.min(gap, GAP_CEILING - 0.05));
-      // a heavier pass is never quite fully deadened — the touch runs on a
-      // little, in proportion to how marginal it was
-      const u = clamp(sol.u + bs * TRAP_KEEP * (1 - q), 0.2, s + 2.0);
-      strikeBall(a, st, sol.dx || hx, sol.dz || hz, u, 0);
+      const rx = hz, rz = -hx;
+      const lat = (body.pos.x - a.pos.x) * rx + (body.pos.z - a.pos.z) * rz;
+      let dx = hx + rx * (-lat * TRAP_PULL);
+      let dz = hz + rz * (-lat * TRAP_PULL);
+      const dl = Math.hypot(dx, dz) || 1;
+      dx /= dl; dz /= dl;
+      // A trap is a softer touch than a dribble knock — he is killing it, not
+      // driving it on — and a heavier pass is never quite fully deadened, so it
+      // runs on a little in proportion to how marginal the take was.
+      let u = s + pushFor(s, false) * TRAP_PUSH + bs * TRAP_KEEP * (1 - q);
+      u = Math.min(u, paceCap(dx, dz, -a.vel.x, -a.vel.z,
+        Math.min(gap, GAP_CEILING - 0.05), GAP_CEILING));
+      u = Math.max(u, 0.2);
+      strikeBall(a, st, dx, dz, u, 0, TOUCH_SKID);
+      st.carrying = true;
       if (a.anim && a.anim.play) a.anim.play('dribble', { force: true });
     } else {
       // Bad touch: it runs loose. A mishit pass carries on roughly the way it
@@ -460,6 +749,7 @@ export function createBallControl(ctx) {
       const u = live ? Math.max(2.0, bs * keep) : Math.max(2.2, s * 0.5);
       const lift = rng.float() < 0.32 ? 0.7 + 1.3 * rng.float() : 0;
       strikeBall(a, st, dx, dz, u, lift);
+      st.carrying = false;               // this one is there to be won
     }
 
     if (events.onFirstTouch) events.onFirstTouch(a, { quality: q, good, speed: bs });
@@ -504,9 +794,17 @@ export function createBallControl(ctx) {
     // dribbling" from "that got away from me".
     if (t - st.kickedAt < 0.5) return false;
     if (body.lastTouch === a && t - st.lastTouchT < SELF_RECOVER) return false;
-
+    // A ball he knocked in front of himself on purpose is not arriving at him,
+    // it is his — for as long as it is still inside the envelope a carry runs
+    // in. Without this the trap fires on his own dribble touch every stride and
+    // rolls for a bad one each time, and a good one re-solves the ball back to
+    // his feet, which is the weld this module exists to avoid. Past SELF_KEEP_R
+    // it has genuinely got away from him and taking it down again is a first
+    // touch like any other.
     const dx = body.pos.x - a.pos.x, dz = body.pos.z - a.pos.z;
     const gap = Math.hypot(dx, dz);
+    if (body.lastTouch === a && st.carrying && gap < SELF_KEEP_R) return false;
+
     if (gap > TRAP_R || gap < 1e-4) return false;
     if (body.pos.y > TRAP_MAX_HEIGHT) return false;
 
@@ -568,16 +866,19 @@ export function createBallControl(ctx) {
     firstTouch,
     canReceive,
     reset,
-    /** where the ball should be sitting for this player right now */
+    /**
+     * The point in front of his boot a touch is aimed THROUGH. Explicitly not
+     * "where the ball should be": the ball is wherever its own physics has put
+     * it, which on most frames is somewhere well past here.
+     */
     pocketPoint(a, out = new THREE.Vector3()) {
-      const s = speedOf(a);
-      const p = pocketFor(s, s > RUN_SPEED * 1.02);
+      const p = reachFor(speedOf(a));
       let hx = a.vel.x, hz = a.vel.z;
       let hl = Math.hypot(hx, hz);
       if (hl < 0.05) { hx = a.faceX || 0; hz = a.faceZ || 1; hl = Math.hypot(hx, hz) || 1; }
       return out.set(a.pos.x + (hx / hl) * p, BALL_R, a.pos.z + (hz / hl) * p);
     },
-    pocketFor,
+    reachFor,
     /** read-only view of a player's control state (HUD / debug) */
     stateOf(a) {
       const st = stateOf(a);
