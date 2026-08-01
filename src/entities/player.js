@@ -1056,19 +1056,23 @@ function buildBeard(density = 1) {
     },
   }));
 
-  // moustache: two wings with a philtrum gap between them
+  // Moustache: two wings with a philtrum gap between them. Its lower edge used
+  // to reach 101 deg and the mouth anchor is at 101.9 deg, so the shell landed
+  // squarely on the upper lip and every bearded player had no visible mouth at
+  // all. 96.5 deg clears the vermilion border with room to spare — a moustache
+  // rests ABOVE the lip in every reference head, never on it.
   for (const s of [-1, 1]) {
     parts.push(hairShell({
-      inner: () => 88 * D2R,
+      inner: () => 86 * D2R,
       outer: (az) => {
         const w = s * Math.sin(az);
-        return (w > 0.035 && w < 0.30 && Math.cos(az) > 0.80) ? 101 * D2R : 88 * D2R;
+        return (w > 0.035 && w < 0.30 && Math.cos(az) > 0.80) ? 96.5 * D2R : 86 * D2R;
       },
       nu: 16, nv: 3, streak: 4,
       puff: (az, t) => {
         const w = s * Math.sin(az);
         if (!(w > 0.035 && w < 0.30 && Math.cos(az) > 0.80)) return -0.12;
-        return 0.052 * density * Math.sin(t * Math.PI) ** 0.6 + 0.030;
+        return 0.050 * density * Math.sin(t * Math.PI) ** 0.6 + 0.028;
       },
     }));
   }
@@ -1182,88 +1186,160 @@ function buildHand(s, keeper) {
 // ---------------------------------------------------------------------------
 
 /**
- * BOOT. The reference boots carry a toe cap, a side flash, a heel counter, a
- * laced tongue and a studded sole that reads even at gameplay distance. The old
- * build was a box with one stripe and a slab sole that rendered as a black
- * rectangle under every foot.
+ * Loft a closed shoe shell through a list of cross-sections.
+ *
+ * Each station is [z, halfWidth, topY, botY]. The section is a superellipse
+ * that is flat underneath and rounded over the top, which is the whole point:
+ * a boot is not a body of revolution and it is not a box either. Sweeping a
+ * section whose plan width and top height are both functions of z is the only
+ * way to get a real shoe silhouette — narrow heel, wide ball, tapered toe,
+ * high at the ankle, low over the toes — out of a few dozen numbers.
+ *
+ * The first and last stations pinch to a sliver so the ends close.
+ */
+function loftShoe(sts, na = 20, flatBottom = 0.30) {
+  const pos = [], idx = [];
+  const rows = na + 1;
+  for (let k = 0; k < sts.length; k++) {
+    const [z, hw, ty, by] = sts[k];
+    const yc = (ty + by) * 0.5, hh = (ty - by) * 0.5;
+    for (let i = 0; i <= na; i++) {
+      const a = (i / na) * TAU;
+      const cu = Math.cos(a), sv = Math.sin(a);
+      pos.push(
+        hw * Math.sign(cu) * Math.abs(cu) ** 0.66,
+        yc + hh * (sv >= 0 ? Math.abs(sv) ** 0.78 : -(Math.abs(sv) ** flatBottom)),
+        z,
+      );
+    }
+  }
+  for (let k = 0; k < sts.length - 1; k++) {
+    for (let i = 0; i < na; i++) {
+      const a = k * rows + i, b = a + rows;
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** point on the lofted upper's outer skin, for gluing detail onto the side */
+function shoeSide(sts, z, s, frac) {
+  // linear search + lerp between the two bracketing stations
+  let k = 0;
+  while (k < sts.length - 2 && sts[k + 1][0] < z) k++;
+  const a = sts[k], b = sts[k + 1];
+  const t = clamp((z - a[0]) / ((b[0] - a[0]) || 1), 0, 1);
+  const hw = a[1] + (b[1] - a[1]) * t;
+  const ty = a[2] + (b[2] - a[2]) * t;
+  const by = a[3] + (b[3] - a[3]) * t;
+  return [s * hw, by + (ty - by) * frac, z];
+}
+
+// The foot bone sits 0.060 above the pitch, so local y = -0.060 IS the grass.
+// The rand must not land on it: two coplanar surfaces z-fight, and what that
+// looks like at this scale is a bright sole chewed into dashes. The rand floats
+// 6 mm clear and the studs are what reach the turf, which is also how a real
+// boot stands.
+const SOLE_Y = -0.0535;
+const RAND_Y = -0.032;      // top of the bright sole rand
+// Heel at the back, ball of the foot forward of the ankle, toe pinched off.
+// Widest at z = +0.02 (the ball), tallest at z = -0.06 (the heel counter).
+const BOOT_STATIONS = [
+  [-0.138, 0.018, -0.014, -0.040],
+  [-0.118, 0.055, 0.026, -0.040],
+  [-0.086, 0.077, 0.052, -0.040],
+  [-0.040, 0.088, 0.056, -0.040],
+  [0.014, 0.092, 0.046, -0.040],
+  [0.070, 0.088, 0.030, -0.040],
+  [0.124, 0.077, 0.010, -0.040],
+  [0.170, 0.056, -0.014, -0.040],
+  [0.198, 0.016, -0.032, -0.040],
+];
+// the rand hangs 6 mm proud of the upper all the way round — that overhanging
+// bright line is what draws the sole in the reference art, far more than the
+// tread ever does
+const RAND_STATIONS = BOOT_STATIONS.map(([z, hw, , ], i, A) => [
+  z * 1.012, hw + (i === 0 || i === A.length - 1 ? 0.010 : 0.0065),
+  RAND_Y, SOLE_Y,
+]);
+
+/**
+ * BOOT. The old build was a box, a sphere stuck on each side and a sole plate
+ * 7 cm longer than the foot, which read at any distance as a black brick on a
+ * white ski. The reference boot is a low slipper: a smooth tapered upper that
+ * sits *below* the ankle bone, a thin bright rand tracing the whole outline, a
+ * rounded toe, three flashes on the quarter and a laced instep. Every one of
+ * those is a silhouette or a hard value break, which is why they survive being
+ * forty pixels tall.
  */
 function buildBoot(main, accent, sole) {
   const parts = [];
-  const body = new THREE.BoxGeometry(0.176, 0.098, 0.230);
-  body.translate(0, 0.008, 0.045);
-  parts.push(tint(body, main));
 
-  // rounded upper so the boot is not a brick
-  const upper = blobGeo(0.096, 12);
-  upper.scale(0.92, 0.62, 1.24);
-  upper.translate(0, 0.014, 0.062);
-  parts.push(tint(upper, main));
+  parts.push(tint(loftShoe(BOOT_STATIONS, 20, 0.30), main));
+  parts.push(tint(loftShoe(RAND_STATIONS, 20, 0.22), sole));
 
-  // Toe, in the MAIN colour. This used to be an accent cap, and on a dark boot
-  // the accent is near-white, so a pale ellipsoid sat on the front of the foot
-  // — centred at z=0.170 with a 0.095 half-extent it also reached 0.265, 7 cm
-  // clear of the sole plate, so it hung in front of the boot with nothing under
-  // it and read as a ball stuck to the toe. Pulling it back inside the plate
-  // only turned it into a pale dome in a dark socket; the colour break was the
-  // real fault. The reference boots are one colour head to toe and put their
-  // contrast in the sole, collar and side flash, which is what this now does,
-  // so the toe simply rounds off the silhouette.
-  // Sunk just under the box top (0.057) rather than domed over it, so it rounds
-  // the FRONT of the boot instead of adding a second bulge on top of it.
-  const toe = blobGeo(0.090, 12);
-  toe.scale(0.92, 0.52, 0.95);
-  toe.translate(0, -0.008, 0.128);
-  parts.push(tint(toe, main));
+  // toe cap: a second skin over the front third, lifted a hair so it catches
+  // its own highlight and breaks the upper into toe box + vamp
+  const capSts = BOOT_STATIONS.slice(4).map(([z, hw, ty, by], i) => {
+    const g = i === 0 ? 0 : 0.004;
+    return [z, hw + g, ty + g * 0.8, by];
+  });
+  parts.push(tint(loftShoe(capSts, 18, 0.30), main));
 
-  const heel = blobGeo(0.088, 11);
-  heel.scale(1.00, 0.72, 0.92);
-  heel.translate(0, 0.018, -0.068);
-  parts.push(tint(heel, main));
-  // heel counter in the accent colour
-  const counter = blobGeo(0.072, 10);
-  counter.scale(1.02, 0.66, 0.52);
-  counter.translate(0, 0.020, -0.098);
-  parts.push(tint(counter, accent));
+  // heel counter — a wrap around the back of the quarter, not a ball on a stick
+  const cntSts = BOOT_STATIONS.slice(0, 4).map(([z, hw, ty, by], i) => [
+    z, hw + (i === 0 ? 0.0 : 0.005), ty + (i === 0 ? 0 : 0.004) - (i === 3 ? 0.020 : 0),
+    by + 0.010,
+  ]);
+  parts.push(tint(loftShoe(cntSts, 16, 0.34), accent));
 
-  const collar = new THREE.TorusGeometry(0.074, 0.021, 6, 14);
-  collar.rotateX(Math.PI / 2);
-  collar.translate(0, 0.058, -0.026);
+  // ankle collar: the opening the sock drops into. Tilted forward, sat on the
+  // top edge of the quarter so there is a real lip rather than a sock that
+  // vanishes into the boot.
+  const collar = new THREE.TorusGeometry(0.084, 0.019, 6, 18);
+  collar.rotateX(Math.PI / 2 - 0.16);
+  collar.translate(0, 0.062, -0.030);
   parts.push(tint(collar, accent));
 
-  // sole: thinner, inset from the upper, with a raised outsole rim
-  const plate = new THREE.BoxGeometry(0.166, 0.019, 0.300);
-  plate.translate(0, -0.046, 0.048);
-  parts.push(tint(plate, sole));
-  const midsole = new THREE.BoxGeometry(0.176, 0.013, 0.288);
-  midsole.translate(0, -0.033, 0.048);
-  parts.push(tint(midsole, accent));
-
-  // studs — six nubs, so the underside is not a flat black slab
-  for (const [sx, sz] of [[-1, 0.155], [1, 0.155], [-1, 0.030], [1, 0.030],
-    [-1, -0.088], [1, -0.088]]) {
-    const stud = new THREE.CylinderGeometry(0.019, 0.014, 0.026, 6, 1);
-    stud.translate(sx * 0.058, -0.066, sz);
+  // studs — under the ball and the heel, inside the rand footprint so nothing
+  // pokes out past the silhouette
+  for (const [sx, sz, r] of [
+    [0.052, 0.128, 0.016], [-0.052, 0.128, 0.016],
+    [0.066, 0.026, 0.017], [-0.066, 0.026, 0.017],
+    [0.054, -0.078, 0.017], [-0.054, -0.078, 0.017],
+  ]) {
+    const stud = new THREE.CylinderGeometry(r, r * 0.72, 0.030, 6, 1);
+    stud.translate(sx, SOLE_Y - 0.013, sz);
     parts.push(tint(stud, sole));
   }
 
-  // three side flashes, the universal boot signature
+  // three flashes across the quarter, laid onto the actual lofted surface so
+  // they follow its taper instead of floating off the side of a box
   for (const s of [-1, 1]) {
     for (let i = 0; i < 3; i++) {
-      const flash = new THREE.BoxGeometry(0.013, 0.030, 0.040);
-      flash.rotateX(0.22);
-      flash.translate(s * 0.088, 0.004 - i * 0.004, 0.020 + i * 0.052);
-      parts.push(tint(flash, accent));
+      const z = 0.006 + i * 0.042;
+      const [px, py] = shoeSide(BOOT_STATIONS, z, s, 0.46 - i * 0.05);
+      const fl = new THREE.BoxGeometry(0.012, 0.040, 0.016);
+      fl.rotateX(0.30);
+      fl.rotateZ(-s * 0.16);
+      fl.translate(px * 0.985, py, z);
+      parts.push(tint(fl, accent));
     }
   }
-  // tongue + laces
-  const tongue = new THREE.BoxGeometry(0.066, 0.016, 0.098);
-  tongue.rotateX(-0.14);
-  tongue.translate(0, 0.056, 0.060);
+
+  // tongue + three laces on the instep
+  const tongue = new THREE.BoxGeometry(0.062, 0.014, 0.086);
+  tongue.rotateX(-0.26);
+  tongue.translate(0, 0.058, 0.016);
   parts.push(tint(tongue, accent));
   for (let i = 0; i < 3; i++) {
-    const lace = new THREE.BoxGeometry(0.062, 0.009, 0.012);
-    lace.rotateX(-0.14);
-    lace.translate(0, 0.064 - i * 0.003, 0.028 + i * 0.036);
+    const lace = new THREE.BoxGeometry(0.056 - i * 0.006, 0.008, 0.010);
+    lace.rotateX(-0.26);
+    lace.translate(0, 0.062 - i * 0.010, -0.014 + i * 0.030);
     parts.push(tint(lace, sole));
   }
 
@@ -1419,7 +1495,14 @@ export function createPlayer(cfg = {}) {
   // Beards are mixed toward a warm brown and floored above pure black: at the
   // darkest hair colours an unmixed beard collapses into one silhouette with no
   // internal value range, which is what made it read as a painted mask.
-  const beardCol = lighten(mixHex(hairColor, 0x5a3a24, 0.34), 0.10);
+  // BEARD COLOUR. shadeHair ramps a mesh from lighten(c,0.30) down to
+  // darken(c,0.58); on the old near-black mix that bottom end landed at 0x1f1914
+  // and the whole beard collapsed into an unlit silhouette — "a flat black bib
+  // that reads as dirt". A real beard is noticeably WARMER and LIGHTER than the
+  // hair above it (sun bleaches it, and it sits on a plane facing the sky), and
+  // it has to keep enough value left over at the dark end of the ramp for the
+  // form under the jaw to be readable.
+  const beardCol = lighten(mixHex(hairColor, 0x8f6440, 0.55), 0.08);
   if (beard === 2) hairParts.push(shadeHair(buildBeard(1), beardCol));
   else if (beard === 1) hairParts.push(shadeHair(buildBeard(0.30), lighten(beardCol, 0.08)));
   if (hairParts.length) {
