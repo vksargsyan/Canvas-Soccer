@@ -68,39 +68,38 @@ const hgtAt = (v) => GOAL_H * (1 - v);
 let NET_TEX = null;
 function netTex() {
   if (NET_TEX) return NET_TEX;
-  const S = 512, cells = TILE_CELLS, step = S / cells;
-  const cvs = document.createElement('canvas');
-  cvs.width = cvs.height = S;
-  const g = cvs.getContext('2d');
-  g.clearRect(0, 0, S, S);
-  g.lineCap = 'butt';
+  const S = 512, step = S / TILE_CELLS;
 
-  // cord
-  g.strokeStyle = 'rgba(255,255,255,0.93)';
-  g.lineWidth = 4.1;
-  for (let i = 0; i <= cells; i++) {
-    const p = i * step;
-    g.beginPath(); g.moveTo(p, 0); g.lineTo(p, S); g.stroke();
-    g.beginPath(); g.moveTo(0, p); g.lineTo(S, p); g.stroke();
-  }
-  // a faint second strand offset inside each cell: real netting is knotted
-  // twine, and the extra thread stops the mesh reading as graph paper.
-  g.strokeStyle = 'rgba(255,255,255,0.30)';
-  g.lineWidth = 1.5;
-  for (let i = 0; i < cells; i++) {
-    const p = i * step + step * 0.5;
-    g.beginPath(); g.moveTo(p, 0); g.lineTo(p, S); g.stroke();
-    g.beginPath(); g.moveTo(0, p); g.lineTo(S, p); g.stroke();
-  }
-  // knots
-  g.fillStyle = 'rgba(255,255,255,1)';
-  for (let i = 0; i <= cells; i++) {
-    for (let j = 0; j <= cells; j++) {
-      g.beginPath(); g.arc(i * step, j * step, 3.1, 0, Math.PI * 2); g.fill();
+  // Written straight into a DataTexture rather than stroked onto a canvas,
+  // because RGB has to stay 255 in EVERY texel including the holes. A canvas is
+  // stored premultiplied, so a transparent texel comes back as BLACK — and the
+  // mip chain then averages white cord against black gaps, turning the net grey
+  // the moment it is minified. That is most of how the old net ended up reading
+  // as a dull tinted plane at any distance. With the cord living purely in the
+  // alpha channel of raw data, every mip level stays pure white.
+  const data = new Uint8Array(S * S * 4);
+  const HALF = 2.05;      // cord half width, px
+  const THIN = 0.75;      // secondary thread through the middle of each cell
+  const KNOT = 3.0;
+  const band = (q, h, a) => a * Math.min(1, Math.max(0, h + 0.5 - q));
+  for (let y = 0; y < S; y++) {
+    const my = y % step, dy = Math.min(my, step - my);
+    const cy = Math.abs(my - step * 0.5);
+    for (let x = 0; x < S; x++) {
+      const mx = x % step, dx = Math.min(mx, step - mx);
+      const cx = Math.abs(mx - step * 0.5);
+      const ax = band(dx, HALF, 0.94), ay = band(dy, HALF, 0.94);
+      const bx = band(cx, THIN, 0.28), by = band(cy, THIN, 0.28);
+      let a = 1 - (1 - ax) * (1 - ay) * (1 - bx) * (1 - by);
+      const knot = Math.hypot(dx, dy);
+      if (knot < KNOT) a = Math.max(a, Math.min(1, KNOT + 0.5 - knot));
+      const k = (y * S + x) * 4;
+      data[k] = 255; data[k + 1] = 255; data[k + 2] = 255;
+      data[k + 3] = Math.round(Math.min(1, a) * 255);
     }
   }
 
-  const t = new THREE.CanvasTexture(cvs);
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.anisotropy = 16;
@@ -116,11 +115,8 @@ function netTex() {
 let AO_TEX = null;
 function goalAoTex() {
   if (AO_TEX) return AO_TEX;
-  const S = 96;
-  const cvs = document.createElement('canvas');
-  cvs.width = cvs.height = S;
-  const g = cvs.getContext('2d');
-  const img = g.createImageData(S, S);
+  const S = 128;
+  const data = new Uint8Array(S * S * 4);
   for (let j = 0; j < S; j++) {
     for (let i = 0; i < S; i++) {
       const u = i / (S - 1);          // 0 = goal line, 1 = back of the net
@@ -131,14 +127,16 @@ function goalAoTex() {
       const rear = Math.min(1, (1 - u) / 0.07);   // no hard rectangle at the back
       const a = 0.44 * deep * edge * mouth * rear;
       const k = (j * S + i) * 4;
-      img.data[k] = 12; img.data[k + 1] = 22; img.data[k + 2] = 14;
-      img.data[k + 3] = Math.round(a * 255);
+      data[k] = 12; data[k + 1] = 22; data[k + 2] = 14;
+      data[k + 3] = Math.round(a * 255);
     }
   }
-  g.putImageData(img, 0, 0);
-  const t = new THREE.CanvasTexture(cvs);
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
   t.anisotropy = 4;
   t.needsUpdate = true;
   AO_TEX = t;
