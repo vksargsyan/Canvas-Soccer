@@ -923,6 +923,11 @@ export function createHud(root) {
     if (d === 'touch' && !touch) return;
     if (d === device) return;
     device = d;
+    // Whatever was mid-hold belonged to the device we just left, and its release
+    // will never arrive — a pad unplugged with X down would otherwise press an
+    // opponent forever. (Callers set the device before raising their own intent,
+    // so this cannot eat the press that caused the switch.)
+    secondCancel();
     if (touch) touch.layer.classList.toggle('hidden', d !== 'touch');
     if (d === 'gamepad' && legendMode !== 'gamepad') {
       legendMode = 'gamepad';
@@ -1187,6 +1192,7 @@ export function createHud(root) {
   window.addEventListener('gamepadconnected', () => { padCount++; });
   window.addEventListener('gamepaddisconnected', () => {
     padCount = Math.max(0, padCount - 1);
+    secondCancel();
     if (!padCount && device === 'gamepad') setDevice(touch ? 'touch' : 'key');
   });
 
