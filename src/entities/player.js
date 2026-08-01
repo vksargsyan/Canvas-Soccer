@@ -1120,59 +1120,92 @@ function buildBeard(density = 1) {
 // glove) band of the arm texture.
 // ---------------------------------------------------------------------------
 
+/**
+ * HAND. The previous build had a palm, four fingers and a thumb and still read
+ * as a marshmallow, for two reasons.
+ *
+ * First, the fingers were curled 42 degrees forward. The camera sits in front
+ * of the player, so all it ever saw was four foreshortened tips: a nub. Fingers
+ * only read if their LENGTH is across the view, so the curl is now 15 degrees
+ * and they hang.
+ *
+ * Second, they touched. Adjacent capsules at 0.030 radius on 0.052 centres
+ * share a surface, and two tangent cylinders shade as one cylinder — there is
+ * no groove to catch a shadow. They are now thinner than their spacing AND
+ * fanned, so the gaps open toward the tips and the outer silhouette is
+ * scalloped. A scalloped silhouette is the cue that survives to gameplay
+ * distance; the grooves are the bonus at closeup.
+ *
+ * The thumb is the one shape that says 'hand' on its own, so it is rooted at
+ * the inboard top corner and swung down-and-in, leaving a real V notch between
+ * it and the index finger. And the wrist is a genuine neck -- narrower than
+ * both the forearm above it and the hand below it -- with a cuff ring flaring
+ * over it, so there is a joint instead of a tube fading into a lump.
+ */
 function buildHand(s, keeper) {
   const parts = [];
-  const K = keeper ? 1.26 : 1.0;
-  const y0 = -0.196;                                   // wrist
+  const K = keeper ? 1.22 : 1.0;
+  const y0 = -0.196;                                   // wrist plane
 
-  // wrist — a real joint, wider than the forearm end so the hand reads as a
-  // separate mass rather than a continuation of the tube
-  const cuff = new THREE.CylinderGeometry(0.093 * K, 0.086 * K, 0.036, 14, 1);
-  cuff.translate(0, y0 + 0.014, 0);
+  // wrist: pinched waist. The forearm lathe necks down to meet it, so the pair
+  // reads as a joint rather than as a tube that swallows a blob.
+  const wrist = new THREE.CylinderGeometry(0.084 * K, 0.070 * K, 0.052, 14, 1);
+  wrist.translate(0, y0 + 0.020, 0);
+  parts.push(wrist);
+  // cuff: a ring flaring back out over the wrist. This is the hard step in the
+  // silhouette that the panel was missing.
+  const cuff = new THREE.CylinderGeometry(0.078 * K, 0.099 * K, 0.030, 14, 1);
+  cuff.translate(0, y0 - 0.008, 0.002 * K);
   parts.push(cuff);
 
-  // palm block — chibi hands are mitts: broad across, thin front-to-back
-  const palm = blobGeo(0.106 * K, 14);
-  palm.scale(1.02, 0.94, 0.60);
-  palm.translate(s * 0.006 * K, y0 - 0.078 * K, 0.008 * K);
+  // palm: a paddle, not a ball -- broad across, tall, thin front to back.
+  const palm = blobGeo(0.098 * K, 14);
+  palm.scale(1.04, 0.86, 0.50);
+  palm.translate(s * 0.004 * K, y0 - 0.078 * K, 0.006 * K);
   parts.push(palm);
-
-  // heel of the hand under the little finger
-  const heel = blobGeo(0.062 * K, 9);
-  heel.scale(0.86, 1.05, 0.70);
-  heel.translate(s * 0.062 * K, y0 - 0.088 * K, -0.004 * K);
+  // hypothenar: the muscular heel under the little finger, outboard side only,
+  // which is what makes a hand asymmetric rather than a lozenge
+  const heel = blobGeo(0.058 * K, 9);
+  heel.scale(0.80, 1.10, 0.62);
+  heel.translate(s * 0.070 * K, y0 - 0.076 * K, 0.000);
   parts.push(heel);
 
-  // four fingers as one curled mass plus grooves between them: at this scale a
-  // readable finger block beats four thin tubes that alias into mush
-  for (let i = 0; i < 4; i++) {
-    const t = i / 3;
-    const len = (0.108 - Math.abs(t - 0.30) * 0.030) * K;
-    const r = 0.0300 * K;
-    const f = new THREE.CapsuleGeometry(r, len, 2, 6);
-    f.translate(0, -len * 0.5, 0);
-    f.rotateX(-0.74 - t * 0.10);
-    f.rotateZ(-s * (t - 0.5) * 0.24);
-    f.translate(s * (0.062 - t * 0.042) * K, y0 - 0.132 * K, 0.012 * K);
-    parts.push(f);
-  }
-  // knuckle ridge across the top of the fingers
-  const kn = blobGeo(0.070 * K, 10);
-  kn.scale(1.42, 0.58, 0.74);
-  kn.translate(s * 0.004 * K, y0 - 0.140 * K, 0.020 * K);
+  // knuckle ridge across the top of the finger roots
+  const kn = blobGeo(0.062 * K, 10);
+  kn.scale(1.50, 0.56, 0.72);
+  kn.translate(s * 0.002 * K, y0 - 0.126 * K, 0.010 * K);
   parts.push(kn);
 
-  // thumb — the single silhouette cue that says "hand". Swings out and forward.
-  const th = new THREE.CapsuleGeometry(0.036 * K, 0.084 * K, 2, 7);
-  th.translate(0, -0.044 * K, 0);
-  th.rotateZ(s * 1.02);
-  th.rotateX(-0.50);
-  th.translate(-s * 0.086 * K, y0 - 0.082 * K, 0.036 * K);
+  // four fingers, index (inboard) to little (outboard). Radius 0.023 on 0.052
+  // centres leaves a 6 mm groove at the root, and the fan opens it to nearly
+  // 20 mm at the tips.
+  const LEN = [0.086, 0.098, 0.092, 0.074];
+  for (let i = 0; i < 4; i++) {
+    const len = LEN[i] * K;
+    const r = (0.0245 - i * 0.0009) * K;
+    const f = new THREE.CapsuleGeometry(r, len, 3, 7);
+    f.translate(0, -len * 0.5, 0);
+    // hang, with only a hint of curl, so the length faces the camera
+    f.rotateX(-0.16 - i * 0.015);
+    // fan: tips splay outboard so the gaps between fingers open up
+    f.rotateZ(-s * (i - 1.35) * 0.115);
+    f.translate(s * (-0.070 + i * 0.0505) * K, y0 - 0.120 * K, 0.012 * K);
+    parts.push(f);
+  }
+
+  // thumb: rooted inboard and high, swinging down-in-forward. The gap it opens
+  // against the index finger is the single strongest hand cue in the silhouette.
+  const tl = 0.088 * K;
+  const th = new THREE.CapsuleGeometry(0.032 * K, tl, 3, 8);
+  th.translate(0, -tl * 0.5, 0);
+  th.rotateZ(-s * 0.62);
+  th.rotateX(-0.42);
+  th.translate(-s * 0.070 * K, y0 - 0.044 * K, 0.026 * K);
   parts.push(th);
-  // thenar pad at the base of the thumb
-  const pad = blobGeo(0.050 * K, 8);
-  pad.scale(0.90, 1.05, 0.75);
-  pad.translate(-s * 0.070 * K, y0 - 0.070 * K, 0.026 * K);
+  // thenar pad filling the web between thumb and palm
+  const pad = blobGeo(0.048 * K, 9);
+  pad.scale(0.86, 1.00, 0.72);
+  pad.translate(-s * 0.056 * K, y0 - 0.056 * K, 0.020 * K);
   parts.push(pad);
 
   const m = mergeGeometries(parts, false);
@@ -1553,13 +1586,18 @@ export function createPlayer(cfg = {}) {
     arm.add(fore);
     bones['forearm' + side] = fore;
 
-    // elbow -> wrist, tapering into the hand
+    // Elbow -> wrist. t = 0 is the wrist end. The old profile ran 0.086 at the
+    // wrist against a 0.093 hand, a 7 % step, which is no step at all: the
+    // forearm just swelled into the hand and the pair read as one sausage. A
+    // real forearm loses a third of its width over the last few centimetres,
+    // and that pinch is what lets the cuff above the hand register as a cuff.
     const foreGeo = lathe([
-      [0.00, 0.052, -0.206],
-      [0.10, 0.086, -0.198],
-      [0.28, 0.096, -0.166],
-      [0.50, 0.108, -0.118],
-      [0.74, 0.124, -0.058],
+      [0.00, 0.046, -0.206],
+      [0.09, 0.068, -0.200],
+      [0.20, 0.078, -0.186],
+      [0.34, 0.094, -0.160],
+      [0.54, 0.110, -0.112],
+      [0.76, 0.126, -0.052],
       [0.92, 0.136, -0.008],
       [1.00, 0.070, 0.018],
     ], 18, 14);
