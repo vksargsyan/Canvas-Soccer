@@ -1655,7 +1655,8 @@ export function shortsTexture(o = {}) {
 export function sockTexture(o = {}) {
   const base = o.color ?? 0xd8262c;
   const trim = o.trim ?? 0xffffff;
-  return memo(`sock:${base}:${trim}`, () => {
+  const bands = o.bands ?? 'band';
+  return memo(`sock:${base}:${trim}:${bands}`, () => {
     const W = 256, H = 256;
     const { c, g } = canvas2d(W, H);
     g.fillStyle = css(base); g.fillRect(0, 0, W, H);
@@ -1663,7 +1664,15 @@ export function sockTexture(o = {}) {
     // turnover band at the knee
     g.fillStyle = css(trim); g.fillRect(0, 0, W, H * 0.185);
     g.fillStyle = rgba(darken(base, 0.40), 0.6); g.fillRect(0, H * 0.185, W, H * 0.030);
-    g.fillStyle = rgba(trim, 0.8); g.fillRect(0, H * 0.285, W, H * 0.045);
+    if (bands === 'hoops') {
+      // three narrow hoops down the calf — reads as a different club's socks
+      for (const y of [0.290, 0.400, 0.510]) {
+        g.fillStyle = rgba(trim, 0.92); g.fillRect(0, H * y, W, H * 0.040);
+        g.fillStyle = rgba(darken(base, 0.45), 0.35); g.fillRect(0, H * (y + 0.040), W, H * 0.010);
+      }
+    } else {
+      g.fillStyle = rgba(trim, 0.8); g.fillRect(0, H * 0.285, W, H * 0.045);
+    }
 
     // rib knit
     g.save(); g.globalAlpha = 0.085;

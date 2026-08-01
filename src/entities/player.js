@@ -1137,39 +1137,80 @@ function buildHand(s, keeper) {
 // The sole plane sits at y = -0.06 (the foot bone lives at y = 0.06).
 // ---------------------------------------------------------------------------
 
+/**
+ * BOOT. The reference boots carry a toe cap, a side flash, a heel counter, a
+ * laced tongue and a studded sole that reads even at gameplay distance. The old
+ * build was a box with one stripe and a slab sole that rendered as a black
+ * rectangle under every foot.
+ */
 function buildBoot(main, accent, sole) {
   const parts = [];
-  const body = new THREE.BoxGeometry(0.180, 0.100, 0.235);
+  const body = new THREE.BoxGeometry(0.176, 0.098, 0.230);
   body.translate(0, 0.008, 0.045);
   parts.push(tint(body, main));
 
-  const toe = blobGeo(0.096, 10);
-  toe.scale(0.94, 0.60, 1.12);
-  toe.translate(0, 0.006, 0.168);
-  parts.push(tint(toe, main));
+  // rounded upper so the boot is not a brick
+  const upper = blobGeo(0.096, 12);
+  upper.scale(0.92, 0.62, 1.24);
+  upper.translate(0, 0.014, 0.062);
+  parts.push(tint(upper, main));
 
-  const heel = blobGeo(0.090, 10);
-  heel.scale(1.02, 0.72, 0.95);
+  const toe = blobGeo(0.090, 12);
+  toe.scale(0.94, 0.58, 1.06);
+  toe.translate(0, 0.002, 0.170);
+  parts.push(tint(toe, accent));                     // contrast toe cap
+
+  const heel = blobGeo(0.088, 11);
+  heel.scale(1.00, 0.72, 0.92);
   heel.translate(0, 0.018, -0.068);
   parts.push(tint(heel, main));
+  // heel counter in the accent colour
+  const counter = blobGeo(0.072, 10);
+  counter.scale(1.02, 0.66, 0.52);
+  counter.translate(0, 0.020, -0.098);
+  parts.push(tint(counter, accent));
 
-  const collar = new THREE.TorusGeometry(0.076, 0.023, 6, 12);
+  const collar = new THREE.TorusGeometry(0.074, 0.021, 6, 14);
   collar.rotateX(Math.PI / 2);
-  collar.translate(0, 0.056, -0.028);
+  collar.translate(0, 0.058, -0.026);
   parts.push(tint(collar, accent));
 
-  const plate = new THREE.BoxGeometry(0.178, 0.024, 0.318);
-  plate.translate(0, -0.048, 0.050);
+  // sole: thinner, inset from the upper, with a raised outsole rim
+  const plate = new THREE.BoxGeometry(0.166, 0.019, 0.300);
+  plate.translate(0, -0.046, 0.048);
   parts.push(tint(plate, sole));
+  const midsole = new THREE.BoxGeometry(0.176, 0.013, 0.288);
+  midsole.translate(0, -0.033, 0.048);
+  parts.push(tint(midsole, accent));
 
-  for (const s of [-1, 1]) {
-    const flash = new THREE.BoxGeometry(0.016, 0.034, 0.150);
-    flash.translate(s * 0.089, 0.006, 0.058);
-    parts.push(tint(flash, accent));
+  // studs — six nubs, so the underside is not a flat black slab
+  for (const [sx, sz] of [[-1, 0.155], [1, 0.155], [-1, 0.030], [1, 0.030],
+    [-1, -0.088], [1, -0.088]]) {
+    const stud = new THREE.CylinderGeometry(0.019, 0.014, 0.026, 6, 1);
+    stud.translate(sx * 0.058, -0.066, sz);
+    parts.push(tint(stud, sole));
   }
-  const lace = new THREE.BoxGeometry(0.058, 0.014, 0.105);
-  lace.translate(0, 0.054, 0.078);
-  parts.push(tint(lace, accent));
+
+  // three side flashes, the universal boot signature
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const flash = new THREE.BoxGeometry(0.013, 0.030, 0.040);
+      flash.rotateX(0.22);
+      flash.translate(s * 0.088, 0.004 - i * 0.004, 0.020 + i * 0.052);
+      parts.push(tint(flash, accent));
+    }
+  }
+  // tongue + laces
+  const tongue = new THREE.BoxGeometry(0.066, 0.016, 0.098);
+  tongue.rotateX(-0.14);
+  tongue.translate(0, 0.056, 0.060);
+  parts.push(tint(tongue, accent));
+  for (let i = 0; i < 3; i++) {
+    const lace = new THREE.BoxGeometry(0.062, 0.009, 0.012);
+    lace.rotateX(-0.14);
+    lace.translate(0, 0.064 - i * 0.003, 0.028 + i * 0.036);
+    parts.push(tint(lace, sole));
+  }
 
   const m = mergeGeometries(parts.map((p) => ensureUv(p)), false);
   parts.forEach((p) => p.dispose());
@@ -1193,6 +1234,10 @@ export function createPlayer(cfg = {}) {
   const faceVariant = cfg.faceVariant ?? 0;
   const beard = cfg.beard ?? 0;             // 0 clean, 1 stubble, 2 full beard
   const kitStyle = isKeeper ? 'keeper' : (cfg.kitStyle ?? 'plain');
+  // the club's construction recipe: body graphic, shoulder, collar, sleeve,
+  // crest silhouette and sock banding. This is what stops the two teams from
+  // being one template in two palettes.
+  const recipe = KIT_RECIPES[isKeeper ? 'keeper' : (cfg.team ?? 0) % 2] ?? KIT_RECIPES[0];
   const build = cfg.build ?? 1.0;
   const girth = cfg.girth ?? 1.0;
   const headScale = cfg.headScale ?? 1.0;
@@ -1280,7 +1325,7 @@ export function createPlayer(cfg = {}) {
   const torsoMesh = addMesh(torso, torsoMerged,
     fabricMat(`shirtM:${kitColor}:${trimColor}:${kitAlt}:${number}:${kitStyle}:${team.id}`,
       shirtTexture({
-        kit: kitColor, trim: trimColor, alt: kitAlt, number, style: kitStyle,
+        kit: kitColor, trim: trimColor, alt: kitAlt, number, style: kitStyle, recipe,
         letter: (team.short || team.name || 'C')[0], name: NAMES[number % NAMES.length],
       }),
       { rough: 0.84, repeat: [6, 3], normalScale: 0.6 }), true);
@@ -1331,7 +1376,7 @@ export function createPlayer(cfg = {}) {
   const armMat = fabricMat(
     `armM:${kitColor}:${trimColor}:${skin}:${kitAlt}:${isKeeper ? 1 : 0}:${kitStyle}`,
     armTexture({
-      kit: kitColor, trim: trimColor, skin, alt: kitAlt,
+      kit: kitColor, trim: trimColor, skin, alt: kitAlt, recipe,
       long: isKeeper, style: kitStyle, glove: isKeeper ? gloveColor : 0,
     }),
     { rough: 0.78, repeat: [3, 1], normalScale: 0.35 });
@@ -1393,8 +1438,8 @@ export function createPlayer(cfg = {}) {
   }
 
   // ---- legs ---------------------------------------------------------------
-  const sockMat = fabricMat(`sockM:${sockColor}:${sockTrim}`,
-    sockTexture({ color: sockColor, trim: sockTrim }),
+  const sockMat = fabricMat(`sockM:${sockColor}:${sockTrim}:${recipe.sockBands}`,
+    sockTexture({ color: sockColor, trim: sockTrim, bands: recipe.sockBands }),
     { rough: 0.9, repeat: [2, 1], normalScale: 0.5 });
   const bootMain = cfg.bootColor ?? BOOT_COLORS[0];
   const bright = contrastOn(bootMain) === 0xffffff;
@@ -1562,7 +1607,8 @@ export function createSquad(teamIndex, rng) {
   const skins = shuffled(SKIN_TONES, rng).slice(0, 6);
   const hairs = shuffled(HAIR_STYLES, rng).slice(0, 6);
   const boots = shuffled(BOOT_COLORS, rng).slice(0, 6);
-  const kitStyle = teamIndex % 2 === 0 ? 'plain' : 'stripes';
+  // the club's look now comes from KIT_RECIPES, keyed off the team index
+  const kitStyle = 'club';
 
   for (let i = 0; i < numbers.length; i++) {
     const isKeeper = i === 0;
