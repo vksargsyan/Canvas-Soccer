@@ -602,21 +602,18 @@ export function createGoal(side = 1) {
 
   /** Push every node out of the ball's sphere: this is the bulge. */
   const BR = BALL_R + 0.028;
-  function wrapBall(bx, by, bz) {
-    let hit = false;
+  function wrapBall(px, py, pz) {
     for (let i = 0; i < N; i++) {
       if (pin[i]) continue;
       const o = i * 3;
-      const dx = cur[o] - bx, dy = cur[o + 1] - by, dz = cur[o + 2] - bz;
+      const dx = cur[o] - px, dy = cur[o + 1] - py, dz = cur[o + 2] - pz;
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 >= BR * BR) continue;
       const d = Math.sqrt(d2);
-      if (d < 1e-5) { cur[o] += BR; hit = true; continue; }
+      if (d < 1e-5) { cur[o] += BR; continue; }
       const k = BR / d;
-      cur[o] = bx + dx * k; cur[o + 1] = by + dy * k; cur[o + 2] = bz + dz * k;
-      hit = true;
+      cur[o] = px + dx * k; cur[o + 1] = py + dy * k; cur[o + 2] = pz + dz * k;
     }
-    return hit;
   }
 
   /** Local-space impulse: a struck shot throws the cord ahead of the ball. */
