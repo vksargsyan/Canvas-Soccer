@@ -101,7 +101,10 @@ const hairMat = () => sharedMat('hair', () => new THREE.MeshStandardMaterial({
 }));
 
 const bootMat = () => sharedMat('boot', () => new THREE.MeshStandardMaterial({
-  color: 0xffffff, vertexColors: true, roughness: 0.33, metalness: 0.03,
+  // 0.33 was patent-leather: on the rounded toe it collapsed the whole cap into
+  // one blown specular dot, which is what made the toe read as a bulb. Match
+  // boots are satin synthetic, not lacquer.
+  color: 0xffffff, vertexColors: true, roughness: 0.52, metalness: 0.03,
 }));
 
 const eyeMat = (col) => sharedMat('eye:' + col, () => new THREE.MeshStandardMaterial({
@@ -1182,10 +1185,21 @@ function buildBoot(main, accent, sole) {
   upper.translate(0, 0.014, 0.062);
   parts.push(tint(upper, main));
 
+  // Toe, in the MAIN colour. This used to be an accent cap, and on a dark boot
+  // the accent is near-white, so a pale ellipsoid sat on the front of the foot
+  // — centred at z=0.170 with a 0.095 half-extent it also reached 0.265, 7 cm
+  // clear of the sole plate, so it hung in front of the boot with nothing under
+  // it and read as a ball stuck to the toe. Pulling it back inside the plate
+  // only turned it into a pale dome in a dark socket; the colour break was the
+  // real fault. The reference boots are one colour head to toe and put their
+  // contrast in the sole, collar and side flash, which is what this now does,
+  // so the toe simply rounds off the silhouette.
+  // Sunk just under the box top (0.057) rather than domed over it, so it rounds
+  // the FRONT of the boot instead of adding a second bulge on top of it.
   const toe = blobGeo(0.090, 12);
-  toe.scale(0.94, 0.58, 1.06);
-  toe.translate(0, 0.002, 0.170);
-  parts.push(tint(toe, accent));                     // contrast toe cap
+  toe.scale(0.92, 0.52, 0.95);
+  toe.translate(0, -0.008, 0.128);
+  parts.push(tint(toe, main));
 
   const heel = blobGeo(0.088, 11);
   heel.scale(1.00, 0.72, 0.92);
@@ -1474,8 +1488,12 @@ export function createPlayer(cfg = {}) {
     { rough: 0.9, repeat: [2, 1], normalScale: 0.5 });
   const bootMain = cfg.bootColor ?? BOOT_COLORS[0];
   const bright = contrastOn(bootMain) === 0xffffff;
-  const bootAccent = cfg.bootAccent ?? (bright ? 0xffffff : 0x1a1d24);
-  const bootSole = cfg.bootSole ?? (bright ? 0xe9edf3 : 0x2b3038);
+  // Pure white on a dark boot clips under the sun: the toe cap and heel counter
+  // lose all their shading and go to flat paper, which is half of why the toe
+  // read as a ball. A cool off-white keeps the same contrast against navy but
+  // still has somewhere to go when the light hits it.
+  const bootAccent = cfg.bootAccent ?? (bright ? 0xdae2ee : 0x1a1d24);
+  const bootSole = cfg.bootSole ?? (bright ? 0xc9d3e1 : 0x2b3038);
   const bootGeo = buildBoot(bootMain, bootAccent, bootSole);
   const thighMat = skinMat(skin);
 
