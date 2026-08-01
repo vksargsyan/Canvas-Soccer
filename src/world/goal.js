@@ -514,7 +514,9 @@ export function createGoal(side = 1) {
       const g = new THREE.TorusGeometry(r, POST_R * 0.15, 4, 8);
       q.setFromUnitVectors(up, dir);
       g.applyQuaternion(q);
-      if (onBar || onPost) g.scale(1, 1, 1);
+      // posts and crossbar are oval in section, so their rings have to be too
+      // or they stand off the flat faces
+      if (onBar || onPost) g.scale(OVAL + 0.06, 1, 1);
       g.translate(t.x, t.y, t.z);
       parts.push(g);
     }
