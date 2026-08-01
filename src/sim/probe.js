@@ -18,7 +18,7 @@
 // CONTRACT
 // --------
 // run() returns exactly:
-//   { dribble:   { maxBallDist, meanBallDist, touchesPerSec, aheadFraction },
+//   { dribble:   { maxBallDist, meanBallDist, pocketSwing, touchesPerSec, aheadFraction },
 //     passing:   { attempts, completion, medianArrivalSpeed, medianLeadError },
 //     shielding: { medianHoldSeconds, instantLosses },
 //     locomotion:{ maxTurnRateAtSprint, maxAccel, maxDecel, instantReversals },
@@ -1013,6 +1013,10 @@ export function createGameplayProbe() {
       dribble: {
         maxBallDist: dribble.maxBallDist,
         meanBallDist: dribble.meanBallDist,
+        // Graded by TARGETS.dribble.pocketSwing, computed in runDribble() and
+        // then dropped on the floor here — so the grader read `undefined` and
+        // failed the check whatever the carry actually did.
+        pocketSwing: dribble.pocketSwing,
         touchesPerSec: dribble.touchesPerSec,
         aheadFraction: dribble.aheadFraction,
       },
