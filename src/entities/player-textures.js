@@ -341,19 +341,43 @@ export function headTexture(o = {}) {
     ng2.addColorStop(1, rgba(deep, 0.56));
     g.fillStyle = ng2; g.fillRect(0, PY(2.70), W, H - PY(2.70));
 
-    // Warm bounce on the chin and jaw. Light coming off the pitch is green and
-    // dim; without a warm albedo bias underneath it, every chin in the game
-    // rendered as a slab of moss. This is the counterweight, and it is painted
-    // where the reference heads carry their strongest warmth anyway.
+    // WARM BOUNCE — the counterweight to the pitch.
+    //
+    // Measured off a render: where the key light reaches the face the result
+    // sits at G/R = 0.93, which is skin. Below the terminator — about 96 deg
+    // polar, i.e. from just above the mouth down — the only light is ambient
+    // bounced off the grass, and the same skin comes back at G/R = 1.15 and
+    // half the value. That is not a shading nit, it is an avocado for a chin,
+    // and it is the single loudest thing wrong with the face at any distance.
+    //
+    // The real fix is in the lighting rig's ground colour, which is not this
+    // file. What this file can do is bias the ALBEDO hard enough the other way
+    // that green ambient lands on it as a warm mid-tone instead of moss, so
+    // this is a much stronger bias than a bounce would normally justify, run as
+    // a vertical ramp that starts at the measured terminator rather than as a
+    // blob on the chin. It also has to be strong here rather than expressed as
+    // darkness: the previous under-jaw occlusion hid the green by making the
+    // whole region nearly black, which is trading one panel note for another.
+    // The ramp has to be up to strength BY the terminator, not still fading in
+    // past it: pinned to PY(1.56) -> PY(2.06) it was only a quarter engaged at
+    // 96 deg, which is exactly where the green starts. It now runs 86 -> 99 deg
+    // and holds from there to the neck.
     g.save();
-    g.globalAlpha = 0.26;
-    g.filter = blurPx(20);
-    const wb = g.createRadialGradient(cx, PY(2.02), 6, cx, PY(2.02), 0.62 * AX);
-    wb.addColorStop(0.00, 'rgba(236,150,104,1)');
-    wb.addColorStop(0.60, 'rgba(230,140,96,0.55)');
-    wb.addColorStop(1.00, 'rgba(230,140,96,0)');
+    g.filter = blurPx(18);
+    const wb = g.createLinearGradient(0, PY(1.50), 0, PY(1.73));
+    wb.addColorStop(0.00, 'rgba(232,138,92,0)');
+    wb.addColorStop(0.50, 'rgba(232,138,92,0.28)');
+    wb.addColorStop(1.00, 'rgba(228,124,80,0.50)');
     g.fillStyle = wb;
-    g.fillRect(cx - 0.70 * AX, PY(1.66), 1.40 * AX, PY(2.42) - PY(1.66));
+    g.fillRect(0, PY(1.50), W, PY(1.73) - PY(1.50));
+    g.fillStyle = 'rgba(228,124,80,0.50)';
+    g.fillRect(0, PY(1.73), W, PY(2.74) - PY(1.73));
+    // fade it out before the neck so the ramp never ends on a hard edge
+    const wb2 = g.createLinearGradient(0, PY(2.74), 0, PY(2.94));
+    wb2.addColorStop(0, 'rgba(228,124,80,0.50)');
+    wb2.addColorStop(1, 'rgba(228,124,80,0)');
+    g.fillStyle = wb2;
+    g.fillRect(0, PY(2.74), W, H - PY(2.74));
     g.filter = 'none';
     g.restore();
 
@@ -661,30 +685,47 @@ export function headTexture(o = {}) {
         g.quadraticCurveTo(-bw * 0.62, bt * 0.88, -bw, bt * 0.34);
         g.closePath();
       };
-      g.globalAlpha = 0.80;
+      // Body first, blurred: the previous cut filled this path hard-edged and
+      // then crossed it with forty near-vertical strokes at lighten(brow, 0.40),
+      // which is much lighter than the body — so the brow came out as a black
+      // slab hatched with pale grey diagonals. It read as a scribble. At the
+      // distance this is ever seen, a reference brow is a soft tapered shape
+      // with a feathered edge and no individually legible hairs at all.
+      g.save();
+      g.filter = blurPx(3);
+      g.globalAlpha = 0.86;
       body();
       g.fillStyle = css(browCol); g.fill();
-      g.globalAlpha = 1;
-      // hairs, sweeping up and outward, drawn beyond the body outline
+      g.filter = 'none';
+      g.restore();
+      // Feathering, not hatching: strokes that lie ALONG the brow, tinted only
+      // slightly either side of the body colour, and reaching just past the
+      // outline so the edge dissolves instead of ending.
       g.lineCap = 'round';
-      for (let i = 0; i < 40; i++) {
-        const t = i / 39;
+      for (let i = 0; i < 34; i++) {
+        const t = i / 33;
         const n = vnoise(i * 3.7, 1.3);
-        const px = -bw * 1.02 + t * bw * 2.06;
-        const up = bt * (0.30 + bs.arch * 1.10 * Math.sin(Math.pow(t, 0.8) * Math.PI) ** 0.6);
+        const px = -bw * 1.04 + t * bw * 2.08;
+        // Centre line of the BODY at this t. Riding the strokes on the crest
+        // instead put them clear above the filled shape, so the brow grew a
+        // fringe of pale hairs standing off the top of a dark smudge.
+        const mid = bt * 0.10 - bt * (0.05 + bs.arch * 0.75)
+          * Math.sin(Math.pow(t, 0.85) * Math.PI) ** 0.7;
         const fade = Math.sin(Math.pow(t, 0.75) * Math.PI) ** 0.5;
         g.strokeStyle = rgba(
-          n > 0.66 ? lighten(browCol, 0.40) : n < 0.30 ? darken(browCol, 0.34) : browCol,
-          (0.30 + 0.55 * n) * (0.35 + 0.65 * fade));
-        g.lineWidth = Math.max(1.3, bt * (0.13 + 0.10 * n));
+          n > 0.70 ? lighten(browCol, 0.12) : n < 0.28 ? darken(browCol, 0.22) : browCol,
+          (0.22 + 0.34 * n) * (0.30 + 0.70 * fade));
+        g.lineWidth = Math.max(1.1, bt * (0.13 + 0.08 * n));
         g.beginPath();
-        g.moveTo(px, bt * (0.60 + 0.25 * n));
-        g.quadraticCurveTo(px + bw * 0.06, bt * 0.05, px + bw * 0.13, -up * (0.72 + 0.42 * n));
+        g.moveTo(px - bw * 0.08, mid + bt * (0.26 + 0.12 * n));
+        g.quadraticCurveTo(px + bw * 0.03, mid,
+          px + bw * 0.12, mid - bt * (0.28 + 0.14 * n));
         g.stroke();
       }
-      // a hairline of light along the crest so the ridge reads as raised
-      g.globalAlpha = 0.30;
-      g.strokeStyle = rgba(lighten(brow, 0.55), 1);
+      // a hairline of light along the crest so the ridge reads as raised —
+      // derived from browCol, not from the hair, or it lands as a grey streak
+      g.globalAlpha = 0.22;
+      g.strokeStyle = rgba(lighten(browCol, 0.34), 1);
       g.lineWidth = Math.max(1.6, bt * 0.14);
       g.beginPath();
       g.moveTo(-bw * 0.84, -bt * 0.10);
@@ -928,67 +969,91 @@ export function headTexture(o = {}) {
     g.filter = 'none';
     g.restore();
 
-    // upper lip — the darker of the two, with a defined cupid's bow
-    const upTop = (x) => mY - 0.070 * AY - curve * 0.026 * AY * (1 - Math.abs(x));
+    // Upper lip — the darker of the two, with a defined cupid's bow. Its path is
+    // reused as a clip for its own shading: the first cut of this shaded it with
+    // a bare fillRect whose gradient was still at full alpha when it hit the
+    // edge of the rect, which stamped a visible box around the whole mouth.
+    const upperLip = () => {
+      g.beginPath();
+      g.moveTo(cx - mW, mY - curve * 0.030 * AY);
+      g.quadraticCurveTo(cx - mW * 0.52, mY - 0.070 * AY - curve * 0.013 * AY, cx - mW * 0.13, mY - 0.030 * AY);
+      g.quadraticCurveTo(cx, mY - 0.058 * AY, cx + mW * 0.13, mY - 0.030 * AY);
+      g.quadraticCurveTo(cx + mW * 0.52, mY - 0.070 * AY - curve * 0.013 * AY, cx + mW, mY - curve * 0.030 * AY);
+      // The lower border of the upper lip has to FOLLOW the oral line. The
+      // first cut arched it upward at the centre (control at mY - 0.034 AY),
+      // which pulled the lip's underside 0.018 AY clear of the line and left a
+      // bare streak of skin showing between them, dead centre, on every face.
+      g.lineTo(cx + mW, mY - 0.002 * AY);
+      g.quadraticCurveTo(cx, mY + curve * 0.088 * AY + 0.014 * AY, cx - mW, mY - 0.002 * AY);
+      g.closePath();
+    };
     g.fillStyle = css(lip);
-    g.beginPath();
-    g.moveTo(cx - mW, mY - curve * 0.030 * AY);
-    g.quadraticCurveTo(cx - mW * 0.52, upTop(0.5), cx - mW * 0.13, mY - 0.030 * AY);
-    g.quadraticCurveTo(cx, mY - 0.058 * AY, cx + mW * 0.13, mY - 0.030 * AY);
-    g.quadraticCurveTo(cx + mW * 0.52, upTop(0.5), cx + mW, mY - curve * 0.030 * AY);
-    g.lineTo(cx + mW, mY - 0.002 * AY);
-    g.quadraticCurveTo(cx, mY - 0.034 * AY, cx - mW, mY - 0.002 * AY);
-    g.closePath(); g.fill();
+    upperLip(); g.fill();
     // the upper lip turns under toward the line: shade its lower half
     g.save();
+    upperLip(); g.clip();
     g.globalAlpha = 0.55;
     const ulg = g.createLinearGradient(0, mY - 0.062 * AY, 0, mY);
     ulg.addColorStop(0, rgba(lipDk, 0));
     ulg.addColorStop(1, rgba(lipDk, 1));
     g.fillStyle = ulg;
-    g.fillRect(cx - mW, mY - 0.062 * AY, mW * 2, 0.062 * AY);
+    g.fillRect(cx - mW, mY - 0.070 * AY, mW * 2, 0.072 * AY);
     g.restore();
 
     // lower lip — fuller, lighter, catching the key
+    const lowerLip = () => {
+      g.beginPath();
+      g.moveTo(cx - mW * 0.94, mY + open * 1.02);
+      g.quadraticCurveTo(cx, mY + open * 1.06 + (0.070 + curve * 0.028) * AY, cx + mW * 0.94, mY + open * 1.02);
+      g.quadraticCurveTo(cx, mY + open * 1.02 - 0.014 * AY, cx - mW * 0.94, mY + open * 1.02);
+      g.closePath();
+    };
     g.fillStyle = css(lipHi);
-    g.beginPath();
-    g.moveTo(cx - mW * 0.94, mY + open * 1.02);
-    g.quadraticCurveTo(cx, mY + open * 1.06 + (0.070 + curve * 0.028) * AY, cx + mW * 0.94, mY + open * 1.02);
-    g.quadraticCurveTo(cx, mY + open * 1.02 - 0.014 * AY, cx - mW * 0.94, mY + open * 1.02);
-    g.closePath(); g.fill();
-    // its own shading: dark where it tucks under, light on the crest
+    lowerLip(); g.fill();
+    // its own shading: dark where it tucks under the line, dark again where it
+    // rolls away at the bottom, light across the crest between them
     g.save();
+    lowerLip(); g.clip();
     g.globalAlpha = 0.42;
     const llg = g.createLinearGradient(0, mY + open * 1.02, 0, mY + open * 1.02 + 0.072 * AY);
     llg.addColorStop(0, rgba(lipDk, 0.9));
     llg.addColorStop(0.42, rgba(lipDk, 0));
     llg.addColorStop(1, rgba(darken(lip, 0.42), 0.8));
     g.fillStyle = llg;
-    g.fillRect(cx - mW, mY + open * 1.02, mW * 2, 0.076 * AY);
+    g.fillRect(cx - mW, mY + open * 1.02, mW * 2, 0.080 * AY);
+    // specular on the crest, clipped so it can never spill onto the chin
+    g.globalAlpha = 1;
+    g.fillStyle = 'rgba(255,244,236,0.30)';
+    g.beginPath();
+    g.ellipse(cx - mW * 0.06, mY + open * 1.02 + 0.030 * AY, mW * 0.34, 0.008 * AY, 0, 0, TAU);
+    g.fill();
     g.restore();
 
-    // ORAL LINE. This is the mark that has to survive minification, so it is
-    // near-black, thick, and sits on a blurred darker bed rather than being a
-    // hairline that mip-maps away into the lip colour.
+    // ORAL LINE. It has to survive minification, so it is near-black and sits on
+    // a blurred bed rather than being a hairline that mips away into the lip
+    // colour — but the first attempt ran 0.036 AY thick with round caps out at
+    // mW * 0.99, which drew a bar WIDER and TALLER than the lips it was supposed
+    // to divide. Read as a marker stroke, not a mouth. Thinner, and pulled in
+    // short of the corners so the dimples close the ends instead of the caps.
     if (open <= 1) {
       const lineY = (x) => mY + curve * 0.062 * AY * (1 - x * x);
       g.save();
       g.filter = blurPx(4);
-      g.strokeStyle = rgba(mixHex(lipDk, 0x000000, 0.5), 0.55);
-      g.lineWidth = 0.052 * AY;
+      g.strokeStyle = rgba(mixHex(lipDk, 0x000000, 0.5), 0.34);
+      g.lineWidth = 0.030 * AY;
       g.lineCap = 'round';
       g.beginPath();
-      g.moveTo(cx - mW * 0.99, lineY(1) - curve * 0.020 * AY);
-      g.quadraticCurveTo(cx, lineY(0) + 0.006 * AY, cx + mW * 0.99, lineY(1) - curve * 0.020 * AY);
+      g.moveTo(cx - mW * 0.90, lineY(1) - curve * 0.020 * AY);
+      g.quadraticCurveTo(cx, lineY(0) + 0.004 * AY, cx + mW * 0.90, lineY(1) - curve * 0.020 * AY);
       g.stroke();
       g.filter = 'none';
       g.restore();
-      g.strokeStyle = rgba(mixHex(lipDk, 0x000000, 0.55), 0.97);
-      g.lineWidth = Math.max(4.5, 0.036 * AY);
+      g.strokeStyle = rgba(mixHex(lipDk, 0x000000, 0.55), 0.95);
+      g.lineWidth = Math.max(3, 0.021 * AY);
       g.lineCap = 'round';
       g.beginPath();
-      g.moveTo(cx - mW * 0.99, lineY(1) - curve * 0.020 * AY);
-      g.quadraticCurveTo(cx, lineY(0), cx + mW * 0.99, lineY(1) - curve * 0.020 * AY);
+      g.moveTo(cx - mW * 0.90, lineY(1) - curve * 0.020 * AY);
+      g.quadraticCurveTo(cx, lineY(0), cx + mW * 0.90, lineY(1) - curve * 0.020 * AY);
       g.stroke();
     }
     // corner dimples — press the ends of the line into the cheek
@@ -997,15 +1062,11 @@ export function headTexture(o = {}) {
     g.fillStyle = rgba(deep, 0.62);
     for (const s of [-1, 1]) {
       g.beginPath();
-      g.ellipse(cx + s * mW * 1.02, mY - curve * 0.026 * AY, 0.024 * AX, 0.030 * AY, 0, 0, TAU);
+      g.ellipse(cx + s * mW * 0.97, mY - curve * 0.026 * AY, 0.020 * AX, 0.026 * AY, 0, 0, TAU);
       g.fill();
     }
     g.filter = 'none';
     g.restore();
-    // lower-lip specular — a short, bright, hard band on the crest
-    g.fillStyle = 'rgba(255,246,238,0.42)';
-    g.beginPath();
-    g.ellipse(cx - mW * 0.06, mY + open * 1.02 + 0.028 * AY, mW * 0.40, 0.011 * AY, 0, 0, TAU); g.fill();
     // cast shadow under the lower lip: the mentolabial sulcus
     g.save();
     g.globalAlpha = 0.42;
