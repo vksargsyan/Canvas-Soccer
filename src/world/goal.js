@@ -522,8 +522,12 @@ export function createGoal(side = 1) {
 
   const frameGeo = track(mergeGeometries(parts, false));
   parts.forEach((g) => g.dispose());
+  // Not pure white: a 1.0 albedo under the key clips to flat white through ACES
+  // and the posts lose their round, which is exactly how a goal ends up reading
+  // as "a plain white box". Pulled down a shade and roughened so the cylinder
+  // gradient survives, with no metal to throw a hot line down the middle.
   const frameMat = track(new THREE.MeshStandardMaterial({
-    color: 0xf4f6f8, roughness: 0.40, metalness: 0.06,
+    color: 0xe9edf1, roughness: 0.47, metalness: 0.0,
   }));
   const frame = new THREE.Mesh(frameGeo, frameMat);
   frame.castShadow = true;
