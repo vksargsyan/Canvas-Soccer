@@ -44,7 +44,7 @@ const TIE = 4;                      // one lashing every TIE-th node on a frame 
 
 const NET_CELL = 0.18;              // world size of one net cell
 const TILE_CELLS = 8;               // cells per texture tile
-const TILE = NET_CELL * TILE_CELLS; // world size of one texture tile (1.0 m)
+const TILE = NET_CELL * TILE_CELLS; // world size of one texture tile
 
 const SLACK = 1.022;                // cord length over the taut layout
 const SLACK_D = 1.035;              // ... on the shear diagonals
