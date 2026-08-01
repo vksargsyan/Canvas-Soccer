@@ -303,14 +303,39 @@ export function headTexture(o = {}) {
       g.fillStyle = tg;
       g.fillRect(cx + (s < 0 ? -1.45 : 0.2) * AX, eyeY - 0.9 * AY, 1.25 * AX, 1.9 * AY);
     }
-    // jaw / under-chin occlusion
-    const jg = g.createLinearGradient(0, PY(2.10), 0, PY(2.62));
+    // Jaw / under-chin occlusion. This used to run 0 -> 0.92 of `deep` and then
+    // step straight down to 0.55 at the neck, which put a hard tonal seam right
+    // on the jawline. It is also the wrong place to spend darkness: the lighting
+    // rig already turns every downward-facing normal to the ground colour, so
+    // painting a second occlusion on top is what made the whole lower face
+    // collapse into one value. Half the depth, and no step.
+    const jg = g.createLinearGradient(0, PY(2.16), 0, PY(2.70));
     jg.addColorStop(0, rgba(shadow, 0));
-    jg.addColorStop(0.55, rgba(deep, 0.52));
-    jg.addColorStop(1, rgba(deep, 0.92));
-    g.fillStyle = jg; g.fillRect(0, PY(2.10), W, PY(2.62) - PY(2.10));
-    // neck sits in the head's shadow
-    g.fillStyle = rgba(deep, 0.55); g.fillRect(0, PY(2.62), W, H - PY(2.62));
+    jg.addColorStop(0.55, rgba(deep, 0.26));
+    jg.addColorStop(1, rgba(deep, 0.48));
+    g.fillStyle = jg; g.fillRect(0, PY(2.16), W, PY(2.70) - PY(2.16));
+    // neck sits in the head's shadow — matched to the jaw value so there is no
+    // seam where the two meet
+    const ng2 = g.createLinearGradient(0, PY(2.70), 0, PY(2.86));
+    ng2.addColorStop(0, rgba(deep, 0.48));
+    ng2.addColorStop(1, rgba(deep, 0.56));
+    g.fillStyle = ng2; g.fillRect(0, PY(2.70), W, H - PY(2.70));
+
+    // Warm bounce on the chin and jaw. Light coming off the pitch is green and
+    // dim; without a warm albedo bias underneath it, every chin in the game
+    // rendered as a slab of moss. This is the counterweight, and it is painted
+    // where the reference heads carry their strongest warmth anyway.
+    g.save();
+    g.globalAlpha = 0.26;
+    g.filter = 'blur(20px)';
+    const wb = g.createRadialGradient(cx, PY(2.02), 6, cx, PY(2.02), 0.62 * AX);
+    wb.addColorStop(0.00, 'rgba(236,150,104,1)');
+    wb.addColorStop(0.60, 'rgba(230,140,96,0.55)');
+    wb.addColorStop(1.00, 'rgba(230,140,96,0)');
+    g.fillStyle = wb;
+    g.fillRect(cx - 0.70 * AX, PY(1.66), 1.40 * AX, PY(2.42) - PY(1.66));
+    g.filter = 'none';
+    g.restore();
 
     // Buccal hollow: a soft shadow UNDER and inboard of the cheekbone. Without
     // it the skin reads as one flat tone across the whole lower face, which was
@@ -328,13 +353,24 @@ export function headTexture(o = {}) {
       g.filter = 'none';
       g.restore();
     }
-    // shadow the whole outer third of the face, so it turns away from the key
+    // Shadow the outer third of the face so it turns away from the key. The
+    // previous version ended its gradient AT the edge of a fillRect while the
+    // alpha there was still 0.34, which stamped a hard vertical seam down each
+    // side of the head and a hard horizontal one at the crown and the jaw —
+    // visible as a literal rectangle drawn on the skin. This runs the full
+    // half-turn from the face centre to the nape, returns to zero at both ends,
+    // and is drawn with its wrapped copies so nothing lands on a rect boundary.
     for (const s of [-1, 1]) {
-      const og2 = g.createLinearGradient(cx + s * 0.30 * AX, 0, cx + s * 0.98 * AX, 0);
-      og2.addColorStop(0, rgba(shadow, 0));
-      og2.addColorStop(1, rgba(shadow, 0.34));
-      g.fillStyle = og2;
-      g.fillRect(cx + (s < 0 ? -1.0 : 0.30) * AX, PY(0.70), 0.70 * AX, PY(2.60) - PY(0.70));
+      for (const off of [-W, 0, W]) {
+        const x0 = cx + off, x1 = cx + s * 0.5 * W + off;
+        const og2 = g.createLinearGradient(x0, 0, x1, 0);
+        og2.addColorStop(0.00, rgba(shadow, 0));
+        og2.addColorStop(0.40, rgba(shadow, 0.05));
+        og2.addColorStop(0.74, rgba(shadow, 0.30));
+        og2.addColorStop(1.00, rgba(shadow, 0));
+        g.fillStyle = og2;
+        g.fillRect(Math.min(x0, x1), 0, 0.5 * W, H);
+      }
     }
 
     // cheekbone highlight + warmth
@@ -362,32 +398,73 @@ export function headTexture(o = {}) {
     // ---- stubble / beard shadow ------------------------------------------
     if (stubble > 0) {
       const dens = stubble >= 2 ? 1.0 : 0.5;
-      const beardCol = mixHex(base, darken(brow, 0.10), 0.50 + dens * 0.36);
+      // Warmed and lightened to match the beard shell. At 0.86 toward a near
+      // black brow this was a solid dark bib painted on the skin, and the shell
+      // sitting over it could not do anything but read as one flat black mass.
+      const beardCol = mixHex(base, mixHex(brow, 0x7a5334, 0.46), 0.46 + dens * 0.30);
+      // The bib was a bezier jaw curve closed off with THREE STRAIGHT LINES —
+      // two vertical sides at +/-0.74 AX and a flat bottom — so the painted
+      // beard was, literally, a rectangle with a scalloped top. That is the
+      // "flat bib decal with hard cutout edges" the panel called out. A beard
+      // has no straight edges anywhere: the sideburn tapers to a point at the
+      // ear, the band follows the mandible, and it wraps UNDER the chin rather
+      // than being chopped off by the bottom of a box.
       const beardPath = () => {
         g.beginPath();
-        g.moveTo(cx - 0.74 * AX, PY(1.62));
-        g.bezierCurveTo(cx - 0.66 * AX, PY(1.94), cx - 0.36 * AX, PY(2.02), cx, PY(2.03));
-        g.bezierCurveTo(cx + 0.36 * AX, PY(2.02), cx + 0.66 * AX, PY(1.94), cx + 0.74 * AX, PY(1.62));
-        g.lineTo(cx + 0.74 * AX, PY(2.72));
-        g.lineTo(cx - 0.74 * AX, PY(2.72));
+        // right sideburn, tapering up toward the ear
+        g.moveTo(cx + 0.80 * AX, PY(1.46));
+        g.bezierCurveTo(cx + 0.78 * AX, PY(1.72), cx + 0.66 * AX, PY(1.92), cx + 0.40 * AX, PY(2.00));
+        g.bezierCurveTo(cx + 0.22 * AX, PY(2.04), cx + 0.10 * AX, PY(2.05), cx, PY(2.05));
+        g.bezierCurveTo(cx - 0.10 * AX, PY(2.05), cx - 0.22 * AX, PY(2.04), cx - 0.40 * AX, PY(2.00));
+        g.bezierCurveTo(cx - 0.66 * AX, PY(1.92), cx - 0.78 * AX, PY(1.72), cx - 0.80 * AX, PY(1.46));
+        // down the far side and back under the chin — no straight run anywhere
+        g.bezierCurveTo(cx - 0.90 * AX, PY(2.00), cx - 0.72 * AX, PY(2.62), cx - 0.34 * AX, PY(2.76));
+        g.bezierCurveTo(cx - 0.14 * AX, PY(2.82), cx + 0.14 * AX, PY(2.82), cx + 0.34 * AX, PY(2.76));
+        g.bezierCurveTo(cx + 0.72 * AX, PY(2.62), cx + 0.90 * AX, PY(2.00), cx + 0.80 * AX, PY(1.46));
         g.closePath();
       };
+      // Two passes at different blurs: a wide soft one that has no findable
+      // edge at all, then a tighter denser one for the body. A single hard-ish
+      // silhouette is what reads as a decal.
       g.save();
-      g.filter = 'blur(10px)';
-      g.globalAlpha = 0.40 + dens * 0.42;
+      g.filter = 'blur(26px)';
+      g.globalAlpha = 0.30 + dens * 0.26;
       g.fillStyle = css(beardCol);
       beardPath(); g.fill();
+      g.filter = 'blur(11px)';
+      g.globalAlpha = 0.30 + dens * 0.34;
+      beardPath(); g.fill();
       g.filter = 'none';
+      g.restore();
+      // Stubble grain. The old loop stamped 2 px squares off a 3 px noise grid
+      // at up to 0.42 alpha, which at this texel density is salt-and-pepper —
+      // the "reads as dirt" note. Coarser cells, far lower contrast, and blurred
+      // afterwards so it is a texture rather than a rash.
+      g.save();
       beardPath(); g.clip();
-      g.globalAlpha = 0.26 + dens * 0.16;
-      const y0 = PY(1.55), y1 = PY(2.80);
-      for (let y = y0; y < y1; y += 3) {
-        for (let x = cx - 0.78 * AX; x < cx + 0.78 * AX; x += 3) {
-          const n = vnoise(x / 3.1, y / 3.1);
-          if (n > 0.60) { g.fillStyle = css(darken(beardCol, 0.45)); g.fillRect(x, y, 2, 2); }
-          else if (n < 0.30) { g.fillStyle = css(lighten(beardCol, 0.24)); g.fillRect(x, y, 2, 2); }
+      g.filter = 'blur(2.2px)';
+      g.globalAlpha = 0.10 + dens * 0.10;
+      const y0 = PY(1.55), y1 = PY(2.84);
+      for (let y = y0; y < y1; y += 5) {
+        for (let x = cx - 0.92 * AX; x < cx + 0.92 * AX; x += 5) {
+          const n = vnoise(x / 6.4, y / 6.4);
+          if (n > 0.62) { g.fillStyle = css(darken(beardCol, 0.34)); g.fillRect(x, y, 5, 5); }
+          else if (n < 0.32) { g.fillStyle = css(lighten(beardCol, 0.30)); g.fillRect(x, y, 5, 5); }
         }
       }
+      g.filter = 'none';
+      g.restore();
+      // Direction: a beard grows DOWN and the light comes from above, so the
+      // top of the band is lighter than the bottom. Without this ramp the whole
+      // band is one value and no amount of grain will make it read as hair.
+      g.save();
+      beardPath(); g.clip();
+      const bgd = g.createLinearGradient(0, PY(1.86), 0, PY(2.72));
+      bgd.addColorStop(0.00, rgba(lighten(beardCol, 0.34), 0.34));
+      bgd.addColorStop(0.42, rgba(beardCol, 0));
+      bgd.addColorStop(1.00, rgba(darken(beardCol, 0.40), 0.42));
+      g.fillStyle = bgd;
+      g.fillRect(cx - 1.0 * AX, PY(1.40), 2.0 * AX, PY(2.90) - PY(1.40));
       g.restore();
     }
 
@@ -592,11 +669,15 @@ export function headTexture(o = {}) {
     // the paint's only job is to sit a dark line beneath it and put one small
     // specular on the crest. A big pale ellipse on the front of the ball is
     // what turned the nose into a snout.
+    // Kept TIGHT. At 0.052 AY blurred 6 px and 0.50 alpha this shadow reached
+    // down to the vermilion border and fused with the mouth into one dark bar
+    // across the middle of the face — which is why the mouth "was missing":
+    // there was nothing left to distinguish it from the nose's own shadow.
     g.save();
-    g.globalAlpha = 0.50;
-    g.filter = 'blur(6px)';
+    g.globalAlpha = 0.38;
+    g.filter = 'blur(5px)';
     g.fillStyle = rgba(deep, 1);
-    g.beginPath(); g.ellipse(cx, noseY + 0.128 * AY, noseW * 1.30, 0.052 * AY, 0, 0, TAU); g.fill();
+    g.beginPath(); g.ellipse(cx, noseY + 0.116 * AY, noseW * 1.16, 0.030 * AY, 0, 0, TAU); g.fill();
     g.filter = 'none';
     g.restore();
     // specular on the crest of the tip — small, high, offset toward the key
@@ -612,16 +693,44 @@ export function headTexture(o = {}) {
     // Nostrils: narrow slits, low, angled outward. Round dots on the front of
     // the tip is exactly the geometry of a pig snout — from a level camera a
     // real nostril is barely more than a dark comma under the wing.
+    // They were drawn at blur(2) and 0.72 alpha of a mid brown, which at
+    // gameplay distance is nothing at all and even at 3x reads as a scuff. A
+    // nostril is a HOLE: the darkest value anywhere on the face bar the pupil.
     g.save();
-    g.filter = 'blur(2px)';
-    g.fillStyle = rgba(deep, 0.72);
+    g.filter = 'blur(3px)';
+    g.fillStyle = rgba(mixHex(deep, 0x000000, 0.45), 0.40);
     for (const s of [-1, 1]) {
       g.beginPath();
-      g.ellipse(cx + s * noseW * 0.66, noseY + 0.132 * AY,
-        noseW * 0.15, 0.0105 * AY, s * 0.60, 0, TAU);
+      g.ellipse(cx + s * noseW * 0.70, noseY + 0.130 * AY,
+        noseW * 0.30, 0.026 * AY, s * 0.46, 0, TAU);
       g.fill();
     }
     g.filter = 'none';
+    g.restore();
+    g.save();
+    g.filter = 'blur(1.6px)';
+    g.fillStyle = rgba(mixHex(deep, 0x000000, 0.62), 0.95);
+    for (const s of [-1, 1]) {
+      g.beginPath();
+      g.ellipse(cx + s * noseW * 0.70, noseY + 0.130 * AY,
+        noseW * 0.185, 0.0155 * AY, s * 0.52, 0, TAU);
+      g.fill();
+    }
+    g.filter = 'none';
+    g.restore();
+    // a thin lit ridge on the near wall of each nostril, so it reads as an
+    // opening with a rim rather than an ink dot
+    g.save();
+    g.globalAlpha = 0.34;
+    g.strokeStyle = rgba(lighten(base, 0.44), 1);
+    g.lineWidth = Math.max(1.6, 0.008 * AY);
+    for (const s of [-1, 1]) {
+      g.beginPath();
+      g.moveTo(cx + s * noseW * 0.40, noseY + 0.126 * AY);
+      g.quadraticCurveTo(cx + s * noseW * 0.62, noseY + 0.106 * AY,
+        cx + s * noseW * 0.92, noseY + 0.118 * AY);
+      g.stroke();
+    }
     g.restore();
     // nostril wing crease
     g.strokeStyle = rgba(shadow, 0.42);
@@ -634,7 +743,7 @@ export function headTexture(o = {}) {
     }
 
     // ---- mouth ------------------------------------------------------------
-    const mW = (0.236 + (variant % 4) * 0.013) * AX * (1 + E.open * 0.18);
+    const mW = (0.258 + (variant % 4) * 0.013) * AX * (1 + E.open * 0.18);
     const open = E.open * 0.115 * AY;
     const curve = E.curve;
     const lip = mixHex(base, 0x8e2c28, 0.60);
@@ -712,44 +821,129 @@ export function headTexture(o = {}) {
       }
     }
 
-    // lips
+    // LIPS.
+    // The blind panel's first note was "the mouth is missing ENTIRELY". It was
+    // not missing — it was painted at the tonal contrast of a blush, in the one
+    // band of the face that catches the most green bounce off the turf, and
+    // with the moustache shell parked on top of the upper lip. Three fixes:
+    //  1. a lit muzzle pad, so the mouth sits on a field brighter than the jaw
+    //     rather than inside the shadow that runs under the nose;
+    //  2. lips with a real value spread — dark upper, light lower, and a
+    //     near-black oral line between them that survives an 8x minification;
+    //  3. a cast shadow under the lower lip so the whole thing has depth.
+    const lipHi = lighten(mixHex(lip, 0xd98a72, 0.34), 0.06);
+    const lipDk = mixHex(lip, 0x3a1010, 0.55);
+
+    // muzzle pad: the upper lip / chin plane faces the sky more than the jaw
+    g.save();
+    g.globalAlpha = 0.34;
+    g.filter = 'blur(16px)';
+    const mug = g.createRadialGradient(cx, mY - 0.02 * AY, 4, cx, mY - 0.02 * AY, mW * 1.65);
+    mug.addColorStop(0, rgba(lighten(base, 0.34), 1));
+    mug.addColorStop(1, rgba(lighten(base, 0.34), 0));
+    g.fillStyle = mug;
+    g.fillRect(cx - mW * 1.8, mY - 0.30 * AY, mW * 3.6, 0.52 * AY);
+    g.filter = 'none';
+    g.restore();
+
+    // soft occlusion hugging the whole mouth, so it is set into the face
+    g.save();
+    g.globalAlpha = 0.30;
+    g.filter = 'blur(9px)';
+    g.fillStyle = rgba(deep, 1);
+    g.beginPath();
+    g.ellipse(cx, mY + open * 0.5 + 0.012 * AY, mW * 1.22, (0.088 + open / AY * 0.5) * AY, 0, 0, TAU);
+    g.fill();
+    g.filter = 'none';
+    g.restore();
+
+    // upper lip — the darker of the two, with a defined cupid's bow
+    const upTop = (x) => mY - 0.070 * AY - curve * 0.026 * AY * (1 - Math.abs(x));
     g.fillStyle = css(lip);
     g.beginPath();
-    g.moveTo(cx - mW, mY - curve * 0.028 * AY);
-    g.quadraticCurveTo(cx - mW * 0.46, mY - 0.066 * AY, cx - mW * 0.10, mY - 0.022 * AY);
-    g.quadraticCurveTo(cx, mY - 0.048 * AY, cx + mW * 0.10, mY - 0.022 * AY);
-    g.quadraticCurveTo(cx + mW * 0.46, mY - 0.066 * AY, cx + mW, mY - curve * 0.028 * AY);
-    g.lineTo(cx + mW, mY - 0.004 * AY);
-    g.quadraticCurveTo(cx, mY - 0.030 * AY, cx - mW, mY - 0.004 * AY);
+    g.moveTo(cx - mW, mY - curve * 0.030 * AY);
+    g.quadraticCurveTo(cx - mW * 0.52, upTop(0.5), cx - mW * 0.13, mY - 0.030 * AY);
+    g.quadraticCurveTo(cx, mY - 0.058 * AY, cx + mW * 0.13, mY - 0.030 * AY);
+    g.quadraticCurveTo(cx + mW * 0.52, upTop(0.5), cx + mW, mY - curve * 0.030 * AY);
+    g.lineTo(cx + mW, mY - 0.002 * AY);
+    g.quadraticCurveTo(cx, mY - 0.034 * AY, cx - mW, mY - 0.002 * AY);
     g.closePath(); g.fill();
-    // lower lip
-    g.fillStyle = css(lighten(lip, 0.10));
+    // the upper lip turns under toward the line: shade its lower half
+    g.save();
+    g.globalAlpha = 0.55;
+    const ulg = g.createLinearGradient(0, mY - 0.062 * AY, 0, mY);
+    ulg.addColorStop(0, rgba(lipDk, 0));
+    ulg.addColorStop(1, rgba(lipDk, 1));
+    g.fillStyle = ulg;
+    g.fillRect(cx - mW, mY - 0.062 * AY, mW * 2, 0.062 * AY);
+    g.restore();
+
+    // lower lip — fuller, lighter, catching the key
+    g.fillStyle = css(lipHi);
     g.beginPath();
-    g.moveTo(cx - mW * 0.96, mY + open * 1.02);
-    g.quadraticCurveTo(cx, mY + open * 1.06 + (0.052 + curve * 0.026) * AY, cx + mW * 0.96, mY + open * 1.02);
-    g.quadraticCurveTo(cx, mY + open * 1.02 - 0.012 * AY, cx - mW * 0.96, mY + open * 1.02);
+    g.moveTo(cx - mW * 0.94, mY + open * 1.02);
+    g.quadraticCurveTo(cx, mY + open * 1.06 + (0.070 + curve * 0.028) * AY, cx + mW * 0.94, mY + open * 1.02);
+    g.quadraticCurveTo(cx, mY + open * 1.02 - 0.014 * AY, cx - mW * 0.94, mY + open * 1.02);
     g.closePath(); g.fill();
-    // mouth line (closed mouths only)
+    // its own shading: dark where it tucks under, light on the crest
+    g.save();
+    g.globalAlpha = 0.42;
+    const llg = g.createLinearGradient(0, mY + open * 1.02, 0, mY + open * 1.02 + 0.072 * AY);
+    llg.addColorStop(0, rgba(lipDk, 0.9));
+    llg.addColorStop(0.42, rgba(lipDk, 0));
+    llg.addColorStop(1, rgba(darken(lip, 0.42), 0.8));
+    g.fillStyle = llg;
+    g.fillRect(cx - mW, mY + open * 1.02, mW * 2, 0.076 * AY);
+    g.restore();
+
+    // ORAL LINE. This is the mark that has to survive minification, so it is
+    // near-black, thick, and sits on a blurred darker bed rather than being a
+    // hairline that mip-maps away into the lip colour.
     if (open <= 1) {
-      g.strokeStyle = rgba(darken(lip, 0.76), 0.96);
-      g.lineWidth = Math.max(3.5, 0.030 * AY);
+      const lineY = (x) => mY + curve * 0.062 * AY * (1 - x * x);
+      g.save();
+      g.filter = 'blur(4px)';
+      g.strokeStyle = rgba(mixHex(lipDk, 0x000000, 0.5), 0.55);
+      g.lineWidth = 0.052 * AY;
       g.lineCap = 'round';
       g.beginPath();
-      g.moveTo(cx - mW * 0.97, mY - curve * 0.020 * AY);
-      g.quadraticCurveTo(cx, mY + curve * 0.060 * AY, cx + mW * 0.97, mY - curve * 0.020 * AY);
+      g.moveTo(cx - mW * 0.99, lineY(1) - curve * 0.020 * AY);
+      g.quadraticCurveTo(cx, lineY(0) + 0.006 * AY, cx + mW * 0.99, lineY(1) - curve * 0.020 * AY);
+      g.stroke();
+      g.filter = 'none';
+      g.restore();
+      g.strokeStyle = rgba(mixHex(lipDk, 0x000000, 0.55), 0.97);
+      g.lineWidth = Math.max(4.5, 0.036 * AY);
+      g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(cx - mW * 0.99, lineY(1) - curve * 0.020 * AY);
+      g.quadraticCurveTo(cx, lineY(0), cx + mW * 0.99, lineY(1) - curve * 0.020 * AY);
       g.stroke();
     }
-    // corner dimples
-    g.fillStyle = rgba(shadow, 0.55);
+    // corner dimples — press the ends of the line into the cheek
+    g.save();
+    g.filter = 'blur(3px)';
+    g.fillStyle = rgba(deep, 0.62);
     for (const s of [-1, 1]) {
       g.beginPath();
-      g.ellipse(cx + s * mW * 1.03, mY - curve * 0.024 * AY, 0.020 * AX, 0.024 * AY, 0, 0, TAU);
+      g.ellipse(cx + s * mW * 1.02, mY - curve * 0.026 * AY, 0.024 * AX, 0.030 * AY, 0, 0, TAU);
       g.fill();
     }
-    // lower-lip highlight
-    g.fillStyle = 'rgba(255,255,255,0.16)';
+    g.filter = 'none';
+    g.restore();
+    // lower-lip specular — a short, bright, hard band on the crest
+    g.fillStyle = 'rgba(255,246,238,0.42)';
     g.beginPath();
-    g.ellipse(cx, mY + open * 1.02 + 0.024 * AY, mW * 0.42, 0.013 * AY, 0, 0, TAU); g.fill();
+    g.ellipse(cx - mW * 0.06, mY + open * 1.02 + 0.028 * AY, mW * 0.40, 0.011 * AY, 0, 0, TAU); g.fill();
+    // cast shadow under the lower lip: the mentolabial sulcus
+    g.save();
+    g.globalAlpha = 0.42;
+    g.filter = 'blur(7px)';
+    g.fillStyle = rgba(deep, 1);
+    g.beginPath();
+    g.ellipse(cx, mY + open * 1.05 + 0.086 * AY, mW * 0.86, 0.030 * AY, 0, 0, TAU); g.fill();
+    g.filter = 'none';
+    g.restore();
     // chin crease + shadow
     g.save();
     g.filter = 'blur(6px)';
@@ -893,37 +1087,45 @@ export function eyeTexture(o = {}) {
     const { c, g } = canvas2d(S, S);
     const R = S / 2;
 
-    // sclera — never paper white; a real eye reads warm grey in its socket
-    g.fillStyle = '#e6dfd6'; g.fillRect(0, 0, S, S);
-    // veins / warmth toward the corners
+    // Sclera. The previous pass painted it warm grey AND then multiplied a dark
+    // burial ring in from 0.80 R — but the eye opening reaches 0.97 R, so every
+    // pixel of white the lids actually expose was inside the ring. The result
+    // was an eye with no white at all: a dark oval decal, which is exactly what
+    // the review called it. The white has to be white where it is seen.
+    g.fillStyle = '#f4efe6'; g.fillRect(0, 0, S, S);
+    // warmth only in the far corners, where the lid folds meet
     g.save();
-    g.globalAlpha = 0.30;
-    const wg = g.createRadialGradient(R, R, R * 0.18, R, R, R);
+    g.globalAlpha = 0.34;
+    const wg = g.createRadialGradient(R, R, R * 0.62, R, R, R * 1.15);
     wg.addColorStop(0, 'rgba(255,255,255,0)');
-    wg.addColorStop(1, 'rgba(178,128,116,1)');
+    wg.addColorStop(1, 'rgba(186,140,124,1)');
     g.fillStyle = wg; g.fillRect(0, 0, S, S);
     g.restore();
-    // lid shadow across the top of the ball — heavy, so the eye sits in a socket
-    const lg = g.createLinearGradient(0, 0, 0, S * 0.66);
-    lg.addColorStop(0, 'rgba(58,42,34,0.86)');
-    lg.addColorStop(0.45, 'rgba(104,84,72,0.36)');
+    // lid shadow across the top of the ball, so the eye sits in a socket. Kept
+    // shallow: the eyelid is real geometry and casts its own shadow, and doing
+    // it twice is what buried the sclera.
+    const lg = g.createLinearGradient(0, 0, 0, S * 0.56);
+    lg.addColorStop(0, 'rgba(74,54,44,0.62)');
+    lg.addColorStop(0.42, 'rgba(126,104,90,0.24)');
     lg.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = lg; g.fillRect(0, 0, S, S * 0.66);
+    g.fillStyle = lg; g.fillRect(0, 0, S, S * 0.56);
     // faint bounce from below
     const bg = g.createLinearGradient(0, S, 0, S * 0.72);
     bg.addColorStop(0, 'rgba(150,126,112,0.22)');
     bg.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = bg; g.fillRect(0, S * 0.72, S, S * 0.28);
 
-    // Iris. The visible opening is ~45 deg of the eyeball, so a 20 deg iris
-    // leaves a huge field of sclera and the eye reads as a cartoon googly.
-    // 30 deg (dx = sin 30 = 0.5, patch fraction = dx / EYE_PROJ_S) fills the
-    // opening the way the reference does, with the lid clipping its top.
-    const IR = R * (0.559 / EYE_PROJ_S);          // sin 34 deg
-    // Sit the iris slightly ABOVE the patch centre so the upper lid clips its
-    // top. Riding low left a band of sclera above the iris, which is the exact
-    // geometry of a startled cartoon eye.
-    const cxp = R, cyp = R - R * 0.048;
+    // Iris. The lids expose an almond running from x = 0.03 R to 1.97 R and
+    // from y = 0.61 R to 1.53 R, i.e. 1.94 R wide by 0.92 R tall. At the old
+    // 1.60 R the iris filled 82 % of that width and the two sclera wedges left
+    // over were three pixels each. The reference sits nearer 62 %, which leaves
+    // a real white triangle at each corner — that white is what makes an eye
+    // read as an eye rather than as a painted dot.
+    const IR = R * 0.605;
+    // Vertically the opening centres on 1.07 R. Sitting the iris a little above
+    // that lets the upper lid clip its top (alert, not startled) while its
+    // bottom rests on the lower lid instead of floating with white underneath.
+    const cxp = R, cyp = R * 1.015;
 
     // limbal ring
     g.fillStyle = css(darken(iris, 0.72));
@@ -957,20 +1159,39 @@ export function eyeTexture(o = {}) {
     g.restore();
     // pupil
     g.fillStyle = '#08090c';
-    g.beginPath(); g.arc(cxp, cyp, IR * 0.38, 0, TAU); g.fill();
-    // catchlight: one crisp specular, one dim bounce from the turf below
-    g.fillStyle = 'rgba(255,255,255,0.97)';
-    g.beginPath(); g.arc(cxp - IR * 0.34, cyp - IR * 0.40, IR * 0.175, 0, TAU); g.fill();
-    g.fillStyle = 'rgba(255,255,255,0.34)';
-    g.beginPath(); g.arc(cxp + IR * 0.30, cyp + IR * 0.36, IR * 0.095, 0, TAU); g.fill();
+    g.beginPath(); g.arc(cxp, cyp, IR * 0.40, 0, TAU); g.fill();
+    // Catchlight. Hard-edged and straddling the pupil rim, the way every
+    // reference eye does it — a soft blurred dot reads as a smudge once the
+    // head is 60 px tall, and the specular is the single cue that says "wet".
+    g.fillStyle = 'rgba(255,255,255,0.98)';
+    g.beginPath(); g.arc(cxp - IR * 0.30, cyp - IR * 0.34, IR * 0.235, 0, TAU); g.fill();
+    // a small second lobe so the highlight is not a perfect circle
+    g.fillStyle = 'rgba(255,255,255,0.80)';
+    g.beginPath(); g.arc(cxp - IR * 0.06, cyp - IR * 0.50, IR * 0.105, 0, TAU); g.fill();
+    // dim bounce from the turf under the chin
+    g.fillStyle = 'rgba(214,226,214,0.30)';
+    g.beginPath(); g.arc(cxp + IR * 0.34, cyp + IR * 0.40, IR * 0.110, 0, TAU); g.fill();
+
+    // Contact shadow where the upper lid physically rests on the ball. This is
+    // a thin dark band ON the eyeball, not on the skin, so the lash line reads
+    // as a crease between two surfaces instead of a drawn outline.
+    g.save();
+    g.filter = 'blur(4px)';
+    const cg2 = g.createLinearGradient(0, R * 0.40, 0, R * 0.86);
+    cg2.addColorStop(0, 'rgba(40,26,18,0.55)');
+    cg2.addColorStop(1, 'rgba(40,26,18,0)');
+    g.fillStyle = cg2; g.fillRect(0, R * 0.40, S, R * 0.50);
+    g.filter = 'none';
+    g.restore();
 
     // everything outside the visible cap is buried in the skull; keep it dark so
-    // no bright sliver can ever leak at a grazing angle
+    // no bright sliver can ever leak at a grazing angle. The ring now starts at
+    // 0.99 R — outside the eye opening — instead of 0.80 R, which was inside it.
     g.save();
     g.globalCompositeOperation = 'multiply';
-    const eg = g.createRadialGradient(R, R, R * 0.80, R, R, R * 1.02);
+    const eg = g.createRadialGradient(R, R, R * 0.99, R, R, R * 1.24);
     eg.addColorStop(0, '#ffffff');
-    eg.addColorStop(1, '#2a2018');
+    eg.addColorStop(1, '#5a4a3e');
     g.fillStyle = eg; g.fillRect(0, 0, S, S);
     g.restore();
 
