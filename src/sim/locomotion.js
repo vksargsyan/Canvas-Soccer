@@ -241,6 +241,11 @@ export function locoState(a) {
     vx: 0, vz: 0,             // what the body is doing (committed)
     sp0: 0, d0x: 0, d0z: 1,   // the velocity carried into this frame
     dirty: true,
+    // Is this frame's envelope still to be spent? See evaluate(): a frame's
+    // worth of acceleration may be spent exactly once, between one stepBodies
+    // and the next. Once commit() has settled the frame, further requests are
+    // recorded but do not move the body until the next frame opens.
+    open: false,
     cx: 0, cz: 0,             // cached projection of (rx, rz)
     dt: 1 / 60,
     yaw: a.yaw || 0,
@@ -253,8 +258,21 @@ export function locoState(a) {
   return L;
 }
 
+/**
+ * Bring the cached velocity up to date with the current request — but only if
+ * this frame's envelope has not already been spent.
+ *
+ * A frame may accelerate a body ONCE. stepBodies() opens the envelope, commit()
+ * closes it. Anything that writes a velocity after that — a whistle zeroing the
+ * pitch in match.update(), a contact resolved after the bodies pass — is stored
+ * as a request and takes effect on the next frame, instead of quietly spending
+ * a second frame's worth of braking on top of the one already committed. That
+ * second spend is invisible in the position (the integrator ran before it) but
+ * it is entirely visible in the velocity, and it is what let a bounded 12 m/s^2
+ * model report 20 m/s^2 of deceleration to anything sampling `agent.vel`.
+ */
 function evaluate(a, L) {
-  if (L.dirty) {
+  if (L.dirty && L.open) {
     project(a, L, _out);
     L.cx = _out.x; L.cz = _out.z;
     L.dirty = false;
@@ -439,6 +457,7 @@ export function stepBodies(players, dt) {
   for (const a of players) {
     const L = locoState(a);
     if (h > 0) L.dt = h;
+    L.open = true;                  // this frame's envelope is now available
     L.pressure = Math.max(0, L.pressure - 3.0 * h);
     L.shielding = Math.max(0, L.shielding - 2.2 * h);
   }
@@ -493,6 +512,7 @@ function commit(a, dt) {
   L.rx = nvx; L.rz = nvz;
   L.cx = nvx; L.cz = nvz;
   L.dirty = false;
+  L.open = false;                   // spent: later writes wait for the next frame
 
   // keep everybody on the planet
   a.pos.x = clamp(a.pos.x, -HALF_W - 2.5, HALF_W + 2.5);
