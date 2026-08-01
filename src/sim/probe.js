@@ -87,6 +87,12 @@ const TARGETS = {
   locomotion: {
     maxTurnRateAtSprint: { max: 230 },
     maxAccel: { max: 13 },
+    // Measured from the start but left ungraded, and it quietly got worse
+    // (190 -> 344 m/s^2) while accel was being fixed. A player who sheds all
+    // his speed in one frame is as inhuman as one who reaches top speed in
+    // one frame; stopping is just the direction nobody thinks to bound.
+    // 18 is generous — a real athlete decelerates at roughly 8-12.
+    maxDecel: { max: 18 },
     instantReversals: { equals: 0 },
   },
   match: {
