@@ -16,6 +16,7 @@ import { createBall } from './entities/ball.js';
 import { createBallBody, separatePlayers, ballPlayerContact } from './sim/physics.js';
 import { createAI, FORMATION } from './sim/ai.js';
 import { createMatch } from './sim/match.js';
+import { createGameplayProbe, gameplayTargets } from './sim/probe.js';
 import { createVfx } from './fx/vfx.js';
 import { createDirector } from './fx/camera.js';
 import { createAudio } from './audio/audio.js';
@@ -1014,6 +1015,27 @@ export function boot({ canvas, hudRoot, splash } = {}) {
         camera: director.mode,
       };
     },
+    /**
+     * Objective gameplay metrics. Runs seeded, scripted, headless scenarios on a
+     * fixed 1/60 clock against the real sim and returns numbers for dribbling,
+     * passing, shielding, locomotion and match rhythm. See sim/probe.js.
+     *
+     * It builds its OWN worlds, so calling it does not touch the live match, the
+     * shared RNG stream, the renderer or the clock — it is safe to call at any
+     * time, mid-match included. Takes ~1-2 s.
+     *
+     *   __debug.gameplayProbe()                  -> the report
+     *   __debug.gameplayProbe({ verbose: true }) -> report + `meta` diagnostics
+     */
+    gameplayProbe(opts) { return createGameplayProbe().run(opts); },
+    /**
+     * The pass/fail thresholds the probe's numbers are graded against. Callable
+     * and readable, so both of these work:
+     *   __debug.gameplayTargets()                          -> the whole table
+     *   __debug.gameplayTargets.dribble.maxBallDist.max    -> 1.6
+     * Passing a report in grades it: __debug.gameplayTargets(__debug.gameplayProbe())
+     */
+    gameplayTargets,
     // extras (not part of the contract, handy for tuning)
     engine, scene, camera, agents, body, match, director, vfx, hud, pitch, stadium, goals,
     play: freePlay,
