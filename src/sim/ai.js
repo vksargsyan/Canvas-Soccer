@@ -106,19 +106,19 @@ const ROLL_W = Math.sqrt(ROLL_C * ROLL_K);
 
 // How fast a pass should be doing when it reaches him. Under the floor it dies
 // short and is a gift to a defender; over the ceiling it cannot be controlled.
-const ARRIVE_MIN = 7.6;
-const ARRIVE_MAX = 9.8;
+const ARRIVE_MIN = 7.0;
+const ARRIVE_MAX = 9.3;
 const PASS_U_MAX = 26;
 
 // Interception model. A defender gets something on anything that comes inside
 // CUT_R of him: sim/control.js will trap a ball within 1.15 m and
 // sim/physics.js deflects one off his boot band, so a lane is not "clear"
 // merely because it misses his collision cylinder.
-const CUT_R = 1.60;
+const CUT_R = 1.35;
 const CUT_SPEED = 9.6;
 const CUT_ACCEL = 9.0;
 const CUT_REACT = 0.20;
-const CUT_SPAN = 1.00;            // s of margin over which a lane goes bad
+const CUT_SPAN = 0.80;            // s of margin over which a lane goes bad
 
 // Lofting. sim/physics.js lets a ball above BAND_HEAD_Y (1.90 m) sail over a
 // player untouched, so a chip really does beat a man instead of merely looking
@@ -670,7 +670,7 @@ export function createAI(ctx) {
       const openQ = clamp((openThen - 1.8) / 6.2, 0, 1);
       // --- does it go forward? ---
       const gain = toU(t, plan.x) - toU(t, ox);
-      const progQ = clamp((gain + 10) / 22, 0, 1);
+      const progQ = clamp((gain + 6) / 18, 0, 1);
       // --- is it a sane length? ---
       const rangeQ = rangePref(d);
       // --- is he running into space, and the right way? ---
