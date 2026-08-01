@@ -771,7 +771,8 @@ export function createHud(root) {
 
   let legendMode = 'key';       // which LEGEND variant is rendered
   let legendOn = false;         // wants to be visible
-  let legendPinned = false;     // user pressed H — no auto-hide
+  let legendPinned = false;     // user pressed H to open it — no auto-hide
+  let legendDismissed = false;  // user pressed H to close it — never auto-arm again
   let legendTimer = 0;          // seconds until auto-hide (0 = never)
   let cine = false;             // celebration: everything interactive gets out of the way
 
@@ -818,8 +819,8 @@ export function createHud(root) {
     syncLegend();
   }
   function toggleControls() {
-    if (legendOn) { legendPinned = false; hideControls(); }
-    else { legendPinned = true; showControls(0); }
+    if (legendOn) { legendPinned = false; legendDismissed = true; hideControls(); }
+    else { legendPinned = true; legendDismissed = false; showControls(0); }
   }
   renderLegend();
   showControls(9);
@@ -1273,7 +1274,8 @@ export function createHud(root) {
       ovEl.classList.remove('on');
       // Back to the match: put the legend up for a few seconds so the controls
       // are the first thing you read at kickoff, then let it get out of the way.
-      if (!legendPinned) showControls(9);
+      // Someone who has already waved it off with H does not get it back.
+      if (!legendPinned && !legendDismissed) showControls(9);
       syncLegend();
       return;
     }
