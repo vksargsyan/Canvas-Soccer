@@ -225,17 +225,25 @@ const CSS = `
   border-bottom:calc(1.5px*var(--lu)) solid rgba(255,255,255,.10); }
 .cs-keys .hd b { font-size:calc(11px*var(--lu)); letter-spacing:.3em; font-weight:900; color:#8fd8ff;
   text-shadow:0 calc(2px*var(--lu)) calc(5px*var(--lu)) rgba(0,0,0,.8); }
-.cs-keys .hd em { font-style:normal; display:flex; align-items:center; gap:calc(6px*var(--lu));
+.cs-keys .hd em { font-style:normal; display:flex; align-items:center; gap:calc(7px*var(--lu));
   font-size:calc(9.5px*var(--lu)); letter-spacing:.2em; font-weight:900;
   color:rgba(186,204,238,.5); }
+.cs-keys .hd em .cs-key { min-width:calc(21px*var(--lu)); height:calc(21px*var(--lu));
+  padding:0 calc(6px*var(--lu)); font-size:calc(9.5px*var(--lu)); }
 
-.cs-keys .bd { display:flex; align-items:center; gap:calc(20px*var(--lu)); }
-.cs-keys .mv { display:flex; flex-direction:column; align-items:center; gap:calc(7px*var(--lu)); }
+.cs-keys .bd { display:flex; align-items:center; justify-content:center;
+  gap:calc(20px*var(--lu)); }
+.cs-keys .mv { display:flex; flex-direction:column; align-items:center; gap:calc(8px*var(--lu)); }
 .cs-keys .mv .g { display:grid; grid-template-columns:repeat(3, auto); gap:calc(4px*var(--lu));
   justify-items:center; }
 .cs-keys .mv .g.one { grid-template-columns:auto; }
-.cs-keys .lb { font-size:calc(9.5px*var(--lu)); letter-spacing:.26em; font-weight:900;
+/* the movement cluster is the control you use every frame — give it the weight */
+.cs-keys .mv .cs-key { min-width:calc(31px*var(--lu)); height:calc(29px*var(--lu));
+  font-size:calc(12.5px*var(--lu)); }
+.cs-keys .lb { display:flex; flex-direction:column; align-items:center; gap:calc(3px*var(--lu));
+  font-size:calc(9.5px*var(--lu)); letter-spacing:.26em; font-weight:900;
   color:rgba(200,216,244,.62); }
+.cs-keys .lb i { font-style:normal; letter-spacing:.2em; color:rgba(178,196,232,.42); }
 .cs-keys .sep { width:calc(1.5px*var(--lu)); align-self:stretch;
   background:linear-gradient(180deg, rgba(255,255,255,0), rgba(255,255,255,.13) 22%,
                                      rgba(255,255,255,.13) 78%, rgba(255,255,255,0)); }
@@ -518,7 +526,7 @@ const LEGEND = {
   key: {
     title: 'CONTROLS',
     recall: 'H',
-    move: { caps: ['W', 'A', 'S', 'D'], label: 'MOVE', note: 'ARROWS TOO' },
+    move: { caps: ['W', 'A', 'S', 'D'], label: 'MOVE', note: 'OR ARROWS' },
     rows: [
       ['SPACE', 'SHOOT'],
       ['SHIFT', 'SPRINT'],
@@ -778,9 +786,11 @@ export function createHud(root) {
       .map(([k, a]) => `${cap(k)}<span class="a">${a}</span>`)
       .join('');
     keysEl.innerHTML =
-      `<div class="hd"><b>${L.title}</b><em>${L.move.note}</em></div>` +
+      `<div class="hd"><b>${L.title}</b>` +
+        `<em>${cap(L.recall)}<span>HIDE</span></em></div>` +
       `<div class="bd">` +
-        `<div class="mv">${mv}<span class="lb">${L.move.label}</span></div>` +
+        `<div class="mv">${mv}` +
+          `<span class="lb">${L.move.label}<i>${L.move.note}</i></span></div>` +
         `<div class="sep"></div>` +
         `<div class="rows">${rows}</div>` +
       `</div>` +
