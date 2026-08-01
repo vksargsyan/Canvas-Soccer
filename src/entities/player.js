@@ -26,7 +26,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { softCircle } from '../core/assets.js';
+import { contactBlob } from '../core/assets.js';
 import { TEAMS } from '../core/constants.js';
 import {
   headTexture, eyeTexture, hairAtlas, shirtTexture, armTexture, shortsTexture,
@@ -1517,7 +1517,12 @@ export function createPlayer(cfg = {}) {
     shin.add(foot);
     bones['foot' + side] = foot;
 
-    addMesh(foot, bootGeo.clone(), bootMat());
+    // The boot casts. Thighs and shins already did, but they sit 30–60 cm up,
+    // so their shadow lands away from the sole and leaves the foot itself
+    // hovering. The boot's own shadow is nearly coincident with the sole, which
+    // is the one place the eye checks to decide whether a figure is standing on
+    // the pitch or floating over it.
+    addMesh(foot, bootGeo.clone(), bootMat(), true);
   }
   bootGeo.dispose();
 
@@ -1536,11 +1541,19 @@ export function createPlayer(cfg = {}) {
   ring.renderOrder = 4;
   group.add(ring);
 
+  // The sun's shadow map alone cannot ground a figure this small: at 512² over
+  // a 10 m box a boot is about ten texels across, so the one part of the
+  // shadow that matters — the hard dark wedge right where sole meets grass —
+  // is exactly the part the map cannot resolve. This ellipse supplies it. It is
+  // deliberately tighter than the old 1.35 m quad (a stance is ~0.55 m wide, so
+  // a metre of plane already overhangs it) and squashed along Z, because the
+  // gameplay camera looks down the pitch at a shallow angle and a circular
+  // decal read as a hoop lying flat rather than as shade.
   const blob = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.35, 1.35),
+    new THREE.PlaneGeometry(1, 1),
     new THREE.MeshBasicMaterial({
-      map: softCircle('rgba(0,0,0,0.5)'), transparent: true,
-      depthWrite: false, opacity: 0.58,
+      map: contactBlob(0.72), transparent: true,
+      depthWrite: false, opacity: 0.9,
     }),
   );
   blob.rotation.x = -Math.PI / 2;
@@ -1601,10 +1614,14 @@ export function createPlayer(cfg = {}) {
 
       blob.position.x = 0;
       blob.position.z = 0;
+      // Grounded (k=1) it hugs the stance; as the figure leaves the deck the
+      // ellipse widens and fades, which is what an area-lit occlusion term
+      // actually does — it does not simply switch off.
       const lift = Math.max(0, root.position.y);
       const k = 1 / (1 + lift * 1.4);
-      blob.scale.setScalar(0.55 + 0.45 * k);
-      blob.material.opacity = 0.58 * k;
+      const w = 0.92 + 0.55 * (1 - k);
+      blob.scale.set(w, w * 0.72, 1);
+      blob.material.opacity = 0.90 * k * k + 0.10 * k;
     },
     dispose() {
       group.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });

@@ -908,6 +908,36 @@ export function softCircle(inner = 'rgba(0,0,0,0.55)', outer = 'rgba(0,0,0,0)') 
   });
 }
 
+/**
+ * Contact shadow under a standing figure.
+ *
+ * `softCircle` is a glow ramp — it spends most of its radius in a wide, pale
+ * haze, which is right for a light bloom and wrong for an occlusion term. A
+ * figure standing on turf occludes the sky almost totally in the few
+ * centimetres around the soles and then recovers quickly, so what grounds it is
+ * a small, genuinely dark core with a short shoulder, not a big grey cloud.
+ * Hence the plateau out to 0.30 and the steep tail: at the core this reads as
+ * shade, and by 80% of the radius it is gone, so the ellipse never announces
+ * its own edge against the grass.
+ */
+export function contactBlob(peak = 0.72) {
+  return memo('contact:' + peak, () => {
+    const S = 128;
+    const { c, g } = canvas2d(S, S);
+    const gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    gr.addColorStop(0.00, `rgba(0,0,0,${peak})`);
+    gr.addColorStop(0.30, `rgba(0,0,0,${(peak * 0.88).toFixed(3)})`);
+    gr.addColorStop(0.52, `rgba(0,0,0,${(peak * 0.50).toFixed(3)})`);
+    gr.addColorStop(0.72, `rgba(0,0,0,${(peak * 0.15).toFixed(3)})`);
+    gr.addColorStop(0.88, 'rgba(0,0,0,0.02)');
+    gr.addColorStop(1.00, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, S, S);
+    const t = tex(c, { aniso: 4 });
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    return t;
+  });
+}
+
 /** Four/eight point star flash used for impacts. */
 export function starTexture(points = 4) {
   return memo('star:' + points, () => {
