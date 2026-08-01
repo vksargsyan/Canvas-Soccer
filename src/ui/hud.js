@@ -208,6 +208,10 @@ const CSS = `
 .cs-keys { position:absolute;
   left:calc(24px*var(--lu) + env(safe-area-inset-left, 0px));
   bottom:calc(24px*var(--lu) + env(safe-area-inset-bottom, 0px));
+  /* The panel is contextual, and the two variants do not naturally measure the
+     same — the footnote is the widest line and it changes with the mode. Hold the
+     wider one's width so a turnover swaps the words without resizing the poster. */
+  min-width:calc(504px*var(--lu));
   padding:calc(13px*var(--lu)) calc(18px*var(--lu)) calc(13px*var(--lu));
   border-radius:calc(13px*var(--lu));
   background:linear-gradient(180deg, rgba(13,18,40,.80) 0%, rgba(5,8,20,.87) 100%);
@@ -296,9 +300,11 @@ const CSS = `
 .cs-recall .cs-key { min-width:calc(21px*var(--lu)); height:calc(21px*var(--lu));
   padding:0 calc(6px*var(--lu)); font-size:calc(9.5px*var(--lu)); }
 
-/* short viewports: drop the footnote line before anything starts colliding */
-@media (max-height:560px) { .cs-keys .ft { display:none; } }
-@media (max-width:620px)  { .cs-keys .ft { display:none; } }
+/* short viewports: drop the footnote line before anything starts colliding. The
+   width reserved for it goes with it — without the footnote the two variants
+   measure within a few pixels of each other anyway. */
+@media (max-height:560px) { .cs-keys .ft { display:none; } .cs-keys { min-width:0; } }
+@media (max-width:620px)  { .cs-keys .ft { display:none; } .cs-keys { min-width:0; } }
 
 /* ==================================================================== MENUS = */
 .cs-ov { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
