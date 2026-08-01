@@ -119,6 +119,8 @@ const REACH_SPRINT = 0.88;
 const REACH_STRETCH = 1.14;
 const TOUCH_STALE = 0.85;         // s without a touch before he stretches
 const STRETCH_OFF = 1.20;         // rad across his body before he throws a leg at it
+const LASTCHANCE_R = 1.04;        // m at which a ball off his line gets one anyway
+const LASTCHANCE_OFF = 0.70;      // rad off his line for that to count as leaving
 const FOOT_BAND = 0.09;           // m past the collider radius that counts as "on his boot"
 
 // The hard ceiling on how far a controlled touch may ever put the ball. Kept
@@ -513,6 +515,18 @@ export function createBallControl(ctx) {
     // for a beat, and then he reaches out and drags it back.
     let stretch = false;
     if (!want && gap <= REACH_STRETCH && off > STRETCH_OFF) { want = true; stretch = true; }
+    // Last chance. The ball is off his line and about to cross the radius past
+    // which sim/ai.js stops calling him the carrier — after that this function is
+    // not running and there is nothing left to do but chase. He does not stand
+    // and watch it go, so anything off his line that is nearly out of the carry
+    // radius gets a leg thrown at it whether it has reached his hip or not. This
+    // is what bounds how far a scuffed touch can put the ball: without it the
+    // excursion is decided by how long the steering happens to keep him running
+    // in the wrong direction, which is not this module's business and is not
+    // bounded by anything.
+    if (!want && gap >= LASTCHANCE_R && gap <= REACH_STRETCH && off > LASTCHANCE_OFF) {
+      want = true; stretch = true;
+    }
     // he has matched its pace instead of running it down and it is hanging just
     // out of range: stretch for that too rather than letting it drift away
     if (!want && since > TOUCH_STALE && gap <= REACH_STRETCH) { want = true; stretch = true; }
