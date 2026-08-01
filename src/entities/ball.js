@@ -293,16 +293,20 @@ export function createBall(opts = {}) {
     // Tight and dark on the deck, wide and faint the higher the ball climbs.
     // `r` is the OUTER radius in metres; the quad is a unit plane whose UVs run
     // the shader's d from 0 at the centre to 1 at the edge, so the scale is 2r.
-    // At rest that is 2.2 ball radii — the umbra alone (uCore of it) already
-    // clears the sphere's silhouette, which is what makes a ring of shade show
-    // all the way round instead of a crescent. On the deck the ellipse is round,
-    // because contact occlusion has no direction; the sun-azimuth stretch fades
-    // in with height, as the term turns back into a projected shadow.
-    const r = BALL_R * (2.20 + 2.40 * (1 - k));
+    //
+    // 1.75 radii at rest, with the umbra covering 0.70 of that (1.22 radii), is
+    // measured off the reference: the umbra clears the sphere's own silhouette
+    // by a little under a third of a radius, so what reaches the frame is a
+    // tight dark rim hugging the ball rather than a wide grey halo lying around
+    // it. Anything smaller and the ball hides its own shadow again; anything
+    // much bigger and it stops reading as contact. On the deck the ellipse is
+    // round, because contact occlusion has no direction — the sun-azimuth
+    // stretch fades in with height, as the term turns back into a projection.
+    const r = BALL_R * (1.75 + 2.00 * (1 - k));
     shadow.scale.set(2 * r * (1 + 0.22 * (1 - k)), 2 * r, 1);
     shadow.visible = occl > 0.01;
-    shadowMat.uniforms.uOpacity.value = (0.62 * k * k + 0.05) * occl;
-    shadowMat.uniforms.uCore.value = 0.20 + 0.42 * k;
+    shadowMat.uniforms.uOpacity.value = (0.68 * k * k + 0.04) * occl;
+    shadowMat.uniforms.uCore.value = 0.22 + 0.48 * k;
 
     // --- trail --------------------------------------------------------------
     for (let i = history.length - 1; i > 0; i--) history[i].copy(history[i - 1]);
