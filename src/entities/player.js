@@ -265,6 +265,14 @@ function skullPoint(az, th, lift = 0) {
   return [nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ];
 }
 
+/** same point in the ROUND frame — for parts that go through finishFacePart(),
+ *  which applies the HEAD_S* squash itself after UV projection */
+function skullPointRound(az, th, lift = 0) {
+  const [nx, ny, nz] = dirOf(az, th);
+  const m = HEAD_R * (skullR(nx, ny, nz) + lift);
+  return [nx * m, ny * m, nz * m];
+}
+
 function buildHead() {
   const g = new THREE.SphereGeometry(HEAD_R, 44, 32);
   const pos = g.getAttribute('position');
@@ -433,36 +441,42 @@ function buildNose(w = 1) {
 }
 
 /**
- * BROW RIDGE. Two shaped masses standing proud of the skull along the brow
- * anchor. They ride the hair material (vertex-coloured) so they cost no draw
- * call, and they give the painted brow hair an actual form to sit on — which
- * is the difference between an eyebrow and a sticker.
+ * BROW RIDGE — skin, not hair.
+ *
+ * The reference brows are not dark shapes stuck onto a sphere: they are a
+ * raised bony ridge with brow hair growing on it. So this is part of the HEAD
+ * mesh, carries the skin material and takes the head texture, which paints the
+ * hair on top. That way the ridge catches its own highlight along the crest and
+ * throws its own shadow into the socket beneath — form first, colour second.
+ *
+ * Built as a closed lens (a full loop of section rings that pinch to a point at
+ * both ends) so there is no open border to catch light.
  */
 function buildBrowGeo(variant) {
   const bs = BROW_SHAPES[variant % BROW_SHAPES.length];
   const parts = [];
-  const NU = 11, NV = 3;
+  const NU = 16, NV = 6;
   for (const s of [-1, 1]) {
-    const pos = [], uvs = [], shade = [], idx = [];
+    const pos = [], idx = [];
     for (let i = 0; i <= NU; i++) {
       const t = i / NU;                                   // 0 inner -> 1 outer
-      // arc across the brow, plus the outward lift of the tail
-      const az = s * (FA.eyeAz + (t - 0.5) * 2 * bs.w);
-      const arch = Math.sin(Math.pow(t, 0.85) * Math.PI) ** 0.7;
-      const thC = FA.browTh - bs.arch * bs.th * arch + s * s * bs.ang * (t - 0.5) * bs.th * 1.4;
-      // taper: thick over the eye, thin at both ends
-      const half = bs.th * (0.35 + 0.65 * Math.sin(Math.pow(t, 0.7) * Math.PI) ** 0.55);
-      const rise = 0.055 * Math.sin(Math.pow(t, 0.8) * Math.PI) ** 0.6;
+      const az = s * (FA.eyeAz + (t - 0.52) * 2 * bs.w);
+      // arch: the peak sits about a third of the way out from the inner end
+      const arch = Math.sin(Math.pow(t, 0.80) * Math.PI) ** 0.65;
+      const thC = FA.browTh - bs.arch * bs.th * arch * 1.5
+        + bs.ang * (t - 0.5) * bs.th * 2.2;
+      // pointed at both ends, fullest just inside the peak
+      const taper = Math.sin(Math.PI * clamp(t, 0, 1)) ** 0.42;
+      const half = bs.th * (0.06 + 0.94 * taper);
+      const rise = 0.052 * taper;
       for (let j = 0; j <= NV; j++) {
-        const v = j / NV;
-        const th = thC - half + 2 * half * v;
-        // round the section: fullest in the middle, tucked at both edges
-        const lift = rise * Math.sin(v * Math.PI) ** 0.55 - 0.010;
-        const p = skullPoint(az, th, lift);
+        const a = (j / NV) * TAU;                        // around the section
+        const th = thC + half * Math.cos(a);
+        // sunk under the skull below, standing proud above: the ridge crest
+        // is the top of the section, which is what catches the key light
+        const lift = rise * (0.42 + 0.58 * Math.sin(a + Math.PI / 2)) - 0.020;
+        const p = skullPointRound(az, th, lift);
         pos.push(p[0], p[1], p[2]);
-        uvs.push(H_OPAQUE_U0 + ((i * 5) / NU % 1) * (H_OPAQUE_U1 - H_OPAQUE_U0), 1 - v);
-        // lower half of the brow sits in its own shadow
-        shade.push(0.22 + 0.52 * v + 0.10 * Math.sin(i * 2.3));
       }
     }
     const rows = NV + 1;
@@ -475,13 +489,45 @@ function buildBrowGeo(variant) {
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     g.setIndex(idx);
-    g.computeVertexNormals();
-    g.userData.shade = shade;
     parts.push(g);
   }
-  return mergeShaded(parts);
+  return parts;
+}
+
+/**
+ * CHEEKBONE + JAW blocks. skullR() can only push the sphere so far before the
+ * 44 x 32 head mesh stops resolving it, so the two forms that most define a
+ * face at chibi scale get explicit geometry: a zygomatic pad under each eye and
+ * a mandible corner running back toward the ear.
+ */
+function buildCheeks() {
+  const parts = [];
+  const R = HEAD_R;
+  for (const s of [-1, 1]) {
+    // cheekbone: a flattened wedge under the outer half of the eye
+    const cb = new THREE.SphereGeometry(R * 0.235, 12, 10);
+    cb.scale(1.02, 0.52, 0.62);
+    cb.rotateZ(-s * 0.30);
+    cb.rotateY(-s * 0.42);
+    const p = skullPointRound(s * 0.60, 1.545, -0.045);
+    cb.translate(p[0], p[1], p[2]);
+    parts.push(cb);
+    // mandible corner
+    const jw = new THREE.SphereGeometry(R * 0.190, 10, 9);
+    jw.scale(0.80, 0.86, 0.72);
+    jw.rotateY(-s * 0.5);
+    const q = skullPointRound(s * 0.72, 2.070, -0.055);
+    jw.translate(q[0], q[1], q[2]);
+    parts.push(jw);
+  }
+  // chin button
+  const ch = new THREE.SphereGeometry(R * 0.200, 12, 10);
+  ch.scale(1.06, 0.80, 0.74);
+  const c = skullPointRound(0, 2.235, -0.060);
+  ch.translate(c[0], c[1], c[2]);
+  parts.push(ch);
+  return parts;
 }
 
 function buildEars() {
@@ -494,31 +540,21 @@ function buildEars() {
     plate.rotateY(-s * 0.28);
     plate.translate(s * R * 0.985, R * 0.010, -R * 0.060);
     parts.push(plate);
-    // helix rim
-    const helix = new THREE.TorusGeometry(R * 0.225, R * 0.052, 6, 16, Math.PI * 1.60);
+    // helix rim — one clean closed loop around the plate. The old build stacked
+    // a partial torus, an antihelix torus and a tragus blob at this scale, and
+    // the overlapping shells resolved into crumpled noise, not an ear.
+    const helix = new THREE.TorusGeometry(R * 0.215, R * 0.058, 7, 20);
     helix.rotateY(Math.PI / 2);
-    helix.rotateX(Math.PI);
-    helix.rotateZ(s * 0.16);
-    helix.scale(0.60, 1.0, 1.0);
-    helix.translate(s * R * 1.020, R * 0.005, -R * 0.055);
+    helix.scale(0.34, 1.05, 0.74);
+    helix.rotateX(0.10);
+    helix.rotateZ(-s * 0.12);
+    helix.translate(s * R * 1.000, R * 0.010, -R * 0.058);
     parts.push(helix);
-    // antihelix ridge
-    const anti = new THREE.TorusGeometry(R * 0.115, R * 0.036, 5, 10, Math.PI * 1.1);
-    anti.rotateY(Math.PI / 2);
-    anti.rotateX(Math.PI * 0.95);
-    anti.scale(0.55, 1.0, 1.0);
-    anti.translate(s * R * 1.010, R * 0.010, -R * 0.030);
-    parts.push(anti);
     // lobe
-    const lobe = new THREE.SphereGeometry(R * 0.122, 8, 8);
-    lobe.scale(0.44, 0.96, 0.74);
-    lobe.translate(s * R * 0.985, -R * 0.235, -R * 0.050);
+    const lobe = new THREE.SphereGeometry(R * 0.118, 9, 8);
+    lobe.scale(0.40, 0.92, 0.72);
+    lobe.translate(s * R * 0.975, -R * 0.222, -R * 0.052);
     parts.push(lobe);
-    // tragus
-    const tra = new THREE.SphereGeometry(R * 0.062, 6, 6);
-    tra.scale(0.55, 1.1, 0.9);
-    tra.translate(s * R * 0.965, -R * 0.040, R * 0.075);
-    parts.push(tra);
   }
   return finishFacePart(parts);
 }
@@ -967,30 +1003,90 @@ function buildHairGeo(style, seed = 0) {
  * Beard shell. Azimuths outside the front arc collapse onto a ring buried
  * inside the skull (puff < 0), so no sheet stretches across the head.
  */
+/**
+ * BEARD. The old version wrapped one shell across the whole lower face, which
+ * is exactly why it read as a solid brown helmet strap. A real beard is a
+ * *band that follows the jaw*: it starts high and thin at the sideburn, thickens
+ * along the mandible, is fullest under the chin, and its upper edge dissolves
+ * into stubble rather than ending on a hard line.
+ *
+ * So this builds:
+ *   - a jaw band whose top edge tracks the mandible and whose thickness ramps
+ *     from nearly nothing at the sideburn to full under the chin,
+ *   - a separate moustache with a philtrum gap,
+ *   - a soul patch,
+ *   - and ~50 alpha strand cards feathering BOTH edges, so the silhouette is
+ *     hair and the transition into skin is a gradient, not a border.
+ */
 function buildBeard(density = 1) {
-  const inArc = (az) => Math.cos(az) > -0.10;
-  const top = (az) => (74 + 30 * Math.max(0, Math.cos(az))) * D2R;
-  const chin = hairShell({
-    inner: top,
-    outer: (az) => (inArc(az) ? (114 + (12 + 12 * density) * Math.cos(az)) * D2R : top(az)),
-    nu: 30, nv: 8, streak: 6,
-    puff: (az, t) => (inArc(az)
-      ? (0.020 + 0.060 * density) * Math.sin(Math.min(1, t * 1.05) * Math.PI) + 0.032
-      : -0.12),
-  });
-  const mtop = () => 90 * D2R;
-  const tache = hairShell({
-    inner: mtop,
-    outer: (az) => (Math.cos(az) > 0.62 ? 99 * D2R : mtop(az)),
-    nu: 22, nv: 3, streak: 4,
-    puff: (az, t) => (Math.cos(az) > 0.62 ? 0.05 * Math.sin(t * Math.PI) + 0.036 : -0.10),
-  });
-  const parts = [chin, tache];
-  // jaw-line strand cards so the beard has a soft edge
-  for (let i = 0; i < 11; i++) {
-    const az = (i / 10 - 0.5) * 2.5;
-    parts.push(hairCard(az, (118 + 14 * Math.cos(az)) * D2R, {
-      w: 0.16, len: 0.10 + 0.06 * density, lift: 0.05, sweep: 0, curl: 0.12, bow: 0.02,
+  const parts = [];
+  const cw = (az) => Math.cos(az);                 // +1 chin, -1 nape
+  const inArc = (az) => cw(az) > -0.22;
+  // how much beard there is at this azimuth: none at the back, thin at the
+  // sideburn, full at the chin
+  const dens = (az) => clamp((cw(az) + 0.18) / 1.10, 0, 1) ** 0.80;
+  // Upper edge follows the mandible. It must stay WELL below the eye line
+  // (eyeTh = 81 deg) at every azimuth, or the beard climbs the cheek and turns
+  // back into the brown mask the reference never has.
+  const top = (az) => (95 + 17 * Math.max(0, cw(az)) ** 1.35) * D2R;
+  const bot = (az) => (117 + (13 + 15 * density) * Math.max(0, cw(az))) * D2R;
+
+  parts.push(hairShell({
+    inner: (az) => (inArc(az) ? top(az) : bot(az)),
+    outer: bot,
+    nu: 40, nv: 10, streak: 7,
+    puff: (az, t) => {
+      if (!inArc(az)) return -0.14;
+      const d = dens(az);
+      // thin and hugging at the top edge, full and standing off at the jaw
+      const body = (0.010 + 0.062 * density * d) * Math.sin(Math.min(1, t * 1.04) * Math.PI) ** 0.7;
+      // bury the top edge under the skin so the boundary is a gradient of
+      // painted stubble, never a drawn border
+      return body + 0.026 - 0.060 * (1 - smooth(0.0, 0.30, t));
+    },
+  }));
+
+  // moustache: two wings with a philtrum gap between them
+  for (const s of [-1, 1]) {
+    parts.push(hairShell({
+      inner: () => 88 * D2R,
+      outer: (az) => {
+        const w = s * Math.sin(az);
+        return (w > 0.035 && w < 0.30 && Math.cos(az) > 0.80) ? 101 * D2R : 88 * D2R;
+      },
+      nu: 16, nv: 3, streak: 4,
+      puff: (az, t) => {
+        const w = s * Math.sin(az);
+        if (!(w > 0.035 && w < 0.30 && Math.cos(az) > 0.80)) return -0.12;
+        return 0.052 * density * Math.sin(t * Math.PI) ** 0.6 + 0.030;
+      },
+    }));
+  }
+  // soul patch under the lower lip
+  parts.push(hairShell({
+    inner: () => 111 * D2R,
+    outer: (az) => (Math.abs(Math.sin(az)) < 0.10 && Math.cos(az) > 0.90 ? 121 * D2R : 111 * D2R),
+    nu: 14, nv: 3, streak: 4,
+    puff: (az, t) => (Math.abs(Math.sin(az)) < 0.10 && Math.cos(az) > 0.90
+      ? 0.044 * density * Math.sin(t * Math.PI) ** 0.6 + 0.028 : -0.10),
+  }));
+
+  // Strand cards break the outer silhouette along the jaw so the edge is hair
+  // rather than a drawn contour. They are laid DENSE and SHORT and their length
+  // varies smoothly with azimuth: scattered long cards on a regular azimuth
+  // grid read as a zigzag saw-tooth, which is worse than no cards at all.
+  const NC = 34;
+  for (let i = 0; i < NC; i++) {
+    const az = (i / (NC - 1) - 0.5) * 2.55;
+    const d = dens(az);
+    if (d < 0.14) continue;
+    // smooth length envelope + a small, bounded jitter
+    const env = d * (0.80 + 0.20 * Math.sin(az * 5.3 + 1.1));
+    parts.push(hairCard(az, bot(az) - 0.055, {
+      w: 0.15,
+      len: (0.048 + 0.062 * density) * env,
+      lift: 0.034 + 0.022 * d,
+      sweep: Math.sin(az * 3.7) * 0.22, curl: 0.16, bow: 0.025,
     }));
   }
   return mergeShaded(parts);
@@ -1222,6 +1318,9 @@ export function createPlayer(cfg = {}) {
     buildEars(),
     buildLids(),
     buildNeck(),
+    // brow ridge, cheekbones and jaw are skin: form the head texture paints on
+    finishFacePart(buildBrowGeo(faceVariant)),
+    finishFacePart(buildCheeks()),
   ];
   const headMerged = mergeGeometries(headParts, false);
   headParts.forEach((p) => p.dispose());
@@ -1245,6 +1344,7 @@ export function createPlayer(cfg = {}) {
   const hairParts = [];
   if (hairInfo.geo) hairParts.push(shadeHair(hairInfo.geo, hairColor));
   if (beard === 2) hairParts.push(shadeHair(buildBeard(1), mixHex(hairColor, 0x24160e, 0.30)));
+  else if (beard === 1) hairParts.push(shadeHair(buildBeard(0.30), mixHex(hairColor, 0x24160e, 0.44)));
   if (hairParts.length) {
     let merged;
     if (hairParts.length === 1) merged = hairParts[0];
@@ -1265,7 +1365,7 @@ export function createPlayer(cfg = {}) {
 
   // the arm must clear the torso lathe (radius ~0.38 * girth at shoulder height)
   // or it disappears into the shirt and the figure reads as armless.
-  const shoulderX = 0.352 + 0.082 * girth;
+  const shoulderX = 0.344 + 0.066 * girth;
   for (const s of [-1, 1]) {
     const side = s < 0 ? 'L' : 'R';
     const arm = new THREE.Object3D();

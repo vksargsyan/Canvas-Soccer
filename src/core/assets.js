@@ -131,13 +131,27 @@ const mixc = (a, b, t) => [
 export const SURFACES = {
   grass: {
     tile: 2.6,
-    lo: [20, 56, 6], hi: [100, 152, 38], tint: [114, 132, 32], tintAmt: 0.22,
+    // Sampled off the reference at gameplay distance: dark band (71,132,35),
+    // light band (110,170,73). Both are markedly LESS saturated than a "grass
+    // green" instinct produces — the blue channel in particular runs around 40%
+    // of green, not 25%. Undershooting it is what made our pitch read as a
+    // poster-paint field next to theirs.
+    lo: [30, 58, 20], hi: [128, 178, 88], tint: [128, 148, 70], tintAmt: 0.22,
     // streaks per tile across U — the mow direction runs along world Z, so the
     // blades are lines of constant U.
-    bladeFreq: 150, bladeAmp: 0.28, bladeWander: 7.0,
+    //
+    // TWO frequencies, and the coarse one is the one that matters. A 1.7 cm
+    // blade (bladeFreq 150) is 0.35 of a screen pixel from the gameplay camera:
+    // it mips into a uniform mush and the pitch reads as felt. What survives at
+    // that distance is the CLUMP — the 15 cm tuft the roller leaves — which is
+    // still four texels wide at mip 5 and four pixels wide on screen. The fine
+    // blade is kept anyway because it is what you see in a goal replay closeup.
+    bladeFreq: 132, bladeAmp: 0.20, bladeWander: 7.0,
+    clumpFreq: 17, clumpAmp: 0.195,
     speckle: 0, speckleCol: [0, 0, 0],
-    weights: [0.36, 0.24, 0.18],
-    normalStrength: 3.6, rough: [0.62, 0.92],
+    weights: [0.32, 0.25, 0.14],
+    sharpen: 1,
+    normalStrength: 4.6, rough: [0.55, 0.95],
     stripes: true,
     wearCol: [1.60, 1.12, 0.74], wearDark: 0.13, blotchAmt: 0.050,
     macroBase: [1, 1, 1],
@@ -203,7 +217,7 @@ export function turfTextures(opts = {}) {
     const { c, g } = canvas2d(S, S);
     const img = g.createImageData(S, S);
     const [w0, w1, w2] = D.weights;
-    const wsum = w0 + w1 + w2 + D.bladeAmp;
+    const wsum = w0 + w1 + w2 + D.bladeAmp + (D.clumpAmp || 0);
 
     for (let y = 0; y < S; y++) {
       const v = y / S;
@@ -222,10 +236,21 @@ export function turfTextures(opts = {}) {
           const b2 = Math.sin(u * D.bladeFreq * 2.61 * 6.2831853 + md * 9.0) * 0.5 + 0.5;
           h += D.bladeAmp * (b1 * 0.62 + b2 * 0.38);
         }
-        // one smoothstep of contrast: without it the octaves average out into a
-        // soft mottle and the surface reads as noise rather than as fibre
+        if (D.clumpAmp > 0) {
+          // The clump layer. BOTH harmonics are functions of U only, so the
+          // tufts run unbroken along the mow direction the way real fibre does;
+          // an earlier version skewed the second harmonic into V to break up
+          // the corduroy and the pitch came out looking knitted. What actually
+          // breaks the lines is the phase, which wanders with two octaves of 2-D
+          // noise, so the streaks curve, split and merge without ever becoming
+          // blobs.
+          const cw = cl * 2.6 + md * 1.1;
+          const k1 = Math.sin(u * D.clumpFreq * 6.2831853 + cw * 2.2) * 0.5 + 0.5;
+          const k2 = Math.sin(u * D.clumpFreq * 1.87 * 6.2831853 + cw * 3.7 + fn * 1.2) * 0.5 + 0.5;
+          h += D.clumpAmp * (k1 * 0.58 + k2 * 0.42);
+        }
         h = clamp01(h / wsum);
-        h = h * h * (3 - 2 * h);
+        for (let k = 0; k < (D.sharpen || 1); k++) h = h * h * (3 - 2 * h);
         height[y * S + x] = h;
 
         let col = mixc(D.lo, D.hi, h);
@@ -300,6 +325,10 @@ export function pitchMacroTexture(o = {}) {
     const Tb = tables(4, 2207, 4);      // broad blotches
     const Tw = tables(3, 8821, 10);     // wear break-up
     const Tp = tables(3, 4409, 40);     // paint break-up
+    // Clump mottle at ~0.8 m. The detail tile carries structure down to 15 cm
+    // but repeats every 2.6 m; this layer does not tile at all, so it is what
+    // stops five metres of pitch from resolving into the same stamp five times.
+    const Tk = tables(2, 3733, 96);
     const jitT = lattice(128, 6151);
 
     // wear ellipses in world space: [cx, cz, rx, rz, strength]
@@ -339,6 +368,7 @@ export function pitchMacroTexture(o = {}) {
         const bl = fbm(u, v, 4, 4, Tb);
         const wn = fbm(u, v, 3, 10, Tw);
         const pn = fbm(u, v, 3, 40, Tp);
+        const kn = fbm(u, v, 2, 96, Tk);
         const jt = noise2(jitT, 128, u * 128 * 3.1, v * 128 * 3.1) - 0.5;
 
         // soft inside-the-lines mask (touchline sits on the boundary)
@@ -354,9 +384,23 @@ export function pitchMacroTexture(o = {}) {
         const b = (1 - ba * 0.48) + ba * bl + (wn - 0.5) * (0.045 + ba * 0.9) + jt * 0.022;
         m0 *= b; m1 *= b; m2 *= b;
 
-        // very soft sun sheen sweeping the pitch — keeps the field from reading flat
-        const sh = Math.exp(-Math.pow((x * 0.34 + z * 0.62 + 3.0) / 24.0, 2));
-        const shk = 1 + 0.042 * sh;
+        // clump mottle (grass only — dirt and concrete have their own blotching)
+        if (D.stripes) {
+          const km = 1 + (kn - 0.5) * 0.19;
+          m0 *= km; m1 *= km; m2 *= km;
+        }
+
+        // --- sun sheen ------------------------------------------------------
+        // A broad diagonal band of brighter turf with the rest of the field
+        // falling away from it, plus a slow radial droop into the corners. This
+        // is not decoration: it is the single largest low-frequency feature of
+        // the reference pitch and the reason theirs never reads as one flat
+        // sheet of green. The old version swung 4% over a band so wide the whole
+        // pitch sat inside its peak — invisible after tone mapping. This swings
+        // 20% end to end, about a third of a stop.
+        const sh = Math.exp(-Math.pow((x * 0.42 + z * 0.56 - 4.0) / 18.0, 2));
+        const rr = Math.min(1, Math.hypot(x / (EX * 1.12), z / (EZ * 1.12)));
+        const shk = (0.905 + 0.175 * sh) * (1 - 0.085 * rr * rr);
         m0 *= shk; m1 *= shk; m2 *= shk;
 
         // wear

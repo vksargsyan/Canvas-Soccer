@@ -185,9 +185,9 @@ function contactTexture() {
       // dark" and "soft and wide" and always looks like a decal; occlusion in
       // life is a small very dark core where the sole actually meets grass plus
       // a much wider, much fainter skirt from the bulk of the body.
-      const core = Math.pow(Math.max(0, 1 - r / 0.50), 1.35);
-      const skirt = Math.pow(Math.max(0, 1 - r / 1.00), 3.0);
-      const a = Math.min(1, 0.72 * core + 0.40 * skirt);
+      const core = Math.pow(Math.max(0, 1 - r / 0.62), 1.5);
+      const skirt = Math.pow(Math.max(0, 1 - r / 1.00), 2.6);
+      const a = Math.min(1, 0.70 * core + 0.42 * skirt);
       const i = (y * S + x) * 4;
       // RGB is ignored by the multiply blend below; alpha is the occlusion.
       d[i] = d[i + 1] = d[i + 2] = 0;
@@ -321,7 +321,12 @@ const GradeShader = {
     uVigStrength: { value: 0.30 },
     uVigPower: { value: 2.35 },
     uVigCool: { value: 0.055 },
-    uSaturation: { value: 1.22 },
+    // Grass is the majority of every frame and it is the thing most easily
+    // over-saturated: measured against the reference our pitch was running 0.75
+    // HSV saturation against their 0.60. Most of the correction belongs in the
+    // turf albedo (core/assets.js) but the last of it belongs here, where it
+    // also takes the edge off kit colours that were starting to poster.
+    uSaturation: { value: 1.14 },
     uContrast: { value: 1.13 },
     // Lift is deliberately near zero on R/G now. The old (0.004, 0.009, 0.019)
     // floor was worth ~2 sRGB counts of milk in every shadow on screen; with the
@@ -674,6 +679,20 @@ export function createEngine(canvas) {
     if (!mat || !mat.map) return;
     mat.map = contactTexture();
     mat.color.setRGB(0, 0, 0);
+    // The owner drives opacity in 0..0.58 (0.58 grounded, fading to 0 as the
+    // player leaves the ground) and that ceiling is too polite for a contact
+    // shadow — 0.58 of multiply leaves the grass at 42% where the reference
+    // reads more like 30%. Rather than fight the owner for the property, gain
+    // the alpha inside the shader: the fade still works, the profile keeps its
+    // shape, and the core lands where it should. The clamp is what stops the
+    // core going to solid black under a stationary player.
+    mat.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace(
+        '#include <alphamap_fragment>',
+        '#include <alphamap_fragment>\n\tdiffuseColor.a = min( diffuseColor.a * 1.28, 0.74 );',
+      );
+    };
+    mat.customProgramCacheKey = () => 'cs-contact-decal-v1';
     mat.blending = THREE.CustomBlending;
     mat.blendEquation = THREE.AddEquation;
     mat.blendSrc = THREE.ZeroFactor;

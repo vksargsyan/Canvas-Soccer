@@ -112,6 +112,31 @@ export const BOOT_COLORS = [
 ];
 
 // ---------------------------------------------------------------------------
+// KIT RECIPES — the two clubs must not share a template.
+// ---------------------------------------------------------------------------
+// Every field below changes something a viewer can name at a glance: the body
+// graphic, the shoulder construction, the collar, whether the sleeve is a
+// contrasting colour, and the crest silhouette. Read side by side, team 0 is a
+// white-sashed club with a polo collar and contrast sleeves; team 1 is a
+// pinstriped club with a raglan yoke, a v-neck and panelled sleeves.
+export const KIT_RECIPES = {
+  0: {
+    body: 'sash', shoulder: 'chevron', collar: 'polo', sleeve: 'contrast',
+    crest: 'shield', cuffHoops: 2, sidePanel: true, sockBands: 'hoops',
+  },
+  1: {
+    body: 'pinstripe', shoulder: 'raglan', collar: 'v', sleeve: 'panel',
+    crest: 'round', cuffHoops: 1, sidePanel: false, sockBands: 'band',
+  },
+  keeper: {
+    body: 'keeper', shoulder: 'yoke', collar: 'crew', sleeve: 'long',
+    crest: 'shield', cuffHoops: 1, sidePanel: true, sockBands: 'band',
+  },
+};
+
+export const kitRecipe = (o) => (o && KIT_RECIPES[o]) || KIT_RECIPES[0];
+
+// ---------------------------------------------------------------------------
 // head UV warp — shared with player.js
 // ---------------------------------------------------------------------------
 
@@ -444,31 +469,49 @@ export function headTexture(o = {}) {
       g.ellipse(0, bt * 0.75, bw * 0.98, bt * 0.85, 0, 0, TAU); g.fill();
       g.filter = 'none';
       g.restore();
-      // the brow itself, drawn as a mass of strokes (never a flat decal)
+      // The brow is hair growing on a ridge that already exists in geometry, so
+      // it is painted as a bed of strokes rather than a filled slab: the body
+      // is laid down at partial alpha, then individual hairs are drawn over it
+      // and — critically — past its edge, so the outline is feathered.
       g.save();
-      g.beginPath();
-      g.moveTo(-bw, bt * 0.50);
-      g.quadraticCurveTo(-bw * 0.28, -bt * (0.62 + bs.arch), bw * 0.52, -bt * 0.32);
-      g.quadraticCurveTo(bw * 0.92, -bt * 0.06, bw * 1.02, bt * 0.30);
-      g.quadraticCurveTo(bw * 0.5, bt * 0.40, -bw * 0.10, bt * 0.92);
-      g.quadraticCurveTo(-bw * 0.64, bt * 1.04, -bw, bt * 0.50);
-      g.closePath();
-      g.fillStyle = css(browCol); g.fill();
-      g.clip();
-      // strand detail across the whole brow
-      g.lineCap = 'round';
-      for (let i = 0; i < 22; i++) {
-        const t = i / 21;
-        const px = -bw * 1.05 + t * bw * 2.15;
-        const up = bt * (0.4 + bs.arch * (1 - Math.abs(t - 0.42) * 1.5));
-        g.strokeStyle = rgba(i % 3 === 0 ? lighten(brow, 0.34) : darken(brow, 0.45),
-          0.16 + 0.20 * vnoise(i * 3.7, 1.3));
-        g.lineWidth = Math.max(1.4, bt * 0.13);
+      const body = () => {
         g.beginPath();
-        g.moveTo(px, bt * 0.72);
-        g.quadraticCurveTo(px + bw * 0.05, bt * 0.1, px + bw * 0.11, -up);
+        g.moveTo(-bw, bt * 0.34);
+        g.quadraticCurveTo(-bw * 0.30, -bt * (0.55 + bs.arch), bw * 0.50, -bt * 0.28);
+        g.quadraticCurveTo(bw * 0.88, -bt * 0.04, bw * 0.98, bt * 0.26);
+        g.quadraticCurveTo(bw * 0.46, bt * 0.34, -bw * 0.12, bt * 0.78);
+        g.quadraticCurveTo(-bw * 0.62, bt * 0.88, -bw, bt * 0.34);
+        g.closePath();
+      };
+      g.globalAlpha = 0.80;
+      body();
+      g.fillStyle = css(browCol); g.fill();
+      g.globalAlpha = 1;
+      // hairs, sweeping up and outward, drawn beyond the body outline
+      g.lineCap = 'round';
+      for (let i = 0; i < 40; i++) {
+        const t = i / 39;
+        const n = vnoise(i * 3.7, 1.3);
+        const px = -bw * 1.02 + t * bw * 2.06;
+        const up = bt * (0.30 + bs.arch * 1.10 * Math.sin(Math.pow(t, 0.8) * Math.PI) ** 0.6);
+        const fade = Math.sin(Math.pow(t, 0.75) * Math.PI) ** 0.5;
+        g.strokeStyle = rgba(
+          n > 0.66 ? lighten(brow, 0.40) : n < 0.30 ? darken(brow, 0.55) : browCol,
+          (0.30 + 0.55 * n) * (0.35 + 0.65 * fade));
+        g.lineWidth = Math.max(1.3, bt * (0.13 + 0.10 * n));
+        g.beginPath();
+        g.moveTo(px, bt * (0.60 + 0.25 * n));
+        g.quadraticCurveTo(px + bw * 0.06, bt * 0.05, px + bw * 0.13, -up * (0.72 + 0.42 * n));
         g.stroke();
       }
+      // a hairline of light along the crest so the ridge reads as raised
+      g.globalAlpha = 0.30;
+      g.strokeStyle = rgba(lighten(brow, 0.55), 1);
+      g.lineWidth = Math.max(1.6, bt * 0.14);
+      g.beginPath();
+      g.moveTo(-bw * 0.84, -bt * 0.10);
+      g.quadraticCurveTo(-bw * 0.20, -bt * (0.60 + bs.arch), bw * 0.62, -bt * 0.24);
+      g.stroke();
       g.restore();
       g.restore();
     }
@@ -515,30 +558,42 @@ export function headTexture(o = {}) {
     g.fillStyle = bhg;
     g.fillRect(cx - noseW * 0.55, browY - 0.06 * AY, noseW * 1.1, noseY - browY + 0.10 * AY);
     g.restore();
-    // ball of the nose
+    // Shadow UNDER the ball, not around it: the tip is real geometry now, so
+    // the paint's only job is to sit a dark line beneath it and put one small
+    // specular on the crest. A big pale ellipse on the front of the ball is
+    // what turned the nose into a snout.
     g.save();
-    g.globalAlpha = 0.42;
-    g.filter = 'blur(5px)';
-    g.fillStyle = rgba(shadow, 1);
-    g.beginPath(); g.ellipse(cx, noseY + 0.070 * AY, noseW * 1.42, 0.078 * AY, 0, 0, TAU); g.fill();
+    g.globalAlpha = 0.50;
+    g.filter = 'blur(6px)';
+    g.fillStyle = rgba(deep, 1);
+    g.beginPath(); g.ellipse(cx, noseY + 0.128 * AY, noseW * 1.30, 0.052 * AY, 0, 0, TAU); g.fill();
     g.filter = 'none';
     g.restore();
-    g.fillStyle = rgba(lighten(base, 0.55), 0.60);
-    g.beginPath(); g.ellipse(cx, noseY - 0.012 * AY, noseW * 0.60, 0.048 * AY, 0, 0, TAU); g.fill();
-    // nostrils
-    g.fillStyle = rgba(deep, 0.88);
+    // specular on the crest of the tip — small, high, offset toward the key
+    g.save();
+    g.globalAlpha = 0.34;
+    const tg2 = g.createRadialGradient(cx - noseW * 0.20, noseY - 0.048 * AY, 1,
+      cx - noseW * 0.20, noseY - 0.048 * AY, noseW * 0.62);
+    tg2.addColorStop(0, rgba(lighten(base, 0.62), 1));
+    tg2.addColorStop(1, rgba(lighten(base, 0.62), 0));
+    g.fillStyle = tg2;
+    g.fillRect(cx - noseW * 1.0, noseY - 0.14 * AY, noseW * 2.0, 0.20 * AY);
+    g.restore();
+    // nostrils: small, dark, tucked UNDER the tip and angled outward
+    g.fillStyle = rgba(deep, 0.80);
     for (const s of [-1, 1]) {
       g.beginPath();
-      g.ellipse(cx + s * noseW * 0.84, noseY + 0.062 * AY, noseW * 0.30, 0.028 * AY, s * 0.45, 0, TAU);
+      g.ellipse(cx + s * noseW * 0.72, noseY + 0.108 * AY,
+        noseW * 0.21, 0.017 * AY, s * 0.52, 0, TAU);
       g.fill();
     }
     // nostril wing crease
-    g.strokeStyle = rgba(shadow, 0.45);
-    g.lineWidth = Math.max(2, 0.011 * AY);
+    g.strokeStyle = rgba(shadow, 0.42);
+    g.lineWidth = Math.max(2, 0.010 * AY);
     for (const s of [-1, 1]) {
       g.beginPath();
-      g.moveTo(cx + s * noseW * 1.30, noseY + 0.030 * AY);
-      g.quadraticCurveTo(cx + s * noseW * 1.46, noseY + 0.10 * AY, cx + s * noseW * 1.10, noseY + 0.135 * AY);
+      g.moveTo(cx + s * noseW * 1.24, noseY + 0.052 * AY);
+      g.quadraticCurveTo(cx + s * noseW * 1.42, noseY + 0.118 * AY, cx + s * noseW * 1.02, noseY + 0.152 * AY);
       g.stroke();
     }
 

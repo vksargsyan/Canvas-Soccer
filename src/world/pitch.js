@@ -24,9 +24,11 @@ import {
   APRON_X, APRON_Z,
 } from '../core/constants.js';
 
-// Mow bands. Measured off the reference: roughly 3.5–4 m of pitch per band, so
-// a broadcast-height camera sees six or seven of them across the frame.
-const MOW_BANDS = 16;
+// Mow bands. Re-measured off the reference: a band is ~275 px of a 1920 px wide
+// gameplay frame, which back-projects to about 6 m of pitch, not the 3.75 m this
+// was set to. Ten bands across a 60 m field, so a broadcast-height camera sees
+// six or seven of them — which is what the reference actually shows.
+const MOW_BANDS = 10;
 const MOW_W = FIELD_W / MOW_BANDS;
 
 // Paint thickness in metres. Slightly fatter than a real 12 cm line — the
@@ -109,6 +111,12 @@ function pitchBody() {
     float inP = smoothstep(0.0, 0.7, ${HW} + 0.35 - abs(P.x))
               * smoothstep(0.0, 0.7, ${HD} + 0.35 - abs(P.y));
     diffuseColor.rgb *= mix(vec3(1.0), mix(uMowLo, uMowHi, band), inP);
+    // Half of a mow stripe is specular, not albedo. Blades bent toward the
+    // camera present their flat faces and go glossy; blades bent away present
+    // their edges and go matte. Modulating roughness with the band is what
+    // gives the reference stripes their sheen instead of leaving them as two
+    // flat tones of paint.
+    roughnessFactor = clamp(roughnessFactor + (0.5 - band) * 0.17 * inP, 0.06, 1.0);
   }
 
   float d = 1e5;
@@ -165,8 +173,11 @@ export function createPitch(opts = {}) {
     uPaintWear: { value: 0.34 },
     uMow: { value: 1 },
     uMowW: { value: MOW_W },
-    uMowLo: { value: new THREE.Vector3(0.735, 0.712, 0.808) },
-    uMowHi: { value: new THREE.Vector3(1.252, 1.292, 1.168) },
+    // Measured off the reference: the light band is very close to twice the
+    // linear albedo of the dark one, and the dark band is distinctly cooler
+    // because the blades lean away and it is lit more by sky than by sun.
+    uMowLo: { value: new THREE.Vector3(0.688, 0.664, 0.796) },
+    uMowHi: { value: new THREE.Vector3(1.308, 1.352, 1.196) },
   };
 
   const mat = new THREE.MeshStandardMaterial({
@@ -241,7 +252,7 @@ export function createPitch(opts = {}) {
     mat.map = turf.map;
     mat.normalMap = turf.normalMap;
     mat.roughnessMap = turf.roughnessMap;
-    const ns = kind === 'grass' ? 1.35 : 0.7;
+    const ns = kind === 'grass' ? 1.70 : 0.7;
     mat.normalScale.set(ns, ns);
     uniforms.uMacro.value = pitchMacroTexture({
       surface: kind, halfW: HALF_W, halfD: HALF_D,
