@@ -5,14 +5,14 @@
 <title>Character lineup</title>
 <style>html,body{margin:0;height:100%;background:#101820;overflow:hidden}canvas{display:block;width:100%;height:100%}</style>
 <script type="importmap">
-{ "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/examples/jsm/" } }
+{ "imports": { "three": "../vendor/three/build/three.module.js", "three/addons/": "../vendor/three/examples/jsm/" } }
 </script>
 </head>
 <body>
 <script type="module">
 import * as THREE from 'three';
-import { createPlayer, HEAD_R } from './src/entities/player.js';
-import { SKIN_TONES, HAIR_COLORS, HAIR_STYLES } from './src/entities/player-textures.js';
+import { createPlayer, HEAD_R } from '../src/entities/player.js';
+import { SKIN_TONES, HAIR_COLORS, HAIR_STYLES } from '../src/entities/player-textures.js';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(1);
