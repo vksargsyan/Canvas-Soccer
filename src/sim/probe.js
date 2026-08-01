@@ -76,7 +76,12 @@ const TARGETS = {
     medianLeadError: { max: 1.6 },
   },
   shielding: {
-    medianHoldSeconds: { min: 1.5 },
+    // Upper bound matters as much as the lower one. A carrier who can hold the
+    // ball for nine seconds against a defender is not shielding, he is
+    // untacklable — the opposite failure to being snatched instantly, and just
+    // as unlike football. Real shielding under active pressure buys a couple of
+    // seconds to find a pass, not a stalemate.
+    medianHoldSeconds: { min: 1.5, max: 4.5 },
     instantLosses: { equals: 0 },
   },
   locomotion: {
