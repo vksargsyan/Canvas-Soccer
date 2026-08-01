@@ -935,7 +935,14 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     setPaused(false);
   });
 
-  requestAnimationFrame(frame);
+  // The first rendered frame links every shader program in the scene, which on a
+  // software rasteriser is tens of seconds of blocking GL work. requestAnimationFrame
+  // callbacks run *before* the window load event, so kicking the loop off here would
+  // park that compile in front of `load` and make the page look like it never finished
+  // loading. Starting the loop on `load` instead lets the document settle first — the
+  // splash is already up, and nothing visible changes.
+  if (document.readyState === 'complete') requestAnimationFrame(frame);
+  else window.addEventListener('load', () => requestAnimationFrame(frame), { once: true });
 
   // ---------------------------------------------------------------- __debug
   const dbg = {
