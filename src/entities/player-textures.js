@@ -225,7 +225,16 @@ export const EXPRESSIONS = {
 // FACE TEXTURE
 // ---------------------------------------------------------------------------
 
-const FACE_W = 1024, FACE_H = 640;
+// The head is the one part of a chibi that the camera ever gets close to, and
+// at 1024 x 640 the face carried roughly one texel per screen pixel in a
+// closeup — enough for a shape to exist, not enough for it to have an edge,
+// which is the "textured at low resolution, reads mushy against a sharp
+// background" note. Every anatomical constant in here is in RADIANS of skull
+// arc and scales with AX / AY automatically; the only resolution-bound numbers
+// are the hand-tuned blur radii, which go through blurPx().
+const FACE_W = 1280, FACE_H = 800;
+const RS = FACE_W / 1024;
+const blurPx = (p) => `blur(${(p * RS).toFixed(2)}px)`;
 // pixels per radian of arc at the face
 const AX = (FACE_W * (1 + WARP_U)) / TAU;
 const AY = (FACE_H * (1 + WARP_V)) / Math.PI;
@@ -277,11 +286,12 @@ export function headTexture(o = {}) {
     // faint skin grain
     g.save();
     g.globalAlpha = 0.030;
-    for (let y = 0; y < H; y += 4) {
-      for (let x = 0; x < W; x += 4) {
-        const n = vnoise(x / 6.5, y / 6.5);
-        if (n > 0.58) { g.fillStyle = '#ffffff'; g.fillRect(x, y, 3, 3); }
-        else if (n < 0.40) { g.fillStyle = '#000000'; g.fillRect(x, y, 3, 3); }
+    const gc = 4 * RS;
+    for (let y = 0; y < H; y += gc) {
+      for (let x = 0; x < W; x += gc) {
+        const n = vnoise(x / (6.5 * RS), y / (6.5 * RS));
+        if (n > 0.58) { g.fillStyle = '#ffffff'; g.fillRect(x, y, gc * 0.75, gc * 0.75); }
+        else if (n < 0.40) { g.fillStyle = '#000000'; g.fillRect(x, y, gc * 0.75, gc * 0.75); }
       }
     }
     g.restore();
@@ -327,7 +337,7 @@ export function headTexture(o = {}) {
     // where the reference heads carry their strongest warmth anyway.
     g.save();
     g.globalAlpha = 0.26;
-    g.filter = 'blur(20px)';
+    g.filter = blurPx(20);
     const wb = g.createRadialGradient(cx, PY(2.02), 6, cx, PY(2.02), 0.62 * AX);
     wb.addColorStop(0.00, 'rgba(236,150,104,1)');
     wb.addColorStop(0.60, 'rgba(230,140,96,0.55)');
@@ -344,7 +354,7 @@ export function headTexture(o = {}) {
       const hx = cx + s * 0.36 * AX, hy = eyeY + 0.62 * AY;
       g.save();
       g.globalAlpha = 0.32;
-      g.filter = 'blur(14px)';
+      g.filter = blurPx(14);
       const hh = g.createRadialGradient(hx, hy, 3, hx, hy, 0.30 * AX);
       hh.addColorStop(0, rgba(shadow, 1));
       hh.addColorStop(1, rgba(shadow, 0));
@@ -369,6 +379,28 @@ export function headTexture(o = {}) {
         og2.addColorStop(0.74, rgba(shadow, 0.30));
         og2.addColorStop(1.00, rgba(shadow, 0));
         g.fillStyle = og2;
+        g.fillRect(Math.min(x0, x1), 0, 0.5 * W, H);
+      }
+    }
+    // RIM. "Flat matte plastic" is what a head looks like when nothing separates
+    // it from what is behind it. A stadium is lit from every side, so the last
+    // few degrees before the silhouette catch a cool bounce off the stands. In
+    // this unwrap the silhouette sits at t = 0.739 of the way from the face
+    // centre to the nape, so the rim peaks just past it and dies before the ear
+    // paint on one side and the nape hair on the other. Baked rather than
+    // shaded: the play camera is nearly always looking at the front of a
+    // player, so the silhouette is where this puts it.
+    for (const s of [-1, 1]) {
+      for (const off of [-W, 0, W]) {
+        const x0 = cx + off, x1 = cx + s * 0.5 * W + off;
+        const rg2 = g.createLinearGradient(x0, 0, x1, 0);
+        const rim = mixHex(lighten(base, 0.72), 0xcfe0f2, 0.34);
+        rg2.addColorStop(0.000, rgba(rim, 0));
+        rg2.addColorStop(0.640, rgba(rim, 0));
+        rg2.addColorStop(0.760, rgba(rim, 0.42));
+        rg2.addColorStop(0.880, rgba(rim, 0));
+        rg2.addColorStop(1.000, rgba(rim, 0));
+        g.fillStyle = rg2;
         g.fillRect(Math.min(x0, x1), 0, 0.5 * W, H);
       }
     }
@@ -427,11 +459,11 @@ export function headTexture(o = {}) {
       // edge at all, then a tighter denser one for the body. A single hard-ish
       // silhouette is what reads as a decal.
       g.save();
-      g.filter = 'blur(26px)';
+      g.filter = blurPx(26);
       g.globalAlpha = 0.30 + dens * 0.26;
       g.fillStyle = css(beardCol);
       beardPath(); g.fill();
-      g.filter = 'blur(11px)';
+      g.filter = blurPx(11);
       g.globalAlpha = 0.30 + dens * 0.34;
       beardPath(); g.fill();
       g.filter = 'none';
@@ -442,14 +474,15 @@ export function headTexture(o = {}) {
       // afterwards so it is a texture rather than a rash.
       g.save();
       beardPath(); g.clip();
-      g.filter = 'blur(2.2px)';
+      g.filter = blurPx(2.2);
       g.globalAlpha = 0.10 + dens * 0.10;
       const y0 = PY(1.55), y1 = PY(2.84);
-      for (let y = y0; y < y1; y += 5) {
-        for (let x = cx - 0.92 * AX; x < cx + 0.92 * AX; x += 5) {
-          const n = vnoise(x / 6.4, y / 6.4);
-          if (n > 0.62) { g.fillStyle = css(darken(beardCol, 0.34)); g.fillRect(x, y, 5, 5); }
-          else if (n < 0.32) { g.fillStyle = css(lighten(beardCol, 0.30)); g.fillRect(x, y, 5, 5); }
+      const cell = 5 * RS;
+      for (let y = y0; y < y1; y += cell) {
+        for (let x = cx - 0.92 * AX; x < cx + 0.92 * AX; x += cell) {
+          const n = vnoise(x / (6.4 * RS), y / (6.4 * RS));
+          if (n > 0.62) { g.fillStyle = css(darken(beardCol, 0.34)); g.fillRect(x, y, cell, cell); }
+          else if (n < 0.32) { g.fillStyle = css(lighten(beardCol, 0.30)); g.fillRect(x, y, cell, cell); }
         }
       }
       g.filter = 'none';
@@ -489,11 +522,34 @@ export function headTexture(o = {}) {
       g.fillStyle = og;
       g.fillRect(-rh * 1.9, -rh * 1.9, rh * 3.8, rh * 3.8);
 
-      // deepest right at the opening, so the eyeball sits in shade at the rim
+      // Baked AO, tight to the opening, so the eyeball sits in shade at the rim.
+      // This is the contact occlusion between lid and ball — it has to be
+      // narrow. Spread wide it stops being a socket and becomes half of the dark
+      // horizontal band across the face that the panel read as a welding visor,
+      // so the broad falloff above stays gentle and the depth is spent here.
       g.save();
-      g.filter = 'blur(6px)';
-      g.fillStyle = rgba(deep, 0.40);
+      g.filter = blurPx(6);
+      g.fillStyle = rgba(deep, 0.34);
       g.beginPath(); g.ellipse(0, -0.10 * ru, rh * 1.02, (ru + rd) * 0.62, 0, 0, TAU); g.fill();
+      g.filter = 'none';
+      g.restore();
+      // the deepest point of the dish is the inner corner, next to the nose root
+      g.save();
+      g.filter = blurPx(5);
+      g.fillStyle = rgba(deep, 0.40);
+      g.beginPath();
+      g.ellipse(-s * rh * 0.70, ru * 0.10, rh * 0.44, (ru + rd) * 0.52, 0, 0, TAU);
+      g.fill();
+      g.filter = 'none';
+      g.restore();
+      // and a second, shallower one directly under the brow ridge, which is
+      // what makes a brow read as a shelf rather than as paint
+      g.save();
+      g.filter = blurPx(7);
+      g.fillStyle = rgba(shadow, 0.34);
+      g.beginPath();
+      g.ellipse(0, -ru * 2.30, rh * 1.14, ru * 0.80, 0, 0, TAU);
+      g.fill();
       g.filter = 'none';
       g.restore();
 
@@ -569,7 +625,7 @@ export function headTexture(o = {}) {
       const bw = bs.w * AX, bt = bs.th * AY;
       // soft shadow under the brow so it sits on the ridge instead of floating
       g.save();
-      g.filter = 'blur(7px)';
+      g.filter = blurPx(7);
       g.globalAlpha = 0.5;
       g.fillStyle = rgba(shadow, 1);
       g.beginPath();
@@ -643,7 +699,7 @@ export function headTexture(o = {}) {
     // side shadow down both sides of the bridge
     g.save();
     g.globalAlpha = 0.60;
-    g.filter = 'blur(5px)';
+    g.filter = blurPx(5);
     for (const s of [-1, 1]) {
       const ng = g.createLinearGradient(cx + s * noseW * 1.7, 0, cx + s * noseW * 0.30, 0);
       ng.addColorStop(0, rgba(shadow, 0));
@@ -675,7 +731,7 @@ export function headTexture(o = {}) {
     // there was nothing left to distinguish it from the nose's own shadow.
     g.save();
     g.globalAlpha = 0.38;
-    g.filter = 'blur(5px)';
+    g.filter = blurPx(5);
     g.fillStyle = rgba(deep, 1);
     g.beginPath(); g.ellipse(cx, noseY + 0.116 * AY, noseW * 1.16, 0.030 * AY, 0, 0, TAU); g.fill();
     g.filter = 'none';
@@ -697,7 +753,7 @@ export function headTexture(o = {}) {
     // gameplay distance is nothing at all and even at 3x reads as a scuff. A
     // nostril is a HOLE: the darkest value anywhere on the face bar the pupil.
     g.save();
-    g.filter = 'blur(3px)';
+    g.filter = blurPx(3);
     g.fillStyle = rgba(mixHex(deep, 0x000000, 0.45), 0.40);
     for (const s of [-1, 1]) {
       g.beginPath();
@@ -708,7 +764,7 @@ export function headTexture(o = {}) {
     g.filter = 'none';
     g.restore();
     g.save();
-    g.filter = 'blur(1.6px)';
+    g.filter = blurPx(1.6);
     g.fillStyle = rgba(mixHex(deep, 0x000000, 0.62), 0.95);
     for (const s of [-1, 1]) {
       g.beginPath();
@@ -837,7 +893,7 @@ export function headTexture(o = {}) {
     // muzzle pad: the upper lip / chin plane faces the sky more than the jaw
     g.save();
     g.globalAlpha = 0.34;
-    g.filter = 'blur(16px)';
+    g.filter = blurPx(16);
     const mug = g.createRadialGradient(cx, mY - 0.02 * AY, 4, cx, mY - 0.02 * AY, mW * 1.65);
     mug.addColorStop(0, rgba(lighten(base, 0.34), 1));
     mug.addColorStop(1, rgba(lighten(base, 0.34), 0));
@@ -849,7 +905,7 @@ export function headTexture(o = {}) {
     // soft occlusion hugging the whole mouth, so it is set into the face
     g.save();
     g.globalAlpha = 0.30;
-    g.filter = 'blur(9px)';
+    g.filter = blurPx(9);
     g.fillStyle = rgba(deep, 1);
     g.beginPath();
     g.ellipse(cx, mY + open * 0.5 + 0.012 * AY, mW * 1.22, (0.088 + open / AY * 0.5) * AY, 0, 0, TAU);
@@ -902,7 +958,7 @@ export function headTexture(o = {}) {
     if (open <= 1) {
       const lineY = (x) => mY + curve * 0.062 * AY * (1 - x * x);
       g.save();
-      g.filter = 'blur(4px)';
+      g.filter = blurPx(4);
       g.strokeStyle = rgba(mixHex(lipDk, 0x000000, 0.5), 0.55);
       g.lineWidth = 0.052 * AY;
       g.lineCap = 'round';
@@ -922,7 +978,7 @@ export function headTexture(o = {}) {
     }
     // corner dimples — press the ends of the line into the cheek
     g.save();
-    g.filter = 'blur(3px)';
+    g.filter = blurPx(3);
     g.fillStyle = rgba(deep, 0.62);
     for (const s of [-1, 1]) {
       g.beginPath();
@@ -938,7 +994,7 @@ export function headTexture(o = {}) {
     // cast shadow under the lower lip: the mentolabial sulcus
     g.save();
     g.globalAlpha = 0.42;
-    g.filter = 'blur(7px)';
+    g.filter = blurPx(7);
     g.fillStyle = rgba(deep, 1);
     g.beginPath();
     g.ellipse(cx, mY + open * 1.05 + 0.086 * AY, mW * 0.86, 0.030 * AY, 0, 0, TAU); g.fill();
@@ -946,7 +1002,7 @@ export function headTexture(o = {}) {
     g.restore();
     // chin crease + shadow
     g.save();
-    g.filter = 'blur(6px)';
+    g.filter = blurPx(6);
     g.fillStyle = rgba(shadow, 0.30);
     g.beginPath();
     g.ellipse(cx, mY + open * 1.05 + 0.150 * AY, mW * 1.15, 0.072 * AY, 0, 0, TAU); g.fill();
@@ -986,7 +1042,7 @@ export function headTexture(o = {}) {
         g.stroke();
         // concha bowl
         g.save();
-        g.filter = 'blur(4px)';
+        g.filter = blurPx(4);
         g.fillStyle = rgba(deep, 0.62);
         g.beginPath(); g.ellipse(-s * ew * 0.16, eh * 0.05, ew * 0.42, eh * 0.42, 0, 0, TAU); g.fill();
         g.filter = 'none';
