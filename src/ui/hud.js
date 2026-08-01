@@ -15,7 +15,11 @@
 //
 // `input` is a live object the sim reads each step:
 //   { move:{x,y}, sprint, slide, switchPressed, shootHeld, shootCharge,
-//     passPressed, anyGesture, consume() }
+//     passPressed, lobPressed, pressureHeld, anyGesture, consume() }
+//
+// One-shots (slide, switchPressed, passPressed, lobPressed) are latched until
+// `consume()` takes them; `pressureHeld` is a 0..1 LEVEL that persists for as
+// long as the key is down, so consume() must not clear it.
 //
 // PLATFORM
 // This game is played on a computer. Keyboard and gamepad are the primary
@@ -230,6 +234,17 @@ const CSS = `
   color:rgba(186,204,238,.5); }
 .cs-keys .hd em .cs-key { min-width:calc(21px*var(--lu)); height:calc(21px*var(--lu));
   padding:0 calc(6px*var(--lu)); font-size:calc(9.5px*var(--lu)); }
+/* Two of the keys mean different things with and without the ball, so the legend
+   says which half of the game you are in. ATTACKING / DEFENDING are the same
+   length on purpose — the chip never changes width. */
+.cs-keys .hd .md { font-size:calc(9.5px*var(--lu)); letter-spacing:.22em; font-weight:900;
+  padding:calc(3px*var(--lu)) calc(9px*var(--lu)) calc(4px*var(--lu));
+  border-radius:calc(5px*var(--lu)); color:#d7f0ff;
+  background:rgba(143,216,255,.14);
+  box-shadow:inset 0 0 0 calc(1.4px*var(--lu)) rgba(143,216,255,.34);
+  text-shadow:0 calc(2px*var(--lu)) calc(4px*var(--lu)) rgba(0,0,0,.7); }
+.cs-keys .hd .md.def { color:#ffdda8; background:rgba(255,181,46,.14);
+  box-shadow:inset 0 0 0 calc(1.4px*var(--lu)) rgba(255,181,46,.36); }
 
 .cs-keys .bd { display:flex; align-items:center; justify-content:center;
   gap:calc(20px*var(--lu)); }
@@ -251,7 +266,14 @@ const CSS = `
   gap:calc(6px*var(--lu)) calc(13px*var(--lu)); align-items:center; }
 .cs-keys .rows .a { font-size:calc(11px*var(--lu)); letter-spacing:.2em; font-weight:900;
   color:rgba(228,240,255,.88);
+  /* the contextual rows swap PASS<->SWITCH as possession turns over: reserve the
+     width of the widest label so the panel does not breathe on every turnover */
+  min-width:calc(112px*var(--lu));
   text-shadow:0 calc(2px*var(--lu)) calc(4px*var(--lu)) rgba(0,0,0,.75); }
+/* second line under an action — the hold variant of a key that does two things */
+.cs-keys .rows .a i { display:block; font-style:normal; font-weight:900;
+  margin-top:calc(2px*var(--lu)); font-size:calc(8.5px*var(--lu)); letter-spacing:.18em;
+  color:rgba(178,196,232,.5); text-shadow:none; }
 .cs-keys .ft { margin-top:calc(11px*var(--lu)); padding-top:calc(9px*var(--lu));
   border-top:calc(1.5px*var(--lu)) solid rgba(255,255,255,.08);
   font-size:calc(9.5px*var(--lu)); letter-spacing:.2em; font-weight:900;
@@ -520,34 +542,64 @@ const TOUCH_HTML = `
 // ---------------------------------------------------------------------------
 // The legend is data, not markup, so the keyboard and gamepad variants stay in
 // lockstep with the bindings below and with each other.
-//   move.caps.length === 4 -> WASD-shaped cluster; otherwise a single wide cap.
+//   move.caps.length === 4 -> arrow-cluster shape; otherwise a single wide cap.
+//
+// Two of the action keys are CONTEXTUAL — they do one thing with the ball and a
+// different thing without it — so each device has an `attack` and a `defend`
+// row set, keyed by the same `labelMode` the bindings switch on. A static list
+// would have to lie about half of them.
+//   row = [cap, action] or [cap, action, sub-line]
 // ---------------------------------------------------------------------------
 const LEGEND = {
   key: {
     title: 'CONTROLS',
     recall: 'H',
-    move: { caps: ['W', 'A', 'S', 'D'], label: 'MOVE', note: 'OR ARROWS' },
-    rows: [
-      ['SPACE', 'SHOOT'],
-      ['SHIFT', 'SPRINT'],
-      ['E', 'PASS'],
-      ['F', 'SWITCH'],
-      ['Q', 'SLIDE'],
-    ],
-    foot: 'HOLD SPACE TO POWER THE SHOT  ·  ESC TO PAUSE',
+    move: { caps: ['↑', '←', '↓', '→'], label: 'MOVE', note: 'ARROW KEYS' },
+    modes: {
+      attack: {
+        rows: [
+          ['D', 'SHOOT'],
+          ['S', 'PASS'],
+          ['A', 'LOB'],
+          ['SHIFT', 'SPRINT'],
+        ],
+        foot: 'HOLD D TO POWER THE SHOT  ·  ESC TO PAUSE',
+      },
+      defend: {
+        rows: [
+          ['D', 'SHOOT'],
+          ['S', 'SWITCH', 'HOLD: PRESSURE'],
+          ['A', 'TACKLE'],
+          ['SHIFT', 'SPRINT'],
+        ],
+        foot: 'TAP S TO SWITCH  ·  HOLD S TO CLOSE HIM DOWN  ·  ESC TO PAUSE',
+      },
+    },
   },
   gamepad: {
     title: 'GAMEPAD',
     recall: 'H',
     move: { caps: ['L STICK'], label: 'MOVE', note: 'OR D-PAD' },
-    rows: [
-      ['A', 'SHOOT'],
-      ['RT', 'SPRINT'],
-      ['X', 'PASS'],
-      ['Y', 'SWITCH'],
-      ['B', 'SLIDE'],
-    ],
-    foot: 'HOLD A TO POWER THE SHOT  ·  START TO PAUSE',
+    modes: {
+      attack: {
+        rows: [
+          ['A', 'SHOOT'],
+          ['X', 'PASS'],
+          ['B', 'LOB'],
+          ['RT', 'SPRINT'],
+        ],
+        foot: 'HOLD A TO POWER THE SHOT  ·  START TO PAUSE',
+      },
+      defend: {
+        rows: [
+          ['A', 'SHOOT'],
+          ['X', 'SWITCH', 'HOLD: PRESSURE'],
+          ['B', 'TACKLE'],
+          ['RT', 'SPRINT'],
+        ],
+        foot: 'TAP X TO SWITCH  ·  HOLD X TO CLOSE HIM DOWN  ·  START TO PAUSE',
+      },
+    },
   },
 };
 
@@ -725,10 +777,21 @@ export function createHud(root) {
     shootHeld: false,
     shootCharge: 0,
     passPressed: false,
+    lobPressed: false,
+    // 0..1 — how hard the player is leaning on the man in possession. A LEVEL,
+    // not an event: it ramps while the key is held and decays when it is let go,
+    // and consume() deliberately leaves it alone.
+    pressureHeld: 0,
     anyGesture: false,
     consume() {
-      const s = { slide: this.slide, switchPressed: this.switchPressed, passPressed: this.passPressed };
-      this.slide = false; this.switchPressed = false; this.passPressed = false;
+      const s = {
+        slide: this.slide,
+        switchPressed: this.switchPressed,
+        passPressed: this.passPressed,
+        lobPressed: this.lobPressed,
+      };
+      this.slide = false; this.switchPressed = false;
+      this.passPressed = false; this.lobPressed = false;
       return s;
     },
   };
@@ -741,17 +804,22 @@ export function createHud(root) {
     cooldowns[name] = secs;
   }
 
-  // Labels are contextual on touch: with the ball you get SHOOT/PASS, without it
-  // SLIDE/SWITCH. The mode is tracked on every device (it is cheap and the host
-  // sets it every step) but only painted when touch buttons exist.
+  // `labelMode` is THE attacking/defending context — for the touch labels, for the
+  // key legend, and (most importantly) for what S and A actually do. The host sets
+  // it from possession every step; everything contextual reads it and nothing else.
   const LABELS = {
     attack: { primary: 'SHOOT', second: 'PASS' },
-    defend: { primary: 'SLIDE', second: 'SWITCH' },
+    defend: { primary: 'TACKLE', second: 'SWITCH' },
   };
   let labelMode = 'attack';
+  let legendDirty = false;
   function setLabels(mode) {
+    if (mode !== 'attack' && mode !== 'defend') return;
     if (mode === labelMode) return;
     labelMode = mode;
+    // The legend is contextual too. Repainting it here would run twice in a frame
+    // if two callers disagree, so flag it and let update() do the one DOM write.
+    legendDirty = true;
     if (!touch) return;
     touch.btns.primary.querySelector('.lbl').textContent = LABELS[mode].primary;
     touch.btns.second.querySelector('.lbl').textContent = LABELS[mode].second;
@@ -777,17 +845,22 @@ export function createHud(root) {
   let cine = false;             // celebration: everything interactive gets out of the way
 
   function renderLegend() {
+    legendDirty = false;
     const L = LEGEND[legendMode] || LEGEND.key;
+    const M = L.modes[labelMode] || L.modes.attack;
     const cap = (t) => `<span class="cs-key">${t}</span>`;
     const mv = L.move.caps.length === 4
       ? `<div class="g"><i></i>${cap(L.move.caps[0])}<i></i>` +
         `${cap(L.move.caps[1])}${cap(L.move.caps[2])}${cap(L.move.caps[3])}</div>`
       : `<div class="g one">${L.move.caps.map(cap).join('')}</div>`;
-    const rows = L.rows
-      .map(([k, a]) => `${cap(k)}<span class="a">${a}</span>`)
+    const rows = M.rows
+      .map(([k, a, sub]) =>
+        `${cap(k)}<span class="a">${a}${sub ? `<i>${sub}</i>` : ''}</span>`)
       .join('');
+    const chip = labelMode === 'attack' ? 'ATTACKING' : 'DEFENDING';
     keysEl.innerHTML =
       `<div class="hd"><b>${L.title}</b>` +
+        `<span class="md${labelMode === 'attack' ? '' : ' def'}">${chip}</span>` +
         `<em>${cap(L.recall)}<span>HIDE</span></em></div>` +
       `<div class="bd">` +
         `<div class="mv">${mv}` +
@@ -795,7 +868,7 @@ export function createHud(root) {
         `<div class="sep"></div>` +
         `<div class="rows">${rows}</div>` +
       `</div>` +
-      `<div class="ft">${L.foot}</div>`;
+      `<div class="ft">${M.foot}</div>`;
     recallEl.innerHTML = `<span class="cs-key">${L.recall}</span><span>CONTROLS</span>`;
   }
 
@@ -829,7 +902,7 @@ export function createHud(root) {
   function controlTip() {
     if (device === 'touch') return 'DRAG THE STICK TO MOVE  ·  TAP SHOOT TO STRIKE';
     if (device === 'gamepad') return 'LEFT STICK TO MOVE  ·  A TO SHOOT  ·  X TO PASS';
-    return 'W A S D TO MOVE  ·  SPACE TO SHOOT  ·  H FOR CONTROLS';
+    return 'ARROWS TO MOVE  ·  D SHOOT  ·  S PASS  ·  A LOB  ·  H FOR CONTROLS';
   }
 
   function setCine(v) {
@@ -950,6 +1023,57 @@ export function createHud(root) {
     return touch;
   }
 
+  // ---------------------------------------------------------------- intents
+  // S (keyboard) / X (pad) / the second touch button are ONE control with three
+  // jobs, so the rules live here once instead of in three copies:
+  //
+  //   attacking                     press           -> PASS
+  //   defending, tapped             press + release -> SWITCH
+  //   defending, held past HOLD_S                   -> PRESSURE (a 0..1 level)
+  //
+  // The role is decided at press time and never revisited, so a turnover in the
+  // middle of a hold cannot turn a pass into a switch on the way back up, and a
+  // hold never fires the tap action when it is released.
+  const HOLD_S = 0.18;            // seconds; under this the press counted as a tap
+  const second = { down: false, at: 0, role: null };
+  const nowMs = () => ((typeof performance !== 'undefined' && performance.now)
+    ? performance.now() : Date.now());
+
+  function secondPress() {
+    if (second.down) return;                  // key auto-repeat, or a second device
+    second.down = true;
+    second.at = nowMs();
+    second.role = labelMode === 'attack' ? 'pass' : 'defend';
+    if (second.role === 'pass') input.passPressed = true;
+  }
+  function secondRelease() {
+    if (!second.down) return;
+    const held = (nowMs() - second.at) / 1000;
+    if (second.role === 'defend' && held < HOLD_S) input.switchPressed = true;
+    second.down = false;
+    second.role = null;
+  }
+  function secondCancel() {
+    second.down = false;
+    second.role = null;
+    input.pressureHeld = 0;
+  }
+  /** A (keyboard) / B (pad) / the first touch button off the ball. */
+  function primaryAction() {
+    if (labelMode === 'attack') { input.lobPressed = true; return; }
+    if (cooldowns.primary <= 0) {
+      input.slide = true;
+      cooldowns.primary = cooldownMax.primary || 1.2;
+    }
+  }
+  /** Ramp the pressure level — every frame, whichever device is driving. */
+  function tickPressure(dt) {
+    const on = second.down && second.role === 'defend' && labelMode !== 'attack'
+      && (nowMs() - second.at) / 1000 >= HOLD_S;
+    if (on) input.pressureHeld = Math.min(1, input.pressureHeld + dt * 4.5);
+    else input.pressureHeld = Math.max(0, input.pressureHeld - dt * 9);
+  }
+
   function press(slot) {
     input.anyGesture = true;
     setDevice('touch');
@@ -957,18 +1081,18 @@ export function createHud(root) {
     if (slot === 'sprint') { input.sprint = true; return; }
     if (slot === 'primary') {
       if (labelMode === 'attack') { input.shootHeld = true; }
-      else if (cooldowns.primary <= 0) { input.slide = true; cooldowns.primary = cooldownMax.primary || 1.2; }
+      else primaryAction();
       return;
     }
     if (slot === 'second') {
-      input.passPressed = true;
-      input.switchPressed = true;
+      secondPress();
       if (cooldowns.second <= 0) cooldowns.second = cooldownMax.second || 0.35;
     }
   }
   function release(slot) {
     if (slot === 'sprint') input.sprint = false;
     if (slot === 'primary' && labelMode === 'attack') input.shootHeld = false;
+    if (slot === 'second') secondRelease();
   }
 
   // Phones and tablets get the touch layer up front. Hybrids (a laptop with a
@@ -989,34 +1113,52 @@ export function createHud(root) {
   }
 
   // ---- keyboard ------------------------------------------------------------
-  // The full desktop binding set. Everything the sim reads out of `input` has a
-  // key here, and the legend above is generated from the same list.
-  //   WASD / arrows  move        SPACE  shoot (hold to charge)
-  //   SHIFT          sprint      E      pass  (switches when you are off the ball)
-  //   F              switch      Q      slide tackle
-  //   H              controls    ESC/P  pause
+  // The desktop binding set — the classic PC football layout: the left hand plays
+  // the game, the right hand steers. A, S and D are ACTIONS, which is why moving
+  // is on the arrows alone; there is no WASD anywhere in here on purpose, so
+  // holding A to lob can never also drag you left.
+  //
+  //                       ATTACKING            DEFENDING
+  //   ARROWS   move       -                    -
+  //   D        shoot      shoot (hold=power)   shoot (hold=power)
+  //   S        second     pass                 tap: switch / hold: pressure
+  //   A        primary    lob                  slide tackle
+  //   SHIFT    sprint     H controls           ESC/P pause
+  //
+  // SPACE stays live as a second shoot key: it collides with nothing and every
+  // player tries it once.
   const keys = new Set();
-  const TRACKED = new Set([' ', 'w', 'a', 's', 'd', 'q', 'e', 'f', 'h', 'shift',
+  const TRACKED = new Set([' ', 'a', 's', 'd', 'h', 'shift',
     'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
   function onKey(e, down) {
     const k = (e.key || '').toLowerCase();
     if (down) { keys.add(k); input.anyGesture = true; setDevice('key'); } else keys.delete(k);
     if (TRACKED.has(k) && e.preventDefault) e.preventDefault();
-    // E is the contextual second action, exactly like the touch button: main.js
-    // passes when the carrier has the ball and switches player when it does not.
-    if (down && k === 'e') { input.switchPressed = true; input.passPressed = true; }
-    // F is the unconditional switch, for when you want a different man without
-    // gambling on whether the pass will fire instead.
-    if (down && k === 'f') input.switchPressed = true;
-    if (down && k === 'q' && cooldowns.primary <= 0) {
-      input.slide = true; cooldowns.primary = cooldownMax.primary || 1.2;
+    // S: pass with the ball; without it, tap to switch and hold to press.
+    if (k === 's') {
+      if (!down) secondRelease();
+      else if (!e.repeat) secondPress();
+      return;
+    }
+    // A: lob with the ball, slide tackle without it. Auto-repeat must not
+    // machine-gun either of them.
+    if (k === 'a') {
+      if (down && !e.repeat) primaryAction();
+      return;
     }
     if (down && k === 'h' && !e.repeat) toggleControls();
     if (down && (k === 'escape' || k === 'p')) togglePause();
   }
   window.addEventListener('keydown', (e) => onKey(e, true));
   window.addEventListener('keyup', (e) => onKey(e, false));
-  window.addEventListener('blur', () => { keys.clear(); input.sprint = false; input.shootHeld = false; });
+  window.addEventListener('blur', () => {
+    keys.clear();
+    input.sprint = false;
+    input.shootHeld = false;
+    // A held key that is released off-window never sends its keyup: drop the hold
+    // rather than leaving the player leaning on an opponent forever.
+    secondCancel();
+  });
   window.addEventListener('pointerdown', (e) => {
     input.anyGesture = true;
     // A mouse click must not hand control back to a touch layer that a hybrid
@@ -1026,11 +1168,13 @@ export function createHud(root) {
   }, true);
 
   // ---- gamepad -------------------------------------------------------------
-  // Standard Gamepad API mapping. Polled only once a pad has announced itself,
-  // so a keyboard-only machine never pays for navigator.getGamepads() per frame.
-  //   left stick / d-pad move    A shoot (hold to charge)    X pass
-  //   RT / LT sprint             B slide                     Y switch
-  //   START pause
+  // Standard Gamepad API mapping, one-for-one with the keyboard so the two never
+  // disagree. Polled only once a pad has announced itself, so a keyboard-only
+  // machine never pays for navigator.getGamepads() per frame.
+  //   left stick / d-pad  move        A  shoot   (= D)
+  //   RT / LT / LB        sprint      X  second  (= S: pass / switch / pressure)
+  //   START               pause       B  primary (= A: lob / slide tackle)
+  // Y is deliberately unbound: switching lives on X, exactly as it does on S.
   const PAD_DZ = 0.22;
   let padCount = 0;
   let padPrev = [];
@@ -1077,11 +1221,9 @@ export function createHud(root) {
     input.move.y = gy;
     input.sprint = bp(7) || bp(6) || bp(5);
     input.shootHeld = bp(0);
-    if (bp(2) && !padPrev[2]) { input.passPressed = true; input.switchPressed = true; }
-    if (bp(3) && !padPrev[3]) input.switchPressed = true;
-    if (bp(1) && !padPrev[1] && cooldowns.primary <= 0) {
-      input.slide = true; cooldowns.primary = cooldownMax.primary || 1.2;
-    }
+    if (bp(2) && !padPrev[2]) secondPress();
+    if (!bp(2) && padPrev[2]) secondRelease();
+    if (bp(1) && !padPrev[1]) primaryAction();
     if (bp(9) && !padPrev[9]) togglePause();
     padPrev = bt.map((b) => !!(b && b.pressed));
     return true;
@@ -1092,16 +1234,18 @@ export function createHud(root) {
     if (pollGamepad()) return;
     // touch: the stick and buttons already wrote straight into `input`
     if (device === 'touch') return;
+    // Arrows only. A/S/D are actions now, and a key that both steers and acts is
+    // the one thing this layout cannot have.
     let x = 0, y = 0;
-    if (keys.has('a') || keys.has('arrowleft')) x -= 1;
-    if (keys.has('d') || keys.has('arrowright')) x += 1;
-    if (keys.has('w') || keys.has('arrowup')) y -= 1;
-    if (keys.has('s') || keys.has('arrowdown')) y += 1;
+    if (keys.has('arrowleft')) x -= 1;
+    if (keys.has('arrowright')) x += 1;
+    if (keys.has('arrowup')) y -= 1;
+    if (keys.has('arrowdown')) y += 1;
     const d = Math.hypot(x, y);
     if (d > 1) { x /= d; y /= d; }
     input.move.x = x; input.move.y = y;
     input.sprint = keys.has('shift');
-    input.shootHeld = keys.has(' ');
+    input.shootHeld = keys.has('d') || keys.has(' ');
   }
 
   function resolveCharge(dt) {
@@ -1336,8 +1480,11 @@ export function createHud(root) {
       pendingTally = -1;
     }
     pollKeys(dt);
+    tickPressure(dt);
     resolveCharge(dt);
     tickCooldowns(dt);
+    // one DOM write per frame at most, however many callers moved the context
+    if (legendDirty) renderLegend();
 
     // The auto-hide countdown only runs while the legend is actually on screen,
     // so a long stint in a menu does not eat the seconds it is meant to be read in.

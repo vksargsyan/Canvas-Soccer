@@ -13,7 +13,9 @@ import { createGoal } from './world/goal.js';
 import { createPlayer, createSquad } from './entities/player.js';
 import { createAnimator } from './entities/animation.js';
 import { createBall } from './entities/ball.js';
-import { createBallBody, separatePlayers, ballPlayerContact } from './sim/physics.js';
+import {
+  createBallBody, separatePlayers, ballPlayerContact, shieldOwner,
+} from './sim/physics.js';
 import { createAI, FORMATION } from './sim/ai.js';
 import { createMatch } from './sim/match.js';
 import { createGameplayProbe, gameplayTargets } from './sim/probe.js';
@@ -110,6 +112,10 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   const director = createDirector(camera);
 
   let touchCool = 0;
+  // Seconds during which auto-select keeps its hands off: a manual switch has to
+  // survive the frame it was made on. See switchToBall().
+  const MANUAL_HOLD = 0.7;
+  let manualHold = 0;
 
   const events = {
     onBounce(speed, p) {
@@ -258,10 +264,12 @@ export function boot({ canvas, hudRoot, splash } = {}) {
 
     const nearBall = Math.hypot(body.pos.x - a.pos.x, body.pos.z - a.pos.z);
     a.hasBall = nearBall < PASS_REACH && body.pos.y < 1.0;
-    // The second button is PASS on the ball and SWITCH off it; the first is SHOOT
-    // on the ball and SLIDE off it. The label swap uses a wider radius than the
-    // action so the shot charge can start building on the approach.
-    hud.setLabels(nearBall < 4.0 && body.pos.y < 1.6 ? 'attack' : 'defend');
+    // ATTACKING vs DEFENDING is one question — does MY TEAM have the ball — and
+    // it decides what S and A do, so it has to be the same answer the HUD gives
+    // and the same answer hud.setPossession() writes, or the two would fight over
+    // `labelMode` twice a frame. Proximity is NOT a proxy for it: standing over
+    // an opponent's ball must still hand you a tackle, not a lob.
+    hud.setLabels(match.state.possession === 0 ? 'attack' : 'defend');
 
     // screen space -> world space using the camera's yaw
     const fwd = new THREE.Vector3();
@@ -289,17 +297,22 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       if (!a.anim.busy) a.anim.play(a.hasBall ? 'dribble' : 'idle');
     }
 
+    // S held while defending. Closing a man down is not a steal — see below.
+    applyPressure(a, inp.pressureHeld, dt);
+
     const pressed = inp.consume();
     const near = nearBall;
 
-    // The second button is PASS while we are on the ball and SWITCH when we are
-    // not — which is exactly what the HUD's own label mode says it is. Before
-    // this, `passPressed` was set by the button and the E key and read by nobody.
-    if (pressed.passPressed && a.hasBall) {
-      passFromUser(a);
-    } else if (pressed.switchPressed) {
-      autoSelectNext();
+    // S: PASS with the ball. Pressed off the ball it means the same thing the tap
+    // means — give me the man who can actually do something about it.
+    if (pressed.passPressed) {
+      if (a.hasBall) passFromUser(a);
+      else switchToBall();
     }
+    // A while attacking: the LOB. Same kick as everything else, a lot more lift.
+    if (pressed.lobPressed && a.hasBall) lobFromUser(a);
+    // S tapped while defending: switch to whoever is nearest the ball.
+    if (pressed.switchPressed) switchToBall();
 
     if (pressed.slide && a.cool <= 0) {
       a.cool = SLIDE_COOL;
@@ -360,6 +373,112 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       events.onPass(a);
       if (best) selectUser(best);
     });
+  }
+
+  /**
+   * User lob (A while attacking): the same body.kick(), struck with a lot more
+   * lift and correspondingly less pace, so it clears the man in front instead of
+   * running into his shins. No new ball physics — the kick already turns `lift`
+   * into backspin and a proper flight.
+   *
+   * It looks further up the pitch than the pass does, because a chip is what you
+   * play when the ground ball is not on; with nobody to aim at it becomes a
+   * clearance downfield.
+   */
+  function lobFromUser(a) {
+    if (a.kickLock) return;
+    const dir = TEAMS[a.team].dir;
+    let best = null, bs = -1e9;
+    for (const m of agents) {
+      if (m === a || m.team !== a.team || m.down || m.isKeeper) continue;
+      const dx = m.pos.x - a.pos.x, dz = m.pos.z - a.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 5.0 || d > 42) continue;               // too close to chip, too far to reach
+      const score = (dx * dir) * 1.9 - Math.abs(dz) * 0.25 - Math.abs(d - 20) * 0.4;
+      if (score > bs) { bs = score; best = m; }
+    }
+    a.anim.play('pass', { force: true });
+    const delay = a.anim.passContactDelay ?? 0.07;
+    a.kickLock = delay + 0.05;
+    a.cool = Math.max(a.cool, delay + 0.12);
+    after(delay, () => {
+      a.kickLock = 0;
+      // lead him further than a pass does: the ball is in the air much longer
+      const tx = best ? best.pos.x + best.vel.x * 0.65 : a.pos.x + dir * 20;
+      const tz = best ? best.pos.z + best.vel.z * 0.65 : a.pos.z * 0.5;
+      const ox = tx - a.pos.x, oz = tz - a.pos.z;
+      const d = Math.hypot(ox, oz) || 1;
+      // ballistic solve against the ball's own gravity, then a little extra pace
+      // to pay for the drag the arc loses on the way
+      const lift = clamp(6.6 + d * 0.14, 7.0, 11.0);
+      const hang = (2 * lift) / 20.5;
+      const power = clamp((d / hang) * 1.12, 10, 30);
+      body.kick(new THREE.Vector3(ox, 0, oz), power, lift, 0);
+      events.onPass(a);
+      if (best) { selectUser(best); manualHold = MANUAL_HOLD; }
+    });
+  }
+
+  // ---- pressure (S held while defending) -----------------------------------
+  // Leaning on the man in possession. This does NOT take the ball off him: all it
+  // does is put the controlled player on his shoulder, on the ball side, and keep
+  // him there. sim/locomotion.js's contest model — the same one the AI has to
+  // beat — is what decides whether the pressure ever turns into possession, and
+  // it needs time and body position, which is exactly what holding S supplies.
+  const CONTAIN_SPEED = SPRINT_SPEED * 0.92;
+  const PRESS_ACCEL = 16;
+
+  /** Where the presser wants to stand: between the carrier and the ball. */
+  function pressureTarget(a) {
+    const owner = shieldOwner(body);
+    if (!owner || owner.team === a.team || owner.down) {
+      return { x: body.pos.x, z: body.pos.z };
+    }
+    let dx = body.pos.x - owner.pos.x, dz = body.pos.z - owner.pos.z;
+    let d = Math.hypot(dx, dz);
+    if (d < 1e-3) {
+      dx = a.pos.x - owner.pos.x; dz = a.pos.z - owner.pos.z;
+      d = Math.hypot(dx, dz) || 1;
+    }
+    // just inside the contest radius (1.42 in locomotion.js) on the ball side
+    const r = 0.9;
+    return { x: owner.pos.x + (dx / d) * r, z: owner.pos.z + (dz / d) * r };
+  }
+
+  function applyPressure(a, level, dt) {
+    if (!(level > 0.02) || a.down) return;
+    const t = pressureTarget(a);
+    const dx = t.x - a.pos.x, dz = t.z - a.pos.z;
+    const d = Math.hypot(dx, dz) || 1e-4;
+    // sprint the gap, then settle onto him — running THROUGH a carrier loses the
+    // contest, because the shield term rewards standing on the ball side of him
+    const want = Math.min(CONTAIN_SPEED, 1.4 + d * 3.4) * level;
+    const k = Math.min(1, PRESS_ACCEL * dt * level);
+    a.vel.x += ((dx / d) * want - a.vel.x) * k;
+    a.vel.z += ((dz / d) * want - a.vel.z) * k;
+    if (!a.anim.busy) {
+      const sp = Math.hypot(a.vel.x, a.vel.z);
+      a.anim.play(sp > 5.5 ? 'sprint' : sp > 1.2 ? 'run' : 'idle');
+    }
+  }
+
+  /**
+   * Manual switch (S tapped while defending, X tapped on a pad): take the outfield
+   * teammate closest to the ball, and if that is already the man we are on, cycle
+   * to the next one so a tap is never a no-op. The pick is protected from
+   * auto-select for a moment; without that, the very next frame would hand the
+   * nearest man straight back and the input would look ignored.
+   */
+  function switchToBall() {
+    let best = null, bd = 1e9;
+    for (const m of agents) {
+      if (m.team !== 0 || m.isKeeper || m.down) continue;
+      const d = Math.hypot(body.pos.x - m.pos.x, body.pos.z - m.pos.z);
+      if (d < bd) { bd = d; best = m; }
+    }
+    if (!best || best === userAgent) autoSelectNext();
+    else selectUser(best);
+    manualHold = MANUAL_HOLD;
   }
 
   function autoSelectNext() {
@@ -801,6 +920,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   function step(dt) {
     scen.t += dt;
     touchCool = Math.max(0, touchCool - dt);
+    manualHold = Math.max(0, manualHold - dt);
     runBeats();
     tickTimers(dt);
     if (scen.step) scen.step(dt, scen.t);
@@ -831,7 +951,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       match.update(dt);
       hud.setClock(match.state.clock);
       hud.setPossession(match.state.possession);
-      if (scen.flags.autoSelect && match.state.phase === 'play') autoSelect();
+      if (scen.flags.autoSelect && match.state.phase === 'play' && manualHold <= 0) autoSelect();
       if (match.state.phase === 'play' && director.mode !== 'follow' && director.mode !== 'broadcast') {
         director.cut('broadcast', { side: 1 });
       }
