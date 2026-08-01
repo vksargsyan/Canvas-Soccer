@@ -106,8 +106,8 @@ const ROLL_W = Math.sqrt(ROLL_C * ROLL_K);
 
 // How fast a pass should be doing when it reaches him. Under the floor it dies
 // short and is a gift to a defender; over the ceiling it cannot be controlled.
-const ARRIVE_MIN = 5.4;
-const ARRIVE_MAX = 9.2;
+const ARRIVE_MIN = 7.0;
+const ARRIVE_MAX = 9.3;
 const PASS_U_MAX = 26;
 
 // Interception model. A defender gets something on anything that comes inside
@@ -596,7 +596,7 @@ export function createAI(ctx) {
       D = Math.hypot(tx - ox, tz - oz);
       // A tight window is drilled, an open one is rolled — the same call a real
       // passer makes when he sees the gap closing.
-      arrive = clamp(ARRIVE_MIN + risk * 5.0, ARRIVE_MIN, ARRIVE_MAX);
+      arrive = clamp(ARRIVE_MIN + risk * 3.0, ARRIVE_MIN, ARRIVE_MAX);
       u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
       // ...but never so soft that it dies before it gets there
       u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
@@ -672,12 +672,22 @@ export function createAI(ctx) {
       // --- how long is it in the air/on the deck for? every extra tenth is
       //     another tenth for a defender to arrive ---
       const timeQ = clamp(1 - (plan.t - 0.45) / 1.25, 0, 1);
+      // --- is the ball actually HIS? a team-mate standing nearer the delivery
+      //     point than the intended receiver turns a pass into a scramble ---
+      let mineNearer = 99;
+      for (const k of agents) {
+        if (k === a || k === m || k.team !== t || k.down) continue;
+        const dk = Math.hypot(k.pos.x + k.vel.x * plan.t - plan.x,
+          k.pos.z + k.vel.z * plan.t - plan.z);
+        if (dk < mineNearer) mineNearer = dk;
+      }
+      const claimQ = clamp((mineNearer - 1.4) / 3.5, 0, 1);
       // --- is it roughly where the player is pointing? ---
       const lx = (plan.x - ox) / (d || 1), lz = (plan.z - oz) / (d || 1);
       const coneQ = clamp((lx * fx + lz * fz + 0.25) / 1.25, 0, 1);
 
-      const q = (0.26 - coneW * 0.35) * openQ + 0.18 * rangeQ + 0.18 * progQ
-        + coneW * coneQ + 0.12 * runQ + 0.12 * timeQ;
+      const q = (0.22 - coneW * 0.35) * openQ + 0.16 * rangeQ + 0.16 * progQ
+        + coneW * coneQ + 0.10 * runQ + 0.12 * timeQ + 0.10 * claimQ;
       // The lane MULTIPLIES everything. A beautiful ball into a covered corridor
       // is a turnover, and no amount of progress buys it back.
       let sc = 10 * q * (0.10 + 0.90 * laneQ);
