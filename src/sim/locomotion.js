@@ -99,7 +99,12 @@ export const LOCO = {
                             // has to win it back on every stride is not carrying
   // --- the challenge ---
   contestRadius: 1.49,      // he has to be this tight to be working
-  contestBase: 4.00,        // per second, even matchup, challenger in front
+  // Per second, even matchup, challenger in front. A full challenge is therefore
+  // a couple of seconds of staying tight, not a quarter of a second: at 4.00 a
+  // defender who got near the carrier won the ball in half a second, which is
+  // the snatch this whole model exists to prevent -- it was simply happening
+  // one step further along than the poke it vetoes.
+  contestBase: 0.60,
   contestShieldMin: 0.50,   // multiplier when fully shielded (challenger behind)
   contestDecay: 0.22,       // per second once he backs off
   pokeCredit: 0.14,         // progress earned by a rejected poke, and only if
@@ -108,8 +113,10 @@ export const LOCO = {
                             // miss, not a contribution
   creditCeiling: 0.62,      // and diving in can never win it on its own: past
                             // this you have to get your body in and hold it there
-  minChallenge: 0.55,       // seconds of contact a challenge takes at minimum,
+  minChallenge: 2.20,       // seconds of contact a challenge takes at minimum,
                             // however strong you are. Never a snatch on contact.
+                            // This is what a shield BUYS: a couple of seconds
+                            // on the ball with a man on your back to find a pass.
   lungeFallBelow: 0.25,     // lunge this early and you end up on the floor
   lungeFallTime: 0.70,
   winKnock: 4.5,            // m/s the ball comes off him when it is finally won

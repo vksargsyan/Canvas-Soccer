@@ -69,6 +69,14 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const BOX_X = BOX_W;            // penalty area depth from the goal line
 const BOX_HZ = BOX_D / 2;       // penalty area half-width
 const CARRY_R = PLAYER_R + BALL_R + 0.42;
+// Fraction of RUN_SPEED a carrier keeps while he is being pressed. Under this
+// the ball is protected rather than run with, and a defender can get to him.
+const PRESSED_CARRY = 0.92;
+// How much room a man needs to strike the ball properly: none at all under
+// SHOT_ROOM_NEAR, all of it once the nearest opponent is SHOT_ROOM_SPAN beyond.
+const SHOT_ROOM_NEAR = 0.9;
+const SHOT_ROOM_SPAN = 1.1;
+const SHOT_ROOM_FLOOR = 0.45;
 
 const _v = new THREE.Vector3();
 const _aim = new THREE.Vector3();
@@ -603,7 +611,23 @@ export function createAI(ctx) {
     const range = clamp(1 - (d - 6) / 20, 0, 1);
     const lane = clamp(clear / 2.2, 0, 1);
     const angle = clamp(1 - (Math.abs(a.pos.z) - 4) / 15, 0, 1);
-    return { z: bestZ, dist: d, q: range * 0.55 + lane * 0.30 + angle * 0.15 };
+    // A strike takes a yard. `lane` asks whether anybody stands in the FLIGHT of
+    // the shot; it says nothing about the defender leaning on the shoulder of
+    // the man taking it, who has no room to plant, to swing or to look up. A
+    // carrier being closed down should be looking to hold it or move it, not
+    // firing from 20 m as if he were free. Measured, this was the single reason
+    // a shielding contest never ran its course: the carrier under pressure got
+    // a shot away inside three seconds every time, and the challenge in progress
+    // was still in progress when the ball hit the net.
+    let tight = 9e9;
+    for (const o of agents) {
+      if (o.team === a.team || o.down || o.isKeeper) continue;
+      const dd = Math.hypot(o.pos.x - a.pos.x, o.pos.z - a.pos.z);
+      if (dd < tight) tight = dd;
+    }
+    const room = SHOT_ROOM_FLOOR + (1 - SHOT_ROOM_FLOOR)
+      * clamp((tight - SHOT_ROOM_NEAR) / SHOT_ROOM_SPAN, 0, 1);
+    return { z: bestZ, dist: d, q: (range * 0.55 + lane * 0.30 + angle * 0.15) * room };
   }
 
   // ---- pass assist ---------------------------------------------------------
@@ -954,8 +978,13 @@ export function createAI(ctx) {
     }
     if (bs <= -1e9) { bx = a.pos.x + dir * 4; bz = a.pos.z; }
 
+    // A man with a defender on him is not running his own race: he is carrying
+    // the ball at the pace he can still protect it at. It used to be RUN_SPEED
+    // * 1.02, which is quicker than anyone chasing him is allowed to close at,
+    // so a carrier could simply outrun the challenge and no contest ever got
+    // started -- measured, the presser hung at 1.6-1.9 m for ten seconds.
     const press = pressure(a, 3.2);
-    const sp = press ? RUN_SPEED * 1.02 : SPRINT_SPEED * 0.90;
+    const sp = press ? RUN_SPEED * PRESSED_CARRY : SPRINT_SPEED * 0.90;
     seek(a, bx, bz, dt, sp);
     face(a, bx, bz);
 
