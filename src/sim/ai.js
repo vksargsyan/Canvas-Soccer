@@ -152,10 +152,6 @@ function rollTimeTo(u, s) {
   if (v <= 0) return Infinity;
   return (Math.atan(u / ROLL_VT) - Math.atan(v / ROLL_VT)) / ROLL_W;
 }
-/** the arrival pace whose remaining roll-out is exactly `R` metres */
-function speedForRange(R) {
-  return Math.sqrt(Math.max(0, ROLL_C * (Math.exp(2 * ROLL_K * Math.max(0, R)) - 1) / ROLL_K));
-}
 /** how far a ball at (x,z) heading (nx,nz) can run before it crosses a line */
 function roomAhead(x, z, nx, nz) {
   let r = 1e9;
