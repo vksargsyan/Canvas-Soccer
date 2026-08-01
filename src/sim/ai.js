@@ -149,9 +149,9 @@ function runTime(d, v = CUT_SPEED, acc = CUT_ACCEL) {
 }
 /** preferred pass range: flat through the useful band, punished at both ends */
 function rangePref(d) {
-  if (d < 5.5) return clamp((d - 2.0) / 3.5, 0, 1) * 0.8;
-  if (d <= 13) return 1;
-  return clamp(1 - (d - 13) / 13, 0, 1);
+  if (d < 9) return clamp((d - 2.5) / 6.5, 0, 1);
+  if (d <= 20) return 1;
+  return clamp(1 - (d - 20) / 12, 0, 1);
 }
 
 export function createAI(ctx) {
@@ -693,8 +693,8 @@ export function createAI(ctx) {
       const lx = (plan.x - ox) / (d || 1), lz = (plan.z - oz) / (d || 1);
       const coneQ = clamp((lx * fx + lz * fz + 0.25) / 1.25, 0, 1);
 
-      const q = (0.22 - coneW * 0.35) * openQ + 0.16 * rangeQ + 0.16 * progQ
-        + coneW * coneQ + 0.10 * runQ + 0.12 * timeQ + 0.10 * claimQ;
+      const q = (0.22 - coneW * 0.35) * openQ + 0.22 * rangeQ + 0.16 * progQ
+        + coneW * coneQ + 0.10 * runQ + 0.06 * timeQ + 0.10 * claimQ;
       // The lane MULTIPLIES everything. A beautiful ball into a covered corridor
       // is a turnover, and no amount of progress buys it back.
       let sc = 10 * q * (0.10 + 0.90 * laneQ);
