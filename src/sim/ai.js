@@ -30,6 +30,10 @@ import {
   HALF_W, HALF_D, GOAL_HALF_W, GOAL_H, RUN_SPEED, SPRINT_SPEED, KEEPER_SPEED,
   ACCEL, PLAYER_R, BALL_R, TEAMS, BOX_W, BOX_D,
 } from '../core/constants.js';
+// Close control, the dribble pocket and the first touch live in sim/control.js.
+// This file decides WHERE a player goes; that one decides what the ball does
+// about it. The three call sites below are the whole interface.
+import { createBallControl } from './control.js';
 
 // 2-2-1 in attacking space: +X is the direction this team attacks.
 // slot 0 is always the keeper — the integrator indexes agents as team*6 + slot.
@@ -73,6 +77,7 @@ export function createAI(ctx) {
   const { agents, body } = ctx;
   const rng = ctx.rng;
   const events = ctx.events || {};
+  const control = createBallControl({ agents, body, rng, events });
 
   const home = new THREE.Vector3();
   const api = {};                 // returned; `api.match` is set by the integrator
@@ -543,16 +548,14 @@ export function createAI(ctx) {
     seek(a, bx, bz, dt, sp);
     face(a, bx, bz);
 
-    // push the ball into the running lane so it stays a stride ahead
-    const ahead = Math.hypot(body.pos.x - a.pos.x, body.pos.z - a.pos.z);
-    if (ahead < CARRY_R * 0.95 && (a.touchCool || 0) <= 0) {
-      a.touchCool = 0.30;
-      _v.set(bx - a.pos.x, 0, bz - a.pos.z);
-      body.kick(_v, RUN_SPEED * (press ? 0.86 : 1.06), 0, 0);
-      body.lastTouch = a; body.lastTouchTeam = a.team;
-      if (a.anim) a.anim.play('dribble', { force: true });
-    }
-    a.touchCool = Math.max(0, (a.touchCool || 0) - dt);
+    // The ball side of the carry belongs to sim/control.js: a speed-scaled
+    // pocket kept ahead of him, touched on the stride rather than on a timer,
+    // and solved for pace rather than kicked with a fixed impulse.
+    control.carry(a, dt, bx, bz, {
+      sprint: !press,
+      pressed: press > 0,
+      skill: SKILL[a.slot] ?? 0.8,
+    });
   }
 
   /**
@@ -1076,6 +1079,10 @@ export function createAI(ctx) {
     }
 
     if (holder && !(holder.hold > 0)) holder = null;
+    // Receptions run BEFORE possession is resolved and before sim/physics.js
+    // touches the ball: a pass killed here drops into the taker's pocket, so he
+    // is already the carrier this frame instead of chasing his own rebound.
+    control.update(dt);
     pickCarrier();
     updatePossession();
     pickChasers();
@@ -1102,6 +1109,7 @@ export function createAI(ctx) {
   // -------------------------------------------------------------------------
   function reset() {
     clearPending();
+    control.reset();
     carrier = null;
     holder = null;
     for (let t = 0; t < 2; t++) {
@@ -1147,7 +1155,7 @@ export function createAI(ctx) {
   }
 
   Object.assign(api, {
-    update, reset, homeFor, bestPass, bestSwitch, after, deadBallSpot, strike, seek, stats,
+    update, reset, homeFor, bestPass, bestSwitch, after, deadBallSpot, strike, seek, stats, control,
     chaserOf(t) { return side[t].chaser; },
     coverOf(t) { return side[t].cover; },
     carrierOf(t) { return carrier && carrier.team === t ? carrier : null; },
