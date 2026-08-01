@@ -23,8 +23,13 @@
 // is replaced at import time with a blocker search + variable-radius filter, so
 // the penumbra grows with the distance between blocker and receiver. That is the
 // difference between "a shadow is drawn" and "the boot is planted" — contact is
-// razor sharp under the studs and the roofline shadow across the pitch is metres
-// wide and soft, from one shadow map.
+// razor sharp under the studs and the cast shadow a metre out is already soft,
+// from one shadow map.
+//
+// On top of that every character carries a contact-occlusion decal, MULTIPLIED
+// into the frame rather than alpha-blended, so the grass keeps its own grain
+// through the shadow. Cast shadow says where the light is; the decal says the
+// sole is touching. You need both or the players hover.
 
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -38,26 +43,43 @@ import { envMap, skyTexture } from './assets.js';
 // ---------------------------------------------------------------------------
 // Sun + shadow rig constants
 // ---------------------------------------------------------------------------
-// The key is deliberately low (≈37° elevation) and swung down the +Z axis. That
-// is not a mood choice: the bowl's roof inner edge sits at z ≈ 52, y = 30.4, so
-// at this elevation the roofline throws a shadow whose leading edge lands around
-// z ≈ +12 — a huge, very soft band across the near third of the pitch, exactly
-// the read in the reference frames. A high sun (the old 56°) parks that shadow
-// outside the touchline and the pitch renders as one flat sheet of green.
-const SUN_POS = new THREE.Vector3(15, 46, 60);
+// The key sits at ≈51.5° elevation, swung to +X/+Z — up, to the right, and on
+// the camera's side of the pitch. Three things fall out of that choice and all
+// three are visible in the reference frames:
+//
+//   1. Faces are FRONT-lit. The camera lives at +Z, so a key from +Z puts the
+//      light on the side of every head the player actually sees. A key from -Z
+//      would rim the hair beautifully and leave every face in its own shade.
+//   2. Shadows are SHORT. A 1.6 m chibi throws ≈1.3 m, so the shadow stays
+//      welded to the boots instead of streaking half a metre of pitch away —
+//      which is the difference between "grounded" and "sticker on grass".
+//   3. The bowl stops shading the pitch. The roof inner edge is at 34 m out,
+//      y = 30.4, so its shadow now lands 15 m PAST the touchline. The previous
+//      37° key parked that edge at z ≈ +12 and put the near third of the field
+//      — and every player standing on it — into flat ambient, which is most of
+//      why the frame read washed out. The broad sun-sheen gradient the
+//      reference has across the turf is painted into the macro map instead
+//      (core/assets.js), where it can be shaped instead of being whatever the
+//      architecture happens to throw.
+const SUN_POS = new THREE.Vector3(34, 66, 40);
 
-// Square ortho box for the shadow camera, centred between the pitch and the near
-// stand so both the players and the roof that shades them fit in one map.
-const SHADOW_EXTENT = 64;                 // half-width, world units
-const SHADOW_CENTER = new THREE.Vector3(0, 5, 12);
+// Square ortho box for the shadow camera. With the bowl no longer shading the
+// pitch there is nothing to fit but the playing surface, its verge and the
+// goals, so the box shrinks from 64 to 44 — 88 m over 3072 texels is 29 mm per
+// texel instead of 42 mm, and contact hardening gets a third more resolution to
+// work with for free.
+const SHADOW_EXTENT = 44;                 // half-width, world units
+const SHADOW_CENTER = new THREE.Vector3(0, 1.5, 0);
 const SHADOW_DIST = 150;                  // light distance along -sunDir
-const SHADOW_NEAR = 30;
-const SHADOW_FAR = 285;
+// Tight depth range around that box: the span divides into the PCSS blocker
+// gap, so halving it halves the quantisation of every penumbra estimate.
+const SHADOW_NEAR = 88;
+const SHADOW_FAR = 218;
 
 // PCSS tuning, in metres of world space.
-const SUN_SOFTNESS = 0.052;   // tan(apparent sun radius); 1 m of gap -> 5.2 cm
-const PEN_MIN = 0.030;        // never below this or contact aliases
-const PEN_MAX = 1.90;         // roofline penumbra cap
+const SUN_SOFTNESS = 0.055;   // tan(apparent sun radius); 1 m of gap -> 5.5 cm
+const PEN_MIN = 0.022;        // never below this or contact aliases
+const PEN_MAX = 1.10;         // penumbra cap — nothing tall casts on the pitch now
 
 export const QUALITY_TIERS = {
   low: { pixelRatio: 1.0, shadow: 2048, bloom: 0.19, msaa: 0, fxaa: true, grade: true, dof: false },
@@ -158,19 +180,23 @@ function contactTexture() {
     for (let x = 0; x < S; x++) {
       const nx = (x + 0.5) / S * 2 - 1;
       const ny = (y + 0.5) / S * 2 - 1;
-      const r = Math.min(1, Math.hypot(nx, ny));
-      // flat-ish core out to 0.22, then a quartic tail: dark where the body
-      // meets the ground, gone well before the decal's own edge shows.
-      const t = Math.max(0, 1 - Math.max(0, (r - 0.20) / 0.80));
-      const a = Math.pow(t, 2.6);
+      const r = Math.hypot(nx, ny);
+      // Two lobes, not one. A single falloff has to choose between "tight and
+      // dark" and "soft and wide" and always looks like a decal; occlusion in
+      // life is a small very dark core where the sole actually meets grass plus
+      // a much wider, much fainter skirt from the bulk of the body.
+      const core = Math.pow(Math.max(0, 1 - r / 0.50), 1.35);
+      const skirt = Math.pow(Math.max(0, 1 - r / 1.00), 3.0);
+      const a = Math.min(1, 0.72 * core + 0.40 * skirt);
       const i = (y * S + x) * 4;
-      d[i] = 6; d[i + 1] = 14; d[i + 2] = 6;
-      d[i + 3] = Math.round(255 * a * 0.97);
+      // RGB is ignored by the multiply blend below; alpha is the occlusion.
+      d[i] = d[i + 1] = d[i + 2] = 0;
+      d[i + 3] = Math.round(255 * a);
     }
   }
   g.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
+  t.colorSpace = THREE.NoColorSpace;   // an occlusion mask, not a picture
   t.needsUpdate = true;
   _contactTex = t;
   return t;
@@ -295,10 +321,14 @@ const GradeShader = {
     uVigStrength: { value: 0.30 },
     uVigPower: { value: 2.35 },
     uVigCool: { value: 0.055 },
-    uSaturation: { value: 1.20 },
-    uContrast: { value: 1.085 },
-    uLift: { value: new THREE.Vector3(0.004, 0.009, 0.019) },
-    uGain: { value: new THREE.Vector3(1.022, 1.006, 0.988) },
+    uSaturation: { value: 1.22 },
+    uContrast: { value: 1.13 },
+    // Lift is deliberately near zero on R/G now. The old (0.004, 0.009, 0.019)
+    // floor was worth ~2 sRGB counts of milk in every shadow on screen; with the
+    // key/fill ratio doing the work there is nothing to rescue and the lift only
+    // costs black.
+    uLift: { value: new THREE.Vector3(0.000, 0.002, 0.010) },
+    uGain: { value: new THREE.Vector3(1.026, 1.008, 0.984) },
     uGrain: { value: 0.014 },
     uTime: { value: 0 },
   },
@@ -346,7 +376,7 @@ const GradeShader = {
       col = (col - 0.5) * uContrast + 0.5;
 
       // gentle highlight roll so bloom + white kit never clip to a flat plate
-      col = col - 0.055 * col * col * col;
+      col = col - 0.070 * col * col * col;
 
       // --- vignette: even power of normalised radius, so it is smooth at the
       // centre and has no onset ring anywhere. A touch of cool + desaturation
@@ -387,7 +417,7 @@ export function createEngine(canvas) {
 
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.06;
+  renderer.toneMappingExposure = 1.00;
   renderer.shadowMap.enabled = true;
   // PCF, not PCFSoft: the PCF branch is the one replaced by csPCSS above.
   renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -421,16 +451,25 @@ export function createEngine(canvas) {
 
   // --- lighting ------------------------------------------------------------
   // Four sources, each with a job:
-  //   hemi   sky/ground bounce — carries everything the sun cannot reach, and is
-  //          what keeps the roof-shadowed third of the pitch from going muddy
+  //   hemi   sky/ground bounce — carries everything the sun cannot reach
   //   sun    the key, and the only shadow caster
   //   rim    cool back-light roughly opposite the key: puts a cold edge on the
   //          shadow side of every head, which is most of what "3D" reads as
   //   bounce warm low fill off the near stand so the fronts of legs stay warm
-  const hemi = new THREE.HemisphereLight(0xd8ecff, 0x5c8a45, 1.34);
+  //
+  // The ratio between the first and the second IS the contrast of the frame, and
+  // it is the whole reason a shadow reads as a shadow rather than as a slightly
+  // greyer patch of grass. On flat turf the old rig delivered 1.56 of sun against
+  // 1.65 of everything-else — a shadow removed 49% of the light, under an ACES
+  // curve about half a stop, and the panel called the result "soft grey patches".
+  // This rig delivers 2.6 against 1.35: a shadow now removes two thirds of the
+  // light, ~1.5 stops, which is the reference's read. The lit level is held where
+  // it was (3.2 -> 4.0 before tone mapping, which ACES pulls most of the way
+  // back) so nothing clips; only the floor drops.
+  const hemi = new THREE.HemisphereLight(0xd6eaff, 0x4d7a3c, 0.80);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff1d2, 2.62);
+  const sun = new THREE.DirectionalLight(0xfff4dc, 3.34);
   sun.position.copy(SUN_POS);
   sun.castShadow = true;
   sun.shadow.mapSize.set(3072, 3072);
@@ -440,11 +479,13 @@ export function createEngine(canvas) {
   sun.shadow.camera.bottom = -SHADOW_EXTENT;
   sun.shadow.camera.near = SHADOW_NEAR;
   sun.shadow.camera.far = SHADOW_FAR;
-  // 128 m of ortho over 3072 texels is 42 mm per texel. A constant bias of that
-  // order kills acne on the near-planar turf without lifting contact shadows off
-  // the boots (peter-panning); the normal bias does the rest on curved kit.
-  sun.shadow.bias = -0.00035;
-  sun.shadow.normalBias = 0.020;
+  // 88 m of ortho over 3072 texels is 29 mm per texel, and the depth span is now
+  // 130 m, so -0.0003 is 39 mm of push — about one texel. That is enough to kill
+  // acne on the near-planar turf and small enough that the shadow stays welded
+  // to the sole of the boot instead of peter-panning out from under it; the
+  // normal bias does the rest on curved kit.
+  sun.shadow.bias = -0.00030;
+  sun.shadow.normalBias = 0.016;
   sun.shadow.radius = 1;
   // THIS LINE IS THE WHOLE BALL GAME. LightShadow.updateMatrices() refreshes the
   // shadow camera's world matrix every frame but never its projection matrix, so
@@ -463,12 +504,15 @@ export function createEngine(canvas) {
   sun.target.position.copy(SHADOW_CENTER);
   sun.position.copy(SHADOW_CENTER).addScaledVector(_sunDirV, SHADOW_DIST);
 
-  const rim = new THREE.DirectionalLight(0xa9d2ff, 0.86);
-  rim.position.set(-26, 30, -58);
+  // Opposite the new key, so it still lands on the side of every head the sun
+  // misses. Pulled back with the ambient — a rim that survives the contrast cut
+  // would just put the flatness back in through the side door.
+  const rim = new THREE.DirectionalLight(0xa9d2ff, 0.56);
+  rim.position.set(-30, 26, -52);
   scene.add(rim);
 
-  const bounce = new THREE.DirectionalLight(0xffe3bd, 0.30);
-  bounce.position.set(-14, 5, 40);
+  const bounce = new THREE.DirectionalLight(0xffe3bd, 0.24);
+  bounce.position.set(-16, 5, 34);
   scene.add(bounce);
 
   const env = envMap(renderer);
@@ -610,15 +654,37 @@ export function createEngine(canvas) {
   // The generic soft ellipse a character ships as its "shadow" is retargeted to
   // a tight contact-occlusion falloff. Its owner keeps driving position/opacity;
   // only the profile and the footprint change, so nothing fights over it.
+  //
+  // The blend is the important half. Alpha-blending a dark colour over grass
+  // replaces the grass: inside the blob you see flat charcoal, the blade texture
+  // stops, and the eye reads a sticker lying on the pitch. Occlusion is a
+  // MULTIPLY — it scales the light already there and everything underneath keeps
+  // its own detail. Custom blending gives exactly that from the alpha channel:
+  //
+  //     src * ZERO + dst * (1 - srcAlpha)   ==   dst * (1 - occlusion)
+  //
+  // which is why the mask above stores its profile in alpha and leaves RGB at
+  // zero. It also means the owner's per-frame `material.opacity` write (the
+  // fade-out as a player leaves the ground) still scales the whole effect, since
+  // MeshBasicMaterial folds opacity into the alpha it emits.
   function tameContactBlob(m) {
     if (m.userData.__csContact) return;
     m.userData.__csContact = 1;
     const mat = m.material;
     if (!mat || !mat.map) return;
     mat.map = contactTexture();
+    mat.color.setRGB(0, 0, 0);
+    mat.blending = THREE.CustomBlending;
+    mat.blendEquation = THREE.AddEquation;
+    mat.blendSrc = THREE.ZeroFactor;
+    mat.blendDst = THREE.OneMinusSrcAlphaFactor;
+    mat.blendSrcAlpha = THREE.ZeroFactor;
+    mat.blendDstAlpha = THREE.OneFactor;
+    mat.depthWrite = false;
+    mat.toneMapped = false;
     mat.needsUpdate = true;
     if (m.geometry && m.geometry.attributes && m.geometry.attributes.position) {
-      m.geometry.scale(0.72, 0.72, 1);
+      m.geometry.scale(1.14, 1.14, 1);
       m.geometry.computeBoundingSphere();
     }
   }

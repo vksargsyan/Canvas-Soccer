@@ -32,7 +32,7 @@ import {
   headTexture, eyeTexture, hairAtlas, shirtTexture, armTexture, shortsTexture,
   sockTexture, fabricNormal, warpU, warpV, mixHex, darken, lighten, contrastOn,
   SKIN_TONES, HAIR_COLORS, HAIR_STYLES, EYE_COLORS, BOOT_COLORS,
-  FACE_ANCHORS, EYE_PROJ_S,
+  FACE_ANCHORS, EYE_PROJ_S, BROW_SHAPES, KIT_RECIPES,
 } from './player-textures.js';
 
 export { SKIN_TONES, HAIR_COLORS, HAIR_STYLES };
@@ -404,21 +404,84 @@ function buildEyeballs() {
 // NOSE / EARS / NECK
 // ---------------------------------------------------------------------------
 
+/**
+ * NOSE. The reference noses are not blobs — they have a root between the brows,
+ * a bridge that runs down and catches a hard specular, a distinct ball, and
+ * wings that flare. The whole assembly has to break the skull silhouette by
+ * ~15 % of the head radius or the profile reads as a face decal on an egg.
+ */
 function buildNose(w = 1) {
   const parts = [];
   const R = HEAD_R;
   const add = (g, sx, sy, sz, x, y, z) => { g.scale(sx, sy, sz); g.translate(x, y, z); parts.push(g); };
-  // bridge runs from between the brows down to the ball
-  add(new THREE.SphereGeometry(R * 0.098, 10, 8), 0.80 * w, 3.10, 1.02, 0, R * 0.115, R * 0.845);
-  add(new THREE.SphereGeometry(R * 0.118, 10, 8), 0.86 * w, 1.60, 1.02, 0, R * 0.020, R * 0.895);
-  // ball of the nose
-  add(new THREE.SphereGeometry(R * 0.145, 12, 10), 1.00 * w, 0.96, 1.10, 0, -R * 0.075, R * 0.930);
-  // nostril wings
+  // root: the pinch between the brows, narrow and set back
+  add(new THREE.SphereGeometry(R * 0.082, 10, 8), 0.78 * w, 1.85, 0.96, 0, R * 0.225, R * 0.850);
+  // bridge — a long ridge running down to the ball. Narrow across, so the two
+  // side planes stay steep enough to hold shadow while the crest stays lit.
+  add(new THREE.SphereGeometry(R * 0.098, 10, 8), 0.80 * w, 2.30, 1.06, 0, R * 0.090, R * 0.900);
+  add(new THREE.SphereGeometry(R * 0.126, 10, 8), 0.86 * w, 1.55, 1.10, 0, -R * 0.010, R * 0.952);
+  // ball of the nose: the mass that reads at gameplay distance
+  add(new THREE.SphereGeometry(R * 0.168, 14, 11), 1.00 * w, 0.94, 1.16, 0, -R * 0.112, R * 0.975);
+  // septum / underside, so the tip has a shadow line beneath it
+  add(new THREE.SphereGeometry(R * 0.070, 8, 6), 0.90 * w, 0.72, 0.86, 0, -R * 0.196, R * 0.945);
+  // nostril wings, flaring out and slightly back
   for (const s of [-1, 1]) {
-    add(new THREE.SphereGeometry(R * 0.094, 8, 6), 1.02, 0.90, 0.94,
-      s * R * 0.112 * w, -R * 0.108, R * 0.860);
+    add(new THREE.SphereGeometry(R * 0.112, 9, 7), 0.96, 0.86, 0.92,
+      s * R * 0.142 * w, -R * 0.158, R * 0.905);
   }
   return finishFacePart(parts);
+}
+
+/**
+ * BROW RIDGE. Two shaped masses standing proud of the skull along the brow
+ * anchor. They ride the hair material (vertex-coloured) so they cost no draw
+ * call, and they give the painted brow hair an actual form to sit on — which
+ * is the difference between an eyebrow and a sticker.
+ */
+function buildBrowGeo(variant) {
+  const bs = BROW_SHAPES[variant % BROW_SHAPES.length];
+  const parts = [];
+  const NU = 11, NV = 3;
+  for (const s of [-1, 1]) {
+    const pos = [], uvs = [], shade = [], idx = [];
+    for (let i = 0; i <= NU; i++) {
+      const t = i / NU;                                   // 0 inner -> 1 outer
+      // arc across the brow, plus the outward lift of the tail
+      const az = s * (FA.eyeAz + (t - 0.5) * 2 * bs.w);
+      const arch = Math.sin(Math.pow(t, 0.85) * Math.PI) ** 0.7;
+      const thC = FA.browTh - bs.arch * bs.th * arch + s * s * bs.ang * (t - 0.5) * bs.th * 1.4;
+      // taper: thick over the eye, thin at both ends
+      const half = bs.th * (0.35 + 0.65 * Math.sin(Math.pow(t, 0.7) * Math.PI) ** 0.55);
+      const rise = 0.055 * Math.sin(Math.pow(t, 0.8) * Math.PI) ** 0.6;
+      for (let j = 0; j <= NV; j++) {
+        const v = j / NV;
+        const th = thC - half + 2 * half * v;
+        // round the section: fullest in the middle, tucked at both edges
+        const lift = rise * Math.sin(v * Math.PI) ** 0.55 - 0.010;
+        const p = skullPoint(az, th, lift);
+        pos.push(p[0], p[1], p[2]);
+        uvs.push(H_OPAQUE_U0 + ((i * 5) / NU % 1) * (H_OPAQUE_U1 - H_OPAQUE_U0), 1 - v);
+        // lower half of the brow sits in its own shadow
+        shade.push(0.22 + 0.52 * v + 0.10 * Math.sin(i * 2.3));
+      }
+    }
+    const rows = NV + 1;
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const a = i * rows + j, b = a + rows;
+        if (s < 0) idx.push(a, a + 1, b, a + 1, b + 1, b);
+        else idx.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    g.userData.shade = shade;
+    parts.push(g);
+  }
+  return mergeShaded(parts);
 }
 
 function buildEars() {
@@ -941,44 +1004,58 @@ function buildBeard(density = 1) {
 
 function buildHand(s, keeper) {
   const parts = [];
-  const K = keeper ? 1.30 : 1.0;
+  const K = keeper ? 1.26 : 1.0;
   const y0 = -0.196;                                   // wrist
 
-  // wrist / cuff
-  const cuff = new THREE.CylinderGeometry(0.056 * K, 0.050 * K, 0.030, 12, 1);
-  cuff.translate(0, y0 + 0.012, 0);
+  // wrist — a real joint, wider than the forearm end so the hand reads as a
+  // separate mass rather than a continuation of the tube
+  const cuff = new THREE.CylinderGeometry(0.093 * K, 0.086 * K, 0.036, 14, 1);
+  cuff.translate(0, y0 + 0.014, 0);
   parts.push(cuff);
 
-  // palm
-  const palm = blobGeo(0.062 * K, 12);
-  palm.scale(1.16, 0.86, 0.72);
-  palm.translate(0, y0 - 0.044 * K, 0.004);
+  // palm block — chibi hands are mitts: broad across, thin front-to-back
+  const palm = blobGeo(0.106 * K, 14);
+  palm.scale(1.02, 0.94, 0.60);
+  palm.translate(s * 0.006 * K, y0 - 0.078 * K, 0.008 * K);
   parts.push(palm);
 
-  // four fingers, curled forward and fanned
+  // heel of the hand under the little finger
+  const heel = blobGeo(0.062 * K, 9);
+  heel.scale(0.86, 1.05, 0.70);
+  heel.translate(s * 0.062 * K, y0 - 0.088 * K, -0.004 * K);
+  parts.push(heel);
+
+  // four fingers as one curled mass plus grooves between them: at this scale a
+  // readable finger block beats four thin tubes that alias into mush
   for (let i = 0; i < 4; i++) {
     const t = i / 3;
-    const len = (0.072 - Math.abs(t - 0.34) * 0.020) * K;
-    const r = 0.0165 * K;
-    const f = new THREE.CapsuleGeometry(r, len, 2, 6);
+    const len = (0.108 - Math.abs(t - 0.30) * 0.030) * K;
+    const r = 0.0300 * K;
+    const f = new THREE.CapsuleGeometry(r, len, 3, 8);
     f.translate(0, -len * 0.5, 0);
-    f.rotateX(-0.62 - t * 0.14);
-    f.rotateZ(-s * (t - 0.5) * 0.30);
-    f.translate(s * (0.044 - t * 0.030) * K, y0 - 0.086 * K, 0.008 * K);
+    f.rotateX(-0.74 - t * 0.10);
+    f.rotateZ(-s * (t - 0.5) * 0.24);
+    f.translate(s * (0.062 - t * 0.042) * K, y0 - 0.132 * K, 0.012 * K);
     parts.push(f);
   }
-  // thumb, medial and forward
-  const th = new THREE.CapsuleGeometry(0.020 * K, 0.048 * K, 2, 6);
-  th.translate(0, -0.026 * K, 0);
-  th.rotateZ(s * 1.00);
-  th.rotateX(-0.42);
-  th.translate(-s * 0.052 * K, y0 - 0.048 * K, 0.020 * K);
-  parts.push(th);
-  // knuckle mass
-  const kn = blobGeo(0.040 * K, 8);
-  kn.scale(1.35, 0.62, 0.80);
-  kn.translate(0, y0 - 0.080 * K, 0.014 * K);
+  // knuckle ridge across the top of the fingers
+  const kn = blobGeo(0.070 * K, 10);
+  kn.scale(1.42, 0.58, 0.74);
+  kn.translate(s * 0.004 * K, y0 - 0.140 * K, 0.020 * K);
   parts.push(kn);
+
+  // thumb — the single silhouette cue that says "hand". Swings out and forward.
+  const th = new THREE.CapsuleGeometry(0.036 * K, 0.084 * K, 3, 8);
+  th.translate(0, -0.044 * K, 0);
+  th.rotateZ(s * 1.02);
+  th.rotateX(-0.50);
+  th.translate(-s * 0.086 * K, y0 - 0.082 * K, 0.036 * K);
+  parts.push(th);
+  // thenar pad at the base of the thumb
+  const pad = blobGeo(0.050 * K, 8);
+  pad.scale(0.90, 1.05, 0.75);
+  pad.translate(-s * 0.070 * K, y0 - 0.070 * K, 0.026 * K);
+  parts.push(pad);
 
   const m = mergeGeometries(parts, false);
   parts.forEach((p) => p.dispose());
@@ -1186,7 +1263,9 @@ export function createPlayer(cfg = {}) {
     }),
     { rough: 0.78, repeat: [3, 1], normalScale: 0.35 });
 
-  const shoulderX = 0.330 * (0.94 + girth * 0.10);
+  // the arm must clear the torso lathe (radius ~0.38 * girth at shoulder height)
+  // or it disappears into the shirt and the figure reads as armless.
+  const shoulderX = 0.352 + 0.082 * girth;
   for (const s of [-1, 1]) {
     const side = s < 0 ? 'L' : 'R';
     const arm = new THREE.Object3D();
@@ -1197,15 +1276,15 @@ export function createPlayer(cfg = {}) {
 
     // shoulder -> elbow, strongly tapered: a deltoid, not a pipe
     const upper = lathe([
-      [0.00, 0.030, -0.250],
-      [0.06, 0.074, -0.240],
-      [0.24, 0.081, -0.186],
-      [0.50, 0.092, -0.112],
-      [0.72, 0.108, -0.048],
-      [0.88, 0.124, 0.004],
-      [0.96, 0.122, 0.036],
-      [1.00, 0.045, 0.058],
-    ], 16, 14);
+      [0.00, 0.040, -0.252],
+      [0.06, 0.104, -0.240],
+      [0.24, 0.113, -0.186],
+      [0.50, 0.128, -0.112],
+      [0.72, 0.148, -0.048],
+      [0.88, 0.168, 0.004],
+      [0.96, 0.164, 0.038],
+      [1.00, 0.060, 0.062],
+    ], 18, 14);
     addMesh(arm, upper, armMat);
 
     const fore = new THREE.Object3D();
@@ -1216,14 +1295,14 @@ export function createPlayer(cfg = {}) {
 
     // elbow -> wrist, tapering into the hand
     const foreGeo = lathe([
-      [0.00, 0.044, -0.206],
-      [0.10, 0.058, -0.198],
-      [0.28, 0.068, -0.166],
-      [0.50, 0.079, -0.118],
-      [0.74, 0.092, -0.058],
-      [0.92, 0.100, -0.008],
-      [1.00, 0.052, 0.016],
-    ], 16, 14);
+      [0.00, 0.052, -0.206],
+      [0.10, 0.086, -0.198],
+      [0.28, 0.096, -0.166],
+      [0.50, 0.108, -0.118],
+      [0.74, 0.124, -0.058],
+      [0.92, 0.136, -0.008],
+      [1.00, 0.070, 0.018],
+    ], 18, 14);
     // the forearm samples only the bare-skin (or glove) band of the arm strip
     {
       const uv = foreGeo.getAttribute('uv');

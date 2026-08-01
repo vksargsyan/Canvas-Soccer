@@ -138,22 +138,44 @@ export function warpV(v) {
 // ---------------------------------------------------------------------------
 
 export const FACE_ANCHORS = {
-  eyeAz: 0.300, eyeTh: 1.400,
+  eyeAz: 0.312, eyeTh: 1.412,
   // eye socket: half-angles of the carved dish, and its depth in skull radii
   socketH: 0.360, socketUp: 0.105, socketDn: 0.155, socketD: 0.070,
   // eyeball, in head radii (tuned so the rim ellipse lands on the ball)
-  eyeR: 0.17959, eyeC: 0.81429,
-  // rim of the eye opening: the eyelid's inner edge, in radians off the eye axis
-  rimH: 0.135, rimUp: 0.070, rimDn: 0.096,
-  browTh: 1.108,
-  noseTh: 1.585,
-  mouthTh: 1.812,
+  eyeR: 0.17400, eyeC: 0.81429,
+  // Rim of the eye opening, in radians off the eye axis. An adult eye is a
+  // narrow almond — roughly 2 : 1 — not the near-circle a cartoon default gives.
+  // The upper lid sits low enough to clip the top of the iris, which is what
+  // stops the eye reading as a startled googly ball.
+  rimH: 0.130, rimUp: 0.0505, rimDn: 0.0755,
+  browTh: 1.236,
+  noseTh: 1.596,
+  mouthTh: 1.830,
   earAz: 1.520, earTh: 1.505,
 };
 
 // painted rim of the eye opening — the same ellipse the eyelid geometry uses,
 // so the lash line and crease land exactly on the lid edge.
 const RIM_H = FACE_ANCHORS.rimH, RIM_UP = FACE_ANCHORS.rimUp, RIM_DN = FACE_ANCHORS.rimDn;
+
+/**
+ * Per-variant brow: half-width and thickness in radians of skull arc, plus the
+ * outward tilt and the height of the arch. Shared with player.js, which grows a
+ * matching geometric ridge from the same numbers so the painted hair sits on
+ * real form instead of floating on a sphere.
+ *   w    half-width, radians          (eye opening half-width is rimH = 0.130)
+ *   th   thickness, radians
+ *   arch how much the peak rises above the ends
+ *   ang  outer-end lift
+ */
+export const BROW_SHAPES = [
+  { w: 0.176, th: 0.0490, arch: 0.34, ang: 0.10 },
+  { w: 0.190, th: 0.0600, arch: 0.16, ang: 0.17 },
+  { w: 0.166, th: 0.0420, arch: 0.48, ang: 0.03 },
+  { w: 0.198, th: 0.0670, arch: 0.10, ang: 0.22 },
+  { w: 0.180, th: 0.0530, arch: 0.36, ang: 0.13 },
+  { w: 0.170, th: 0.0450, arch: 0.24, ang: 0.01 },
+];
 
 // ---------------------------------------------------------------------------
 // EXPRESSIONS
@@ -402,21 +424,17 @@ export function headTexture(o = {}) {
     }
 
     // ---- brows ------------------------------------------------------------
-    const browShapes = [
-      { th: 0.100, arch: 0.34, ang: 0.10 },
-      { th: 0.122, arch: 0.18, ang: 0.17 },
-      { th: 0.086, arch: 0.46, ang: 0.04 },
-      { th: 0.136, arch: 0.12, ang: 0.22 },
-      { th: 0.108, arch: 0.36, ang: 0.13 },
-      { th: 0.092, arch: 0.26, ang: 0.02 },
-    ];
-    const bs = browShapes[variant % browShapes.length];
-    const browCol = darken(brow, 0.06);
+    // Brows are hair on a ridge, not decals: narrow, close above the eye, only
+    // a little wider than the eye opening. The huge floating caterpillar is the
+    // single loudest "this is a Mii" signal, so these numbers are deliberately
+    // small — real brow presence comes from BROW_SHAPES geometry in player.js.
+    const bs = BROW_SHAPES[variant % BROW_SHAPES.length];
+    const browCol = darken(brow, 0.10);
     for (const s of [-1, 1]) {
       g.save();
       g.translate(eyeX(s), browY - E.raise * 0.055 * AY);
       g.rotate(s * (bs.ang + E.tilt * 0.30));
-      const bw = 0.255 * AX, bt = bs.th * AY;
+      const bw = bs.w * AX, bt = bs.th * AY;
       // soft shadow under the brow so it sits on the ridge instead of floating
       g.save();
       g.filter = 'blur(7px)';
@@ -784,32 +802,34 @@ export function eyeTexture(o = {}) {
     const { c, g } = canvas2d(S, S);
     const R = S / 2;
 
-    // sclera
-    g.fillStyle = '#f2eee8'; g.fillRect(0, 0, S, S);
+    // sclera — never paper white; a real eye reads warm grey in its socket
+    g.fillStyle = '#e6dfd6'; g.fillRect(0, 0, S, S);
     // veins / warmth toward the corners
     g.save();
-    g.globalAlpha = 0.16;
-    const wg = g.createRadialGradient(R, R, R * 0.25, R, R, R);
+    g.globalAlpha = 0.30;
+    const wg = g.createRadialGradient(R, R, R * 0.18, R, R, R);
     wg.addColorStop(0, 'rgba(255,255,255,0)');
-    wg.addColorStop(1, 'rgba(190,140,130,1)');
+    wg.addColorStop(1, 'rgba(178,128,116,1)');
     g.fillStyle = wg; g.fillRect(0, 0, S, S);
     g.restore();
-    // lid shadow across the top of the ball
-    const lg = g.createLinearGradient(0, 0, 0, S * 0.62);
-    lg.addColorStop(0, 'rgba(74,58,48,0.62)');
-    lg.addColorStop(0.55, 'rgba(120,102,90,0.16)');
+    // lid shadow across the top of the ball — heavy, so the eye sits in a socket
+    const lg = g.createLinearGradient(0, 0, 0, S * 0.66);
+    lg.addColorStop(0, 'rgba(58,42,34,0.86)');
+    lg.addColorStop(0.45, 'rgba(104,84,72,0.36)');
     lg.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = lg; g.fillRect(0, 0, S, S * 0.62);
+    g.fillStyle = lg; g.fillRect(0, 0, S, S * 0.66);
     // faint bounce from below
     const bg = g.createLinearGradient(0, S, 0, S * 0.72);
     bg.addColorStop(0, 'rgba(150,126,112,0.22)');
     bg.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = bg; g.fillRect(0, S * 0.72, S, S * 0.28);
 
-    // iris — an angular radius of 20 deg maps to 0.244 of the patch half-width
-    // under the EYE_PROJ_S planar projection player.js uses.
-    const IR = R * 0.244 * 2;
-    const cxp = R, cyp = R + R * 0.035;
+    // Iris. The visible opening is ~45 deg of the eyeball, so a 20 deg iris
+    // leaves a huge field of sclera and the eye reads as a cartoon googly.
+    // 30 deg (dx = sin 30 = 0.5, patch fraction = dx / EYE_PROJ_S) fills the
+    // opening the way the reference does, with the lid clipping its top.
+    const IR = R * (0.5 / EYE_PROJ_S);
+    const cxp = R, cyp = R + R * 0.055;
 
     // limbal ring
     g.fillStyle = css(darken(iris, 0.72));
@@ -842,13 +862,13 @@ export function eyeTexture(o = {}) {
     g.fillStyle = sg; g.fillRect(cxp - IR, cyp - IR, IR * 2, IR * 1.4);
     g.restore();
     // pupil
-    g.fillStyle = '#0a0b0e';
-    g.beginPath(); g.arc(cxp, cyp, IR * 0.42, 0, TAU); g.fill();
-    // catchlight
-    g.fillStyle = 'rgba(255,255,255,0.96)';
-    g.beginPath(); g.arc(cxp - IR * 0.34, cyp - IR * 0.40, IR * 0.26, 0, TAU); g.fill();
-    g.fillStyle = 'rgba(255,255,255,0.40)';
-    g.beginPath(); g.arc(cxp + IR * 0.30, cyp + IR * 0.34, IR * 0.13, 0, TAU); g.fill();
+    g.fillStyle = '#08090c';
+    g.beginPath(); g.arc(cxp, cyp, IR * 0.38, 0, TAU); g.fill();
+    // catchlight: one crisp specular, one dim bounce from the turf below
+    g.fillStyle = 'rgba(255,255,255,0.97)';
+    g.beginPath(); g.arc(cxp - IR * 0.34, cyp - IR * 0.40, IR * 0.175, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.34)';
+    g.beginPath(); g.arc(cxp + IR * 0.30, cyp + IR * 0.36, IR * 0.095, 0, TAU); g.fill();
 
     // everything outside the visible cap is buried in the skull; keep it dark so
     // no bright sliver can ever leak at a grazing angle
