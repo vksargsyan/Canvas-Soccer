@@ -23,6 +23,10 @@
 
 import * as THREE from 'three';
 import { BALL_R, MAX_BALL_SPEED, PLAYER_R } from '../core/constants.js';
+import {
+  stepBodies, resolveBallContest, attachBall, resetBallPossession,
+  shieldOwner, contestOf, LOCO,
+} from './locomotion.js';
 
 // --- tuning (owned by the ball domain) --------------------------------------
 // The world is roughly half life-size (60 x 40 pitch), so gravity is scaled up to
@@ -69,6 +73,7 @@ export function createBallBody(cfg = {}) {
     inNet: false,
     lastTouch: null,
     lastTouchTeam: -1,
+    players: null,              // set by ballPlayerContact; used by the contest
     impactId: 0,
     impactSpeed: 0,
     kickId: 0,
@@ -84,6 +89,9 @@ export function createBallBody(cfg = {}) {
       // grace period: a restart that drops the ball on the touchline must not
       // immediately re-trigger the out-of-play event that caused it
       outLatch = 0.35;
+      // a placed ball belongs to nobody: no shield, and no challenge veto to
+      // stop the man walking onto it from taking the set piece
+      resetBallPossession(body);
       return body;
     },
 
@@ -132,6 +140,11 @@ export function createBallBody(cfg = {}) {
 
     step(dt, world) {
       const w = world || {};
+      // Possession is resolved here, at the top of the ball's step: it is the
+      // first moment in the frame where every controller has had its say and
+      // `lastTouch` reflects who actually went for it. A challenge that has not
+      // been earned is rewound before the ball ever moves on it.
+      resolveBallContest(body, body.players || w.players || null, dt);
       const s = vel.length();
       const n = clamp(Math.ceil((s * dt) / (BALL_R * SUB_TRAVEL)), 1, SUB_MAX);
       const h = dt / n;
@@ -411,23 +424,22 @@ export function createBallBody(cfg = {}) {
 // player <-> player separation
 // ---------------------------------------------------------------------------
 
+/**
+ * One body pass for the frame.
+ *
+ * The name is historical — this used to be a naive overlap push. It is now the
+ * single entry point into sim/locomotion.js, which turns the velocity the
+ * controllers REQUESTED into the velocity a human body could actually produce
+ * (bounded accel/decel, speed-dependent turn rate, orientation lag, stamina),
+ * then resolves player-vs-player contact with mass, bracing and shielding.
+ *
+ * Call it once per frame, after `pos += vel * dt`.
+ */
 export function separatePlayers(players, dt) {
-  for (let i = 0; i < players.length; i++) {
-    for (let j = i + 1; j < players.length; j++) {
-      const a = players[i], b = players[j];
-      if (a.down || b.down) continue;
-      const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
-      const min = PLAYER_R * 2 * 0.82;
-      const d2 = dx * dx + dz * dz;
-      if (d2 > min * min || d2 < 1e-6) continue;
-      const d = Math.sqrt(d2);
-      const push = (min - d) * 0.5;
-      const nx = dx / d, nz = dz / d;
-      a.pos.x -= nx * push; a.pos.z -= nz * push;
-      b.pos.x += nx * push; b.pos.z += nz * push;
-    }
-  }
+  stepBodies(players, dt);
 }
+
+export { stepBodies, shieldOwner, contestOf, LOCO };
 
 // ---------------------------------------------------------------------------
 // player <-> ball
@@ -455,6 +467,14 @@ const BAND = {
  */
 export function ballPlayerContact(body, players, dt, events = {}) {
   let touched = null;
+  // hand the ball to the body pass so it can run the hold-off, and to the ball
+  // step so it can resolve challenges
+  body.players = players;
+  attachBall(players, body);
+  // the man in control right now; an opponent has to beat him for the ball
+  // before a brush of the shin can count as taking it off him
+  const owner = shieldOwner(body);
+
   for (const p of players) {
     if (p.down) continue;
     // Three bands, not one cylinder: the boots are narrow and dead, the torso is
@@ -475,6 +495,12 @@ export function ballPlayerContact(body, players, dt, events = {}) {
     const d = Math.sqrt(d2) || 1e-4;
     const nx = dx / d, nz = dz / d;
 
+    // Is this a challenger who has not yet beaten the man in possession? If so
+    // he is reaching round a body: he can brush the ball, he cannot take it.
+    const contested = !!owner && p !== owner && p.team !== owner.team
+      && contestOf(p) < 1;
+    const grip = contested ? 0.22 : 1;
+
     body.pos.x = p.pos.x + nx * reach;
     body.pos.z = p.pos.z + nz * reach;
 
@@ -486,13 +512,14 @@ export function ballPlayerContact(body, players, dt, events = {}) {
     let impact = 0;
     if (vn < 0) {
       // restitution against the body, resolved in the player's frame
-      body.vel.x -= (1 + band.e) * vn * nx;
-      body.vel.z -= (1 + band.e) * vn * nz;
+      const e = contested ? band.e * 0.4 : band.e;
+      body.vel.x -= (1 + e) * vn * nx;
+      body.vel.z -= (1 + e) * vn * nz;
       // scuffed contact spins the ball
       const vt = -relx * nz + relz * nx;
-      body.spin.y += vt * band.spin;
+      body.spin.y += vt * band.spin * grip;
       // a head or chest contact pops the ball up; a boot keeps it down
-      if (band.lift > 0) body.vel.y += Math.min(-vn, 14) * band.lift;
+      if (band.lift > 0) body.vel.y += Math.min(-vn, 14) * band.lift * grip;
       impact = -vn;
     }
     // momentum transfer: a striker running onto the ball drives it on
@@ -500,7 +527,7 @@ export function ballPlayerContact(body, players, dt, events = {}) {
     if (pv > 0.2) {
       const along = (pvx * nx + pvz * nz) / pv;
       if (along > 0) {
-        const push = Math.min(1, 26 * dt) * along;
+        const push = Math.min(1, 26 * dt) * along * grip;
         body.vel.x += (pvx * 1.28 - body.vel.x) * push;
         body.vel.z += (pvz * 1.28 - body.vel.z) * push;
         impact = Math.max(impact, pv * along * 0.4);
@@ -512,10 +539,12 @@ export function ballPlayerContact(body, players, dt, events = {}) {
       body.spin.x = body.vel.z / BALL_R;
     }
 
-    body.lastTouch = p;
-    body.lastTouchTeam = p.team;
-    body.lastTouchPart = band.kind;
-    touched = p;
+    if (!contested) {
+      body.lastTouch = p;
+      body.lastTouchTeam = p.team;
+      body.lastTouchPart = band.kind;
+      touched = p;
+    }
     if (events.onTouch) events.onTouch(p, impact, band.kind);
   }
   return touched;
