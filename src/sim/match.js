@@ -81,10 +81,17 @@ export function createMatch(ctx) {
       const dir = TEAMS[a.team].dir;
       const x = k.x * dir;
       const z = k.z;
+      const fromX = a.pos.x, fromZ = a.pos.z;
       a.pos.set(clamp(x, -HALF_W + 2, HALF_W - 2), 0, clamp(z, -HALF_D + 2, HALF_D - 2));
-      // He was carried here by the whistle, not by his legs: zero the body
-      // itself rather than asking it to brake (see locomotion.placeMotion).
-      placeMotion(a);
+      // Was he CARRIED here, or was he already standing on the spot? A player
+      // teleported across the pitch has no motion left to model, so the body is
+      // zeroed outright (see locomotion.placeMotion) — the position jumped, and
+      // the velocity going with it is what stops a restart inheriting the pace
+      // of whatever was happening before the whistle. A player who barely moves
+      // is a different case: he is on his mark and pulling up, so he brakes
+      // through the envelope like anyone else and stops over a stride.
+      if (Math.hypot(a.pos.x - fromX, a.pos.z - fromZ) > 1.0) placeMotion(a);
+      else a.vel.set(0, 0, 0);
       a.down = false;
       a.cool = 0;
       a.kickLock = 0;

@@ -755,10 +755,27 @@ function runPassing(seed) {
 //
 // A contest where the carrier is still holding at the cap counts as a censored
 // hold of CONTEST_CAP seconds, which is the conservative reading.
+//
+// THE CARRIER IS KEPT IN MIDFIELD. Staging him there is not enough: he is a
+// striker with the ball and an empty pitch in front of him, so he dribbles the
+// length of it and scores in about three seconds — and every trial that ended
+// that way used to be recorded as "still holding at the cap", i.e. as a hold of
+// CONTEST_CAP - tContact. Thirteen of twenty-eight trials ended in a goal or a
+// restart, which is why this scenario reported an 8.2 s median hold off contests
+// that actually lasted half a second. So when the carry reaches the final third,
+// the carrier, the defender AND the ball are shifted back down the pitch by the
+// SAME vector: velocities, separations, possession and the challenge in progress
+// are all untouched, the contest simply gets the full ten seconds to resolve.
 
 const CONTESTS = 28;
 const CONTEST_CAP = 10.0;
 const CHALLENGE_R = 1.5;
+// The shift is deliberately SHORT. It has to put the duel back in midfield
+// without dropping the carrier into his own defensive third: past u < -12
+// sim/ai.js reads him as a man clearing his lines and he hoofs it, which ends
+// the contest just as surely as scoring did.
+const SH_WRAP_X = 6;              // shift back before the shot/finish logic fires
+const SH_WRAP_BY = 12;
 
 function runShielding(seed) {
   const holds = [];
@@ -801,6 +818,7 @@ function runShielding(seed) {
 
     let tContact = -1;
     let tLoss = -1;
+    let tEnd = CONTEST_CAP;
     const steps = Math.round(CONTEST_CAP / FIXED);
     for (let i = 0; i < steps; i++) {
       W.step(FIXED);
@@ -814,17 +832,29 @@ function runShielding(seed) {
       const lostToDefender = W.body.lastTouchTeam === defender.team
         || (W.ai.carrier && W.ai.carrier.team === defender.team);
       if (lostToDefender) { tLoss = t; break; }
-      if (W.match.state.phase !== 'play') break;
+      if (W.match.state.phase !== 'play') { tEnd = t; break; }
+
+      // keep the contest in midfield — one translation, applied to the whole
+      // picture, so nothing about the duel changes
+      const wx = Math.max(carrier.pos.x, W.body.pos.x);
+      if (wx > SH_WRAP_X) {
+        carrier.pos.x -= SH_WRAP_BY;
+        defender.pos.x -= SH_WRAP_BY;
+        W.body.pos.x -= SH_WRAP_BY;
+      }
     }
 
     if (tContact < 0) {
       // the defender never got near enough to challenge; not a contest
       noContact++;
-      holds.push(CONTEST_CAP);
+      holds.push(tEnd);
       held++;
       continue;
     }
-    if (tLoss < 0) { holds.push(CONTEST_CAP - tContact); held++; continue; }
+    // Still holding when the trial ended. Censor at what was actually WATCHED —
+    // if the ball went out after four seconds that is a four second observation,
+    // not a ten second one.
+    if (tLoss < 0) { holds.push(Math.max(0, tEnd - tContact)); held++; continue; }
 
     const hold = Math.max(0, tLoss - tContact);
     holds.push(hold);

@@ -97,16 +97,19 @@ export const LOCO = {
   controlKeep: 4.20,        // and he KEEPS it out to here: a dribble touch puts
                             // the ball a stride clear by design, and a man who
                             // has to win it back on every stride is not carrying
+  ownerMargin: 0.55,        // how much nearer than the man in possession another
+                            // player has to be before the ball reads as his
   // --- the challenge ---
   contestRadius: 1.49,      // he has to be this tight to be working
-  // Per second, even matchup, challenger in front. A full challenge is therefore
-  // a couple of seconds of staying tight, not a quarter of a second: at 4.00 a
-  // defender who got near the carrier won the ball in half a second, which is
-  // the snatch this whole model exists to prevent -- it was simply happening
-  // one step further along than the poke it vetoes.
+  // Per second, even matchup, challenger in front. This is a TIME, and at 4.00
+  // it was a quarter of a second: the model that exists to make dispossession
+  // gradual was itself instant, and the measured 0.53 s hold was minChallenge,
+  // not the contest. A defender who gets tight now has to stay tight — and a
+  // defender who gives a yard keeps most of the work he has already done, which
+  // is what stops a duel resetting every time the carrier takes a touch.
   contestBase: 0.60,
-  contestShieldMin: 0.50,   // multiplier when fully shielded (challenger behind)
-  contestDecay: 0.22,       // per second once he backs off
+  contestShieldMin: 0.70,   // multiplier when fully shielded (challenger behind)
+  contestDecay: 0.10,       // per second once he backs off
   pokeCredit: 0.14,         // progress earned by a rejected poke, and only if
   lungeCredit: 0.30,        // ...he was tight enough for it to have been a
                             // challenge at all — a lunge from two metres is a
@@ -706,11 +709,17 @@ export function resolveBallContest(body, players, dt) {
       // He has to have had it under control once to keep it out to controlKeep,
       // and he has to still be the nearest man to it — that is the difference
       // between a heavy touch he will run onto and a pass that has left him.
+      // ...and "nearest" has a MARGIN. In a duel the challenger's leading foot
+      // is repeatedly a few centimetres closer to the ball than the carrier's
+      // is, which is not the same thing as the ball being his. Without the
+      // margin possession flickers between the two men for the whole contest,
+      // and every flicker used to wipe the challenge in progress — the reason a
+      // defender could stand on a carrier for nine seconds and never win it.
       let nearest = true;
       if (lt === S.owner) {
         for (const p of list) {
           if (p === lt || p.down) continue;
-          if (Math.hypot(body.pos.x - p.pos.x, body.pos.z - p.pos.z) < d) {
+          if (Math.hypot(body.pos.x - p.pos.x, body.pos.z - p.pos.z) < d - LOCO.ownerMargin) {
             nearest = false; break;
           }
         }
@@ -733,7 +742,14 @@ export function resolveBallContest(body, players, dt) {
 
   if (best && best === S.owner) S.ownTime += dt;
   else if (best !== S.owner) {
-    clearContests(list);
+    // A challenge is only wiped when the ball actually CHANGES HANDS. Losing
+    // track of the owner for a few frames — the ball skipping up out of the
+    // control band, the carrier's own touch running momentarily long — is not
+    // an outcome, and resetting the contest on it means the defender starts
+    // from zero over and over and the duel never resolves. Everything short of
+    // a genuine change of possession leaves the challenge standing; it decays
+    // on its own in step 3 if he stops working.
+    if (best && S.owner && best.team !== S.owner.team) clearContests(list);
     S.owner = best;
     S.ownTime = 0;
   }
