@@ -23,6 +23,7 @@ import {
   BOX_W, RUN_SPEED,
 } from '../core/constants.js';
 import { KICKOFF_ATTACK, KICKOFF_DEFEND } from './ai.js';
+import { placeMotion } from './locomotion.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const HALF_SECONDS = MATCH_SECONDS / 2;
@@ -81,7 +82,9 @@ export function createMatch(ctx) {
       const x = k.x * dir;
       const z = k.z;
       a.pos.set(clamp(x, -HALF_W + 2, HALF_W - 2), 0, clamp(z, -HALF_D + 2, HALF_D - 2));
-      a.vel.set(0, 0, 0);
+      // He was carried here by the whistle, not by his legs: zero the body
+      // itself rather than asking it to brake (see locomotion.placeMotion).
+      placeMotion(a);
       a.down = false;
       a.cool = 0;
       a.kickLock = 0;

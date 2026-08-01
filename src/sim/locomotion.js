@@ -324,6 +324,34 @@ export function requestVelocity(a, vx, vz) {
 export function requestStop(a) { return requestVelocity(a, 0, 0); }
 
 /**
+ * A PLACEMENT, not a stop. The whistle has gone and the player has been picked
+ * up and put on a spot, so there is no deceleration to model: the body state is
+ * zeroed outright rather than asked to brake.
+ *
+ * The distinction matters because `agent.vel` is a request (see THE CONTRACT).
+ * `vel.set(0,0,0)` after a teleport only says "I would like to be stopped", and
+ * the body underneath still carries its pre-whistle pace: the next reader gets
+ * a velocity projected off a speed the player is no longer travelling at, which
+ * shows up as a metre-per-second step with no bounded ramp behind it. Anything
+ * that MOVES a player without him running there — kickoff, a set piece, a keeper
+ * placement — must call this instead of writing zeros into the request.
+ */
+export function placeMotion(a) {
+  const L = locoState(a);
+  L.rx = 0; L.rz = 0;
+  L.vx = 0; L.vz = 0;
+  L.cx = 0; L.cz = 0;
+  L.sp0 = 0;
+  L.dirty = false;
+  L.lean = 0; L.leanX = 0; L.leanZ = 0;
+  L.pressure = 0;
+  L.shielding = 0;
+  a.lean = 0;
+  if (typeof a.yaw === 'number') L.yaw = a.yaw;
+  return a;
+}
+
+/**
  * Seek: aim at (tx,tz) at up to `speed`, easing off on arrival. Returns the
  * distance remaining. A drop-in replacement for a hand-rolled steering blend —
  * the smoothing is the locomotion model's job now, not the caller's.
