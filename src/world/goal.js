@@ -78,9 +78,14 @@ function netTex() {
   // as a dull tinted plane at any distance. With the cord living purely in the
   // alpha channel of raw data, every mip level stays pure white.
   const data = new Uint8Array(S * S * 4);
-  const HALF = 2.05;      // cord half width, px
+  // Cord width is set by MEASURING the reference: its netting whitens the
+  // hoarding behind it by about 19%, so the cord has to cover roughly a fifth
+  // of the sheet. Physically a 3 mm twine on a 120 mm mesh covers 5%; the
+  // reference is exaggerated, and matching the exaggeration is what makes the
+  // net read as fabric at gameplay distance instead of vanishing.
+  const HALF = 2.9;       // cord half width, px (of a 64 px cell)
   const THIN = 0.75;      // secondary thread through the middle of each cell
-  const KNOT = 3.0;
+  const KNOT = 3.8;
   const band = (q, h, a) => a * Math.min(1, Math.max(0, h + 0.5 - q));
   for (let y = 0; y < S; y++) {
     const my = y % step, dy = Math.min(my, step - my);
