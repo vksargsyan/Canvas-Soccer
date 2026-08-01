@@ -15,13 +15,22 @@ python3 -m http.server 8000
 
 ## Controls
 
-| Input | Action |
-|---|---|
-| **WASD** / **Arrows**, or the on-screen stick | Move the selected player |
-| **Space** | Charge and release a shot |
-| **Shift**, or SPRINT | Sprint |
-| **Q**, or SLIDE | Slide tackle |
-| **E**, or SWITCH | Switch player |
+The left hand plays the game, the right hand steers — so **A**, **S** and **D**
+are actions, not movement, and two of them change meaning with the ball. The
+on-screen legend says which half of the game you are in and relabels itself.
+
+| Input | Attacking | Defending |
+|---|---|---|
+| **Arrows**, left stick, or the on-screen stick | Move the selected player | ← |
+| **D**, or pad **A** | Shoot — hold to power it | ← |
+| **S**, or pad **X** | Pass | Tap: switch player · Hold: close him down |
+| **A**, or pad **B** | Lob | Slide tackle |
+| **Shift**, or pad **RT** | Sprint | ← |
+| **H** · **Esc** | Show the controls · Pause | ← |
+
+Holding **S** while defending does not take the ball off anyone by itself: it
+puts your man on the carrier's shoulder and leans on him, and the contested
+possession model decides whether the challenge is won.
 
 The first click or keypress starts live play (and unlocks audio — browsers require a
 user gesture before an `AudioContext` may start).
