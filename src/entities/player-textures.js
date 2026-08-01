@@ -365,17 +365,17 @@ export function headTexture(o = {}) {
     g.save();
     g.filter = blurPx(18);
     const wb = g.createLinearGradient(0, PY(1.50), 0, PY(1.73));
-    wb.addColorStop(0.00, 'rgba(232,138,92,0)');
-    wb.addColorStop(0.50, 'rgba(232,138,92,0.28)');
-    wb.addColorStop(1.00, 'rgba(228,124,80,0.50)');
+    wb.addColorStop(0.00, 'rgba(236,140,120,0)');
+    wb.addColorStop(0.50, 'rgba(236,140,120,0.28)');
+    wb.addColorStop(1.00, 'rgba(234,130,126,0.50)');
     g.fillStyle = wb;
     g.fillRect(0, PY(1.50), W, PY(1.73) - PY(1.50));
-    g.fillStyle = 'rgba(228,124,80,0.50)';
+    g.fillStyle = 'rgba(234,130,126,0.50)';
     g.fillRect(0, PY(1.73), W, PY(2.74) - PY(1.73));
     // fade it out before the neck so the ramp never ends on a hard edge
     const wb2 = g.createLinearGradient(0, PY(2.74), 0, PY(2.94));
-    wb2.addColorStop(0, 'rgba(228,124,80,0.50)');
-    wb2.addColorStop(1, 'rgba(228,124,80,0)');
+    wb2.addColorStop(0, 'rgba(234,130,126,0.50)');
+    wb2.addColorStop(1, 'rgba(234,130,126,0)');
     g.fillStyle = wb2;
     g.fillRect(0, PY(2.74), W, H - PY(2.74));
     g.filter = 'none';
