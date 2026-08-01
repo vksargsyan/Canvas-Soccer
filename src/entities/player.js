@@ -1933,6 +1933,12 @@ export function createSquad(teamIndex, rng) {
   // sample without replacement so no two team-mates share a look
   const skins = shuffled(SKIN_TONES, rng).slice(0, 6);
   const hairs = shuffled(HAIR_STYLES, rng).slice(0, 6);
+  // Style was already sampled without replacement, but COLOUR was rng.pick, so
+  // three team-mates drawing the same brown out of twelve was routine and the
+  // panel counted four identical heads in a squad of ten. Hair reads as
+  // style-plus-colour at any distance past a few metres, and past that distance
+  // colour is doing most of the work — so it has to be sampled the same way.
+  const hairCols = shuffled(HAIR_COLORS, rng).slice(0, 6);
   const boots = shuffled(BOOT_COLORS, rng).slice(0, 6);
   // the club's look now comes from KIT_RECIPES, keyed off the team index
   const kitStyle = 'club';
@@ -1948,7 +1954,7 @@ export function createSquad(teamIndex, rng) {
       isKeeper,
       skin: skins[i],
       hair: hairs[i],
-      hairColor: rng.pick(HAIR_COLORS),
+      hairColor: hairCols[i],
       faceVariant: (i * 2 + teamIndex * 3 + rng.int(2)) % 6,
       beard: rng.chance(0.30) ? 2 : rng.chance(0.34) ? 1 : 0,
       kitStyle: isKeeper ? 'keeper' : kitStyle,
