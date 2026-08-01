@@ -228,10 +228,16 @@ export function createMatch(ctx) {
 
     if (!taker || !ai()) { clearSetPiece(); goLive(); return; }
 
-    // pick a real target rather than hoofing it into space
+    // Pick a real target rather than hoofing it into space, and tell the pass
+    // assist which way this restart is supposed to go. A throw-in taken from
+    // outside the line and aimed along it is a throw-in straight back to them:
+    // the cone bias points it INFIELD, which is what a thrower is looking for.
+    const inward = -(Math.sign(sp.z) || 1);
     const opts = kind === 'goalkick'
-      ? { minDist: 7, maxDist: 34, floor: -1e9 }
-      : { minDist: 4, maxDist: kind === 'corner' ? 22 : 20, floor: -1e9 };
+      ? { minDist: 7, maxDist: 34, floor: -1e9, dirX: dir, dirZ: 0, cone: 0.16 }
+      : kind === 'corner'
+        ? { minDist: 4, maxDist: 22, floor: -1e9, dirX: -dir, dirZ: 0, cone: 0.20 }
+        : { minDist: 4, maxDist: 17, floor: -1e9, dirX: dir * 0.6, dirZ: inward, cone: 0.34 };
     const p = ai().bestPass(taker, opts);
     let tx = p ? p.x : sp.aimX;
     let tz = p ? p.z : sp.aimZ;
