@@ -10,3 +10,12 @@ package-lock.json
 *.log
 shots-*/
 motion-*/
+
+# Agent scratch harnesses. These get written to the repo root while debugging a
+# render or a physics probe; they are throwaway and must never ship next to
+# index.html. Real dev tools live in dev/ and are committed deliberately.
+dbg*.mjs
+dbg*.html
+probe*.mjs
+blank.html
+_*.mjs
