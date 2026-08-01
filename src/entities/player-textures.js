@@ -1133,17 +1133,27 @@ function squadNumber(g, n, x, y, size, fill, edge) {
   g.restore();
 }
 
-/** readable club crest: shield + bar + team initial + star */
-function crest(g, x, y, s, shell, field, ink, letter) {
+/** readable club crest. `shape` picks the silhouette so the two clubs differ. */
+function crest(g, x, y, s, shell, field, ink, letter, shape = 'shield') {
   g.save();
   g.translate(x, y); g.scale(s, s);
-  const path = () => {
-    g.beginPath();
-    g.moveTo(-26, -30); g.lineTo(26, -30); g.lineTo(26, 6);
-    g.bezierCurveTo(26, 26, 14, 36, 0, 42);
-    g.bezierCurveTo(-14, 36, -26, 26, -26, 6);
-    g.closePath();
-  };
+  const path = shape === 'round'
+    ? () => {
+      // roundel with a flat top bar — a visibly different club identity
+      g.beginPath();
+      g.moveTo(-28, -26);
+      g.lineTo(28, -26);
+      g.lineTo(28, -6);
+      g.arc(0, -6, 28, 0, Math.PI);
+      g.closePath();
+    }
+    : () => {
+      g.beginPath();
+      g.moveTo(-26, -30); g.lineTo(26, -30); g.lineTo(26, 6);
+      g.bezierCurveTo(26, 26, 14, 36, 0, 42);
+      g.bezierCurveTo(-14, 36, -26, 26, -26, 6);
+      g.closePath();
+    };
   path();
   g.fillStyle = css(shell); g.fill();
   g.lineWidth = 5; g.strokeStyle = 'rgba(0,0,0,0.55)'; g.stroke();
@@ -1223,7 +1233,9 @@ export function shirtTexture(o = {}) {
   const style = o.style ?? 'plain';
   const letter = o.letter ?? 'C';
   const name = o.name ?? '';
-  const key = `shirt:${kit}:${trim}:${alt}:${number}:${style}:${letter}:${name}`;
+  const R = o.recipe ?? KIT_RECIPES[0];
+  const key = `shirt:${kit}:${trim}:${alt}:${number}:${style}:${letter}:${name}`
+    + `:${R.body}:${R.shoulder}:${R.collar}:${R.crest}:${R.sidePanel ? 1 : 0}`;
 
   return memo(key, () => {
     const W = 1280, H = 640;
@@ -1232,22 +1244,47 @@ export function shirtTexture(o = {}) {
 
     g.fillStyle = css(kit); g.fillRect(0, 0, W, H);
 
-    if (style === 'stripes') {
+    // ---- body graphic ------------------------------------------------------
+    const body = style === 'keeper' ? 'keeper' : R.body;
+    if (body === 'stripes') {
       g.fillStyle = css(alt);
       for (let i = 0; i < 9; i++) g.fillRect((i * 2 + 0.5) * (W / 18), 0, W / 18, H);
-    } else if (style === 'hoops') {
+    } else if (body === 'pinstripe') {
+      // tonal ground stripes, then one bold contrast pair per quarter so the
+      // shirt still reads as striped from the far touchline
+      g.save(); g.globalAlpha = 0.16; g.fillStyle = css(darken(kit, 0.62));
+      for (let x = 0; x < W; x += 22) g.fillRect(x, 0, 9, H);
+      g.restore();
+      g.fillStyle = css(alt);
+      for (const u of [0.14, 0.36, 0.64, 0.86]) {
+        g.fillRect(W * u - W * 0.021, 0, W * 0.042, H);
+      }
+      g.fillStyle = rgba(trim, 0.72);
+      for (const u of [0.14, 0.36, 0.64, 0.86]) {
+        g.fillRect(W * u - W * 0.027, 0, W * 0.006, H);
+        g.fillRect(W * u + W * 0.021, 0, W * 0.006, H);
+      }
+    } else if (body === 'hoops') {
       g.fillStyle = css(alt);
       for (let i = 0; i < 4; i++) g.fillRect(0, H * (0.14 + i * 0.20), W, H * 0.095);
-    } else if (style === 'sash') {
-      g.fillStyle = css(trim);
-      g.beginPath();
-      g.moveTo(W * 0.05, H); g.lineTo(W * 0.40, 0); g.lineTo(W * 0.54, 0); g.lineTo(W * 0.19, H);
-      g.closePath(); g.fill();
-    } else if (style === 'halves') {
+    } else if (body === 'sash') {
+      // a real sash: bordered, and mirrored on the back so the wrap is coherent
+      for (const [x0, dir] of [[0.06, 1], [0.94, -1]]) {
+        g.save();
+        g.beginPath();
+        g.moveTo(W * x0, H);
+        g.lineTo(W * (x0 + dir * 0.34), 0);
+        g.lineTo(W * (x0 + dir * 0.475), 0);
+        g.lineTo(W * (x0 + dir * 0.135), H);
+        g.closePath();
+        g.fillStyle = css(trim); g.fill();
+        g.lineWidth = H * 0.016; g.strokeStyle = rgba(darken(kit, 0.45), 0.85); g.stroke();
+        g.restore();
+      }
+    } else if (body === 'halves') {
       g.fillStyle = css(alt);
       g.fillRect(0, 0, W * 0.25, H); g.fillRect(W * 0.75, 0, W * 0.25, H);
-    } else if (style === 'keeper') {
-      // keeper: dark yoke + bold chest band, unmistakable at any distance
+    } else if (body === 'keeper') {
       g.fillStyle = css(darken(kit, 0.34));
       g.fillRect(0, 0, W, H * 0.30);
       g.fillStyle = css(lighten(kit, 0.42));
@@ -1257,16 +1294,55 @@ export function shirtTexture(o = {}) {
       g.save(); g.globalAlpha = 0.12; g.fillStyle = css(darken(kit, 0.7));
       for (let x = 0; x < W; x += 26) { g.fillRect(x, 0, 13, H); }
       g.restore();
-    } else if (style === 'shoulders') {
-      g.fillStyle = css(alt);
-      g.fillRect(0, 0, W, H * 0.22);
     }
 
-    // pinstripe interest for otherwise plain kits
-    if (style === 'plain' || style === 'shoulders') {
-      g.save(); g.globalAlpha = 0.09; g.fillStyle = css(darken(kit, 0.55));
-      for (let x = 0; x < W; x += 26) g.fillRect(x, 0, 8, H);
+    // ---- shoulder construction --------------------------------------------
+    // The reference kits all break at the shoulder somehow — a yoke, a raglan
+    // seam, or angled panels. It is the cheapest way to make two clubs in the
+    // same palette read as different manufacturers' templates.
+    if (R.shoulder === 'yoke') {
+      g.fillStyle = css(alt); g.fillRect(0, 0, W, H * 0.185);
+      g.fillStyle = rgba(trim, 0.9); g.fillRect(0, H * 0.185, W, H * 0.016);
+    } else if (R.shoulder === 'chevron') {
+      g.save();
+      for (const cxq of [FRONT, BACK]) {
+        for (const s of [-1, 1]) {
+          g.beginPath();
+          g.moveTo(cxq + s * W * 0.030, 0);
+          g.lineTo(cxq + s * W * 0.255, 0);
+          g.lineTo(cxq + s * W * 0.255, H * 0.135);
+          g.lineTo(cxq + s * W * 0.052, H * 0.245);
+          g.closePath();
+          g.fillStyle = css(alt); g.fill();
+          g.lineWidth = H * 0.013; g.strokeStyle = rgba(trim, 0.85); g.stroke();
+        }
+      }
       g.restore();
+    } else if (R.shoulder === 'raglan') {
+      g.save();
+      for (const cxq of [FRONT, BACK]) {
+        for (const s of [-1, 1]) {
+          g.beginPath();
+          g.moveTo(cxq + s * W * 0.062, 0);
+          g.quadraticCurveTo(cxq + s * W * 0.150, H * 0.075, cxq + s * W * 0.255, H * 0.285);
+          g.lineTo(cxq + s * W * 0.255, 0);
+          g.closePath();
+          g.fillStyle = css(alt); g.fill();
+          g.lineWidth = H * 0.014; g.strokeStyle = rgba(trim, 0.80); g.stroke();
+        }
+      }
+      g.restore();
+    }
+
+    // contrast flank panel
+    if (R.sidePanel) {
+      for (const u of [0.0, 0.5, 1.0]) {
+        g.fillStyle = rgba(alt, 0.95);
+        g.fillRect(W * u - W * 0.024, H * 0.16, W * 0.048, H * 0.84);
+        g.fillStyle = rgba(trim, 0.85);
+        g.fillRect(W * u - W * 0.031, H * 0.16, W * 0.007, H * 0.84);
+        g.fillRect(W * u + W * 0.024, H * 0.16, W * 0.007, H * 0.84);
+      }
     }
 
     weaveOverlay(g, W, H, 0.040);
@@ -1325,21 +1401,56 @@ export function shirtTexture(o = {}) {
     g.fillStyle = rgba(darken(kit, 0.5), 0.85); g.fillRect(0, H * 0.962, W, H * 0.038);
     g.fillStyle = rgba(trim, 0.9); g.fillRect(0, H * 0.944, W, H * 0.014);
 
-    // collar band + V notch at the chest
+    // ---- collar ------------------------------------------------------------
     g.fillStyle = css(trim); g.fillRect(0, 0, W, H * 0.062);
     g.fillStyle = rgba(darken(trim, 0.40), 0.6); g.fillRect(0, H * 0.058, W, H * 0.012);
-    g.fillStyle = css(darken(kit, 0.34));
-    g.beginPath();
-    g.moveTo(FRONT - W * 0.046, H * 0.062);
-    g.lineTo(FRONT + W * 0.046, H * 0.062);
-    g.lineTo(FRONT, H * 0.165);
-    g.closePath(); g.fill();
-    g.strokeStyle = css(trim); g.lineWidth = H * 0.016; g.lineJoin = 'round';
-    g.beginPath();
-    g.moveTo(FRONT - W * 0.049, H * 0.060);
-    g.lineTo(FRONT, H * 0.172);
-    g.lineTo(FRONT + W * 0.049, H * 0.060);
-    g.stroke();
+    if (R.collar === 'v') {
+      g.fillStyle = css(darken(kit, 0.34));
+      g.beginPath();
+      g.moveTo(FRONT - W * 0.046, H * 0.062);
+      g.lineTo(FRONT + W * 0.046, H * 0.062);
+      g.lineTo(FRONT, H * 0.165);
+      g.closePath(); g.fill();
+      g.strokeStyle = css(trim); g.lineWidth = H * 0.016; g.lineJoin = 'round';
+      g.beginPath();
+      g.moveTo(FRONT - W * 0.049, H * 0.060);
+      g.lineTo(FRONT, H * 0.172);
+      g.lineTo(FRONT + W * 0.049, H * 0.060);
+      g.stroke();
+    } else if (R.collar === 'polo') {
+      // a laid-flat polo: two wings either side of a buttoned placket
+      g.fillStyle = css(alt);
+      for (const s of [-1, 1]) {
+        g.beginPath();
+        g.moveTo(FRONT + s * W * 0.016, H * 0.052);
+        g.lineTo(FRONT + s * W * 0.098, H * 0.052);
+        g.lineTo(FRONT + s * W * 0.070, H * 0.135);
+        g.lineTo(FRONT + s * W * 0.014, H * 0.118);
+        g.closePath(); g.fill();
+        g.lineWidth = H * 0.011; g.strokeStyle = rgba(trim, 0.9); g.stroke();
+      }
+      g.fillStyle = css(darken(kit, 0.30));
+      g.fillRect(FRONT - W * 0.017, H * 0.052, W * 0.034, H * 0.130);
+      g.strokeStyle = rgba(trim, 0.85); g.lineWidth = H * 0.008;
+      g.beginPath();
+      g.moveTo(FRONT - W * 0.017, H * 0.052); g.lineTo(FRONT - W * 0.017, H * 0.182);
+      g.moveTo(FRONT + W * 0.017, H * 0.052); g.lineTo(FRONT + W * 0.017, H * 0.182);
+      g.stroke();
+      g.fillStyle = css(trim);
+      for (const y of [0.086, 0.140]) {
+        g.beginPath(); g.arc(FRONT, H * y, H * 0.012, 0, TAU); g.fill();
+      }
+    } else {
+      // crew: a ribbed band, thicker at the front
+      g.fillStyle = css(alt);
+      g.fillRect(0, H * 0.052, W, H * 0.048);
+      g.save(); g.globalAlpha = 0.28;
+      for (let x = 0; x < W; x += 9) {
+        g.fillStyle = '#000000'; g.fillRect(x, H * 0.052, 3, H * 0.048);
+      }
+      g.restore();
+      g.fillStyle = rgba(trim, 0.9); g.fillRect(0, H * 0.100, W, H * 0.010);
+    }
 
     // shoulder yoke light
     const yg = g.createLinearGradient(0, 0, 0, H * 0.30);
@@ -1351,10 +1462,12 @@ export function shirtTexture(o = {}) {
     const numFill = contrastOn(kit) === 0xffffff ? 0xffffff : 0x14171c;
     const numEdge = numFill === 0xffffff ? darken(kit, 0.62) : lighten(kit, 0.7);
 
-    crest(g, FRONT + W * 0.088, H * 0.245, 0.80, trim, kit, contrastOn(trim), letter);
-    makerMark(g, FRONT - W * 0.088, H * 0.235, 0.85, trim);
-    sponsor(g, FRONT, H * 0.415, W * 0.150, 'CANVAS', numFill);
-    squadNumber(g, number, FRONT, H * 0.665, H * 0.335, numFill, numEdge);
+    crest(g, FRONT + W * 0.090, H * 0.268, 0.78, trim, kit, contrastOn(trim), letter, R.crest);
+    makerMark(g, FRONT - W * 0.090, H * 0.258, 0.82, trim);
+    sponsor(g, FRONT, H * 0.430, W * 0.150, 'CANVAS', numFill);
+    // The number had been scaled so large it wrapped past the side seams and
+    // read as a decal smeared round the ribs. Chest numbers are small.
+    squadNumber(g, number, FRONT, H * 0.680, H * 0.230, numFill, numEdge);
 
     // back: name arc over a big number
     g.save();
@@ -1365,7 +1478,7 @@ export function shirtTexture(o = {}) {
     g.fillStyle = css(numFill);
     g.fillText(name, BACK, H * 0.266);
     g.restore();
-    squadNumber(g, number, BACK, H * 0.585, H * 0.430, numFill, numEdge);
+    squadNumber(g, number, BACK, H * 0.600, H * 0.335, numFill, numEdge);
 
     return tex(c, { aniso: 16 });
   });
@@ -1385,7 +1498,9 @@ export function armTexture(o = {}) {
   const alt = o.alt ?? darken(kit, 0.4);
   const long = !!o.long;
   const glove = o.glove ?? 0;
-  const key = `arm:${kit}:${trim}:${skin}:${alt}:${long ? 1 : 0}:${glove}`;
+  const rc = o.recipe ?? KIT_RECIPES[0];
+  const key = `arm:${kit}:${trim}:${skin}:${alt}:${long ? 1 : 0}:${glove}`
+    + `:${o.style}:${rc.sleeve}:${rc.cuffHoops}`;
 
   return memo(key, () => {
     const W = 384, H = 384;
@@ -1418,9 +1533,28 @@ export function armTexture(o = {}) {
       g.fillRect(0, H * 0.955, W, H * 0.045);
     }
 
-    // sleeve
-    g.fillStyle = css(kit); g.fillRect(0, 0, W, cy);
-    if (o.style === 'stripes') {
+    // ---- sleeve ------------------------------------------------------------
+    // Sleeves are where club templates diverge most visibly in the reference:
+    // one club wears a solid contrasting sleeve, the next a panel split down
+    // the outer arm, the next the body pattern carried through.
+    const R = o.recipe ?? KIT_RECIPES[0];
+    const sleeveBase = R.sleeve === 'contrast' ? alt : kit;
+    g.fillStyle = css(sleeveBase); g.fillRect(0, 0, W, cy);
+    if (R.sleeve === 'panel') {
+      // outer half of the sleeve in the contrast colour, split by a trim seam.
+      // u = 0.25 is the front of the arm, u = 0.75 the back.
+      g.fillStyle = css(alt);
+      g.fillRect(0, 0, W * 0.24, cy);
+      g.fillRect(W * 0.76, 0, W * 0.24, cy);
+      g.fillStyle = rgba(trim, 0.85);
+      g.fillRect(W * 0.24 - W * 0.012, 0, W * 0.024, cy);
+      g.fillRect(W * 0.76 - W * 0.012, 0, W * 0.024, cy);
+    } else if (R.sleeve === 'contrast') {
+      // carry one body stripe onto the sleeve so it belongs to the same shirt
+      g.fillStyle = rgba(trim, 0.55);
+      g.fillRect(W * 0.24, 0, W * 0.014, cy);
+      g.fillRect(W * 0.74, 0, W * 0.014, cy);
+    } else if (o.style === 'stripes') {
       g.fillStyle = css(alt);
       for (let i = 0; i < 9; i++) g.fillRect((i * 2 + 0.5) * (W / 18), 0, W / 18, cy);
     } else if (o.style === 'keeper') {
@@ -1431,11 +1565,17 @@ export function armTexture(o = {}) {
     }
     weaveOverlay(g, W, cy, 0.05);
 
-    // shoulder seam at the very top, then the sleeve trim at the hem
+    // shoulder seam at the very top
     g.fillStyle = 'rgba(0,0,0,0.34)'; g.fillRect(0, 0, W, H * 0.020);
     g.fillStyle = rgba(trim, 0.85); g.fillRect(0, H * 0.026, W, H * 0.028);
-    g.fillStyle = css(trim); g.fillRect(0, cy - H * 0.050, W, H * 0.050);
-    g.fillStyle = rgba(darken(kit, 0.55), 0.55); g.fillRect(0, cy - H * 0.063, W, H * 0.013);
+    // cuff: one or two trim hoops, per club
+    const hoops = R.cuffHoops ?? 1;
+    g.fillStyle = css(trim); g.fillRect(0, cy - H * 0.048, W, H * 0.048);
+    if (hoops >= 2) {
+      g.fillStyle = css(alt); g.fillRect(0, cy - H * 0.036, W, H * 0.014);
+      g.fillStyle = css(trim); g.fillRect(0, cy - H * 0.022, W, H * 0.022);
+    }
+    g.fillStyle = rgba(darken(kit, 0.55), 0.55); g.fillRect(0, cy - H * 0.061, W, H * 0.013);
     g.fillStyle = rgba(darken(trim, 0.45), 0.45); g.fillRect(0, cy - H * 0.006, W, H * 0.006);
 
     // elbow / wrist AO on the bare arm

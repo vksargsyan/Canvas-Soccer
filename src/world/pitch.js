@@ -184,8 +184,8 @@ export function createPitch(opts = {}) {
     // rich. Ratios here are pulled a little toward neutral: matching their
     // display-space numbers exactly would need a 2.2x blue gain on the light
     // band, and that is their tone curve talking, not their albedo.
-    uMowLo: { value: new THREE.Vector3(0.700, 0.740, 0.610) },
-    uMowHi: { value: new THREE.Vector3(1.290, 1.245, 1.360) },
+    uMowLo: { value: new THREE.Vector3(0.735, 0.755, 0.600) },
+    uMowHi: { value: new THREE.Vector3(1.255, 1.230, 1.300) },
   };
 
   const mat = new THREE.MeshStandardMaterial({

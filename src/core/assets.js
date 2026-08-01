@@ -149,7 +149,10 @@ export const SURFACES = {
     bladeFreq: 132, bladeAmp: 0.20, bladeWander: 7.0,
     clumpFreq: 17, clumpAmp: 0.195,
     speckle: 0, speckleCol: [0, 0, 0],
-    weights: [0.32, 0.25, 0.14],
+    // Less of the 32 cm octave, more of the 1.4 cm one: the coarse field is
+    // better spent steering the streaks than adding its own soft blobs, which
+    // is the other half of what made the surface look woven.
+    weights: [0.24, 0.30, 0.14],
     sharpen: 1,
     normalStrength: 4.6, rough: [0.55, 0.95],
     stripes: true,
@@ -241,13 +244,15 @@ export function turfTextures(opts = {}) {
           // tufts run unbroken along the mow direction the way real fibre does;
           // an earlier version skewed the second harmonic into V to break up
           // the corduroy and the pitch came out looking knitted. What actually
-          // breaks the lines is the phase, which wanders with two octaves of 2-D
-          // noise, so the streaks curve, split and merge without ever becoming
-          // blobs.
-          const cw = cl * 2.6 + md * 1.1;
-          const k1 = Math.sin(u * D.clumpFreq * 6.2831853 + cw * 2.2) * 0.5 + 0.5;
-          const k2 = Math.sin(u * D.clumpFreq * 1.87 * 6.2831853 + cw * 3.7 + fn * 1.2) * 0.5 + 0.5;
-          h += D.clumpAmp * (k1 * 0.58 + k2 * 0.42);
+          // breaks the lines is the phase, and it has to wander SLOWLY: driving
+          // it from the 0.5 cm octave scrambled the second harmonic into noise,
+          // and noise crossed with a clean first harmonic reads as basket weave.
+          // Only the 32 cm field steers, with a whisker of 1.4 cm jitter on the
+          // harmonic, so the tufts stay legible as fibre at every distance.
+          const cw = cl * 2.2;
+          const k1 = Math.sin(u * D.clumpFreq * 6.2831853 + cw) * 0.5 + 0.5;
+          const k2 = Math.sin(u * D.clumpFreq * 2.37 * 6.2831853 + cw * 1.7 + md * 0.5) * 0.5 + 0.5;
+          h += D.clumpAmp * (k1 * 0.60 + k2 * 0.40);
         }
         h = clamp01(h / wsum);
         for (let k = 0; k < (D.sharpen || 1); k++) h = h * h * (3 - 2 * h);
