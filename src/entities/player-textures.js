@@ -617,7 +617,12 @@ export function headTexture(o = {}) {
     // single loudest "this is a Mii" signal, so these numbers are deliberately
     // small — real brow presence comes from BROW_SHAPES geometry in player.js.
     const bs = BROW_SHAPES[variant % BROW_SHAPES.length];
-    const browCol = darken(brow, 0.10);
+    // Warmed and lifted off the hair colour. With the common dark-brown hairs
+    // darken(brow, 0.10) lands at about 0x201710, i.e. two black bars, and two
+    // black bars sitting above two shadowed sockets are most of what fuses into
+    // the dark horizontal band the panel read as a welding visor at gameplay
+    // distance. Real brows are lighter and browner than the hair above them.
+    const browCol = mixHex(brow, 0x6b4a30, 0.30);
     for (const s of [-1, 1]) {
       g.save();
       g.translate(eyeX(s), browY - E.raise * 0.055 * AY);
@@ -659,7 +664,7 @@ export function headTexture(o = {}) {
         const up = bt * (0.30 + bs.arch * 1.10 * Math.sin(Math.pow(t, 0.8) * Math.PI) ** 0.6);
         const fade = Math.sin(Math.pow(t, 0.75) * Math.PI) ** 0.5;
         g.strokeStyle = rgba(
-          n > 0.66 ? lighten(brow, 0.40) : n < 0.30 ? darken(brow, 0.55) : browCol,
+          n > 0.66 ? lighten(browCol, 0.40) : n < 0.30 ? darken(browCol, 0.34) : browCol,
           (0.30 + 0.55 * n) * (0.35 + 0.65 * fade));
         g.lineWidth = Math.max(1.3, bt * (0.13 + 0.10 * n));
         g.beginPath();
@@ -1245,9 +1250,14 @@ export function eyeTexture(o = {}) {
     // 0.99 R — outside the eye opening — instead of 0.80 R, which was inside it.
     g.save();
     g.globalCompositeOperation = 'multiply';
-    const eg = g.createRadialGradient(R, R, R * 0.99, R, R, R * 1.24);
+    // The opening's horizontal extreme lands at 0.971 R, so the ring starts a
+    // hair outside it and ramps hard: all the sclera the lids expose keeps its
+    // value, and everything past the rim — which lives under the lid shell and
+    // inside the skull — is dark within another tenth of a radius, so no bright
+    // sliver can leak at a grazing angle.
+    const eg = g.createRadialGradient(R, R, R * 1.00, R, R, R * 1.10);
     eg.addColorStop(0, '#ffffff');
-    eg.addColorStop(1, '#5a4a3e');
+    eg.addColorStop(1, '#3a2e26');
     g.fillStyle = eg; g.fillRect(0, 0, S, S);
     g.restore();
 
