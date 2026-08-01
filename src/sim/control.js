@@ -88,31 +88,31 @@ import {
 // re-applies the collider's momentum transfer that this module exists to avoid.
 // The pocket therefore starts just outside the boot band and opens with pace.
 export const CONTACT_R = PLAYER_R * 0.72 + BALL_R * 0.95;
-const POCKET_WALK = 0.70;
-const POCKET_SPRINT = 1.00;
-const POCKET_LOOSE = 0.05;        // extra slack while genuinely sprinting
+const POCKET_WALK = 0.78;
+const POCKET_SPRINT = 0.96;
+const POCKET_LOOSE = 0.04;        // extra slack while genuinely sprinting
 
 // The hard ceiling on how far a controlled touch may ever put the ball. Kept
 // under sim/ai.js's CARRY_R (PLAYER_R + BALL_R + 0.42 = 1.16 m) on purpose: past
 // that radius the AI stops recognising him as the carrier, the carry logic drops
 // out and the ball is loose again. A carry model that quietly loses its own
 // possession flag every few strides is worse than no carry model.
-const GAP_CEILING = 1.42;
+const GAP_CEILING = 1.12;
 
 // --- stride ----------------------------------------------------------------
 // Footfall frequency. A walking player touches it about every three quarters of
 // a second; a sprinter is on it every stride cycle.
-const TOUCH_HZ_BASE = 1.30;
-const TOUCH_HZ_PER_MS = 0.115;
+const TOUCH_HZ_BASE = 1.25;
+const TOUCH_HZ_PER_MS = 0.100;
 const TOUCH_HZ_MIN = 1.25;
-const TOUCH_HZ_MAX = 2.60;
-const TOUCH_REFRACTORY = 0.26;    // s; two touches can never land closer than this
+const TOUCH_HZ_MAX = 2.35;
+const TOUCH_REFRACTORY = 0.30;    // s; two touches can never land closer than this
 
 // Deceleration of a rolling ball on grass: sim/physics.js ROLL_RES (2.35 m/s^2)
 // plus a small allowance for the quadratic drag term, which matters at pace.
 const ROLL_DECEL = 2.62;
 
-const LEAD = 0.92;                // how much of the player's own travel to lead by
+const LEAD = 1.00;                // how much of the player's own travel to lead by
 const SWING_K = 0.030;            // turn swing, per (rad/s * m/s)
 const SWING_MAX = 0.55;           // m of lateral swing on the hardest turn
 
@@ -272,8 +272,11 @@ export function createBallControl(ctx) {
 
     let want = false;
     if (st.phase >= 1) { st.phase -= 1; want = true; }
-    // recovery touch: it is running away from him between strides
-    if (!want && gap > pocket * 1.5) want = true;
+    // recovery touch: it is running away from him between strides. The trigger
+    // sits inside GAP_CEILING rather than at some multiple of the pocket,
+    // because past the ceiling sim/ai.js has already stopped calling him the
+    // carrier and this function is no longer running at all.
+    if (!want && gap > Math.min(pocket * 1.2, GAP_CEILING - 0.10)) want = true;
     // it has come back under his feet — poke it out in front again
     if (!want && gap < CONTACT_R * 1.02 && s > 1.0) want = true;
 
@@ -281,6 +284,10 @@ export function createBallControl(ctx) {
     if (gap > 2.6) want = false;               // this is a chase, not a carry
     if (body.pos.y > BALL_R + 0.45) want = false;   // bouncing: not his to place
     if ((a.kickLock || 0) > 0) want = false;   // mid-strike, the boot is committed
+    // A pass or a shot he has just struck is GONE. Without this the carry servo
+    // reels his own release back into the pocket a frame later, and no ball ever
+    // leaves a player's feet.
+    if (t - st.kickedAt < 0.4) want = false;
 
     st.phase = clamp(st.phase, 0, 1);
     if (!want) return false;
