@@ -92,7 +92,7 @@ export function crestURL(teamIndex, size = 192) {
     const t = TEAMS[teamIndex] || TEAMS[0];
     const S = size;
     const c = surface(S, S);
-    const g = c.getContext('2d');
+    const g = c.getContext('2d', { willReadFrequently: true });
     const pad = S * 0.06;
     const w = S - pad * 2, h = S - pad * 2;
     const x = pad, y = pad * 0.6;
@@ -182,7 +182,7 @@ export function crestURL(teamIndex, size = 192) {
 export function ballGlyphURL(size = 64) {
   return memo(`ball:${size}`, () => {
     const c = surface(size, size);
-    const g = c.getContext('2d');
+    const g = c.getContext('2d', { willReadFrequently: true });
     drawBall(g, size / 2, size / 2, size * 0.44);
     return c.toDataURL('image/png');
   });
@@ -195,7 +195,7 @@ export function ballGlyphURL(size = 64) {
 export function wordmarkURL(w = 900, h = 300) {
   return memo(`wm:${w}:${h}`, () => {
     const c = surface(w, h);
-    const g = c.getContext('2d');
+    const g = c.getContext('2d', { willReadFrequently: true });
     const F = '900 ' + Math.round(h * 0.40) + 'px "Arial Black","Helvetica Neue",Impact,' +
       '"DejaVu Sans","Liberation Sans",system-ui,sans-serif';
     const F2 = '900 ' + Math.round(h * 0.24) + 'px "Arial Black","Helvetica Neue",Impact,' +

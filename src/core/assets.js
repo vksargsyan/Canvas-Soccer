@@ -6,22 +6,26 @@
 
 import * as THREE from 'three';
 import { makeRng } from './rng.js';
+import { instrumentMemo } from './profile.js';
 
 // Texture bakes use their own streams so they never perturb gameplay randomness.
 const trng = makeRng(0x51ed);
 
 const cache = new Map();
-function memo(key, make) {
+const memo = instrumentMemo((key, make) => {
   if (cache.has(key)) return cache.get(key);
   const v = make();
   cache.set(key, v);
   return v;
-}
+}, 'assets');
 
 function canvas2d(w, h) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
-  const g = c.getContext('2d');
+  // Drawn once, then read back whole by texImage2D — see the raster-backend note
+  // in entities/player-textures.js. Keeps Chromium on Skia's CPU rasteriser
+  // instead of pushing every draw through a software GL driver.
+  const g = c.getContext('2d', { willReadFrequently: true });
   g.imageSmoothingEnabled = true;
   return { c, g };
 }

@@ -23,19 +23,25 @@
 
 import * as THREE from 'three';
 import { makeRng } from '../core/rng.js';
+import { instrumentMemo } from '../core/profile.js';
 
 const cache = new Map();
-function memo(key, build) {
+const memo = instrumentMemo((key, build) => {
   let v = cache.get(key);
   if (!v) { v = build(); cache.set(key, v); }
   return v;
-}
+}, 'fx');
 
 function canvas(size) {
   const c = document.createElement('canvas');
   c.width = size; c.height = size;
   return c;
 }
+
+// Every sprite here is drawn once and then read back whole by texImage2D — see
+// the raster-backend note in entities/player-textures.js. Going through this
+// helper keeps them all on Skia's CPU rasteriser rather than a software GL.
+const ctx2d = (c) => c.getContext('2d', { willReadFrequently: true });
 
 function tex(c, { srgb = true, mips = true } = {}) {
   const t = new THREE.CanvasTexture(c);
@@ -61,7 +67,7 @@ export function impactStar(variant = 'pink') {
   return memo('star:' + variant, () => {
     const S = 512, h = S / 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const fringe = variant === 'gold' ? '255,190,86' : '255,72,190';
     const mid = variant === 'gold' ? '255,228,160' : '255,166,228';
 
@@ -125,7 +131,7 @@ export function swooshStrip() {
     const W = 512, H = 128;
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const cy = H / 2;
 
     // body: tapers from a point at the tail to full thickness at the head
@@ -188,7 +194,7 @@ export function softGlow() {
   return memo('glow', () => {
     const S = 256, h = S / 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const grad = g.createRadialGradient(h, h, 0, h, h, h);
     grad.addColorStop(0.00, 'rgba(255,255,255,1)');
     grad.addColorStop(0.16, 'rgba(255,255,255,0.62)');
@@ -214,7 +220,7 @@ export function particleAtlas() {
     const T = 128;                 // one tile
     const S = T * 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const rng = makeRng(0x51de);
 
     // ---- tile 0: dust puff ------------------------------------------------
@@ -307,7 +313,7 @@ export function selectRingTexture() {
   return memo('selring', () => {
     const S = 256, h = S / 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
 
     // outer soft halo
     const halo = g.createRadialGradient(h, h, h * 0.55, h, h, h * 0.99);
@@ -342,7 +348,7 @@ export function slideMarkTexture() {
     const W = 256, H = 128;
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const rng = makeRng(0x5111);
     // two gouges with torn edges and scattered divots
     for (let s = 0; s < 2; s++) {
@@ -388,7 +394,7 @@ export function smokeTexture() {
   return memo('smoke', () => {
     const S = 256, h = S / 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const rng = makeRng(0x5309);
     for (let i = 0; i < 14; i++) {
       const a = rng.float() * Math.PI * 2;
@@ -418,7 +424,7 @@ export function scuffDecalTexture() {
   return memo('scuffdecal', () => {
     const S = 128, h = S / 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const rng = makeRng(0x77aa);
     for (let i = 0; i < 26; i++) {
       const a = rng.float() * Math.PI * 2;
@@ -445,7 +451,7 @@ export function impactSmear() {
   return memo('smear', () => {
     const S = 512, h = S / 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const rng = makeRng(0x9e11);
 
     g.translate(h, h);
@@ -495,7 +501,7 @@ export function shockRingTexture() {
   return memo('shockring', () => {
     const S = 256, h = S / 2;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const grad = g.createRadialGradient(h, h, h * 0.38, h, h, h);
     grad.addColorStop(0.00, 'rgba(255,255,255,0)');
     grad.addColorStop(0.52, 'rgba(255,250,238,0.10)');
@@ -518,7 +524,7 @@ export function litterTexture() {
   return memo('litter', () => {
     const S = 64;
     const c = canvas(S);
-    const g = c.getContext('2d');
+    const g = ctx2d(c);
     const w = S * 0.78, hh = S * 0.42, r = S * 0.09;
     g.translate(S / 2, S / 2);
     g.fillStyle = '#ffffff';

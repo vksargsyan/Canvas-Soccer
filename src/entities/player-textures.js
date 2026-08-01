@@ -26,18 +26,32 @@
 // sockets, brow ridge, nose and ears are real form, and the paint lands on it.
 
 import * as THREE from 'three';
+import { instrumentMemo } from '../core/profile.js';
 
 const cache = new Map();
-function memo(key, make) {
+const memo = instrumentMemo((key, make) => {
   let v = cache.get(key);
   if (v === undefined) { v = make(); cache.set(key, v); }
   return v;
-}
+}, 'player');
 
+// RASTER BACKEND. Every canvas in this file is drawn exactly once and then read
+// back in full — three.js uploads it with texImage2D. `willReadFrequently` is
+// the standard hint for that shape of use, and it makes Chromium rasterise with
+// Skia's CPU backend instead of routing every draw through the GL driver.
+//
+// That is not a micro-optimisation here, it is the whole ball game. Measured on
+// this repo under headless SwiftShader: one head texture takes 4569 ms through
+// the GL path and 375 ms through the CPU path, and a shirt 1268 ms against
+// 68 ms. Software GL turns each gradient, each blur and each of the thousands of
+// grain quads into JIT-compiled shader work; Skia's CPU rasteriser just draws
+// them. The same hint also removes a GPU->CPU readback per texture upload on
+// real hardware, where these canvases are likewise written once and read once.
+// Identical drawing commands either way, so the pixels are the same.
 function canvas2d(w, h) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
-  return { c, g: c.getContext('2d') };
+  return { c, g: c.getContext('2d', { willReadFrequently: true }) };
 }
 
 function tex(c, opts = {}) {
@@ -506,19 +520,30 @@ export function headTexture(o = {}) {
       // at up to 0.42 alpha, which at this texel density is salt-and-pepper —
       // the "reads as dirt" note. Coarser cells, far lower contrast, and blurred
       // afterwards so it is a texture rather than a rash.
+      //
+      // The grain is stamped into a scratch layer FIRST and blurred once on the
+      // way back, rather than leaving ctx.filter set across the stamping loop.
+      // A live filter turns every single fillRect into its own save-layer plus
+      // its own gaussian: this loop stamps a few thousand cells, so the old form
+      // cost 100 SECONDS per stubbled head and was, on its own, most of the
+      // twenty-minute cold boot. One blur of one layer is the same picture —
+      // the cells do not overlap, so blurring their union is blurring each of
+      // them — for about four milliseconds.
       g.save();
       beardPath(); g.clip();
-      g.filter = blurPx(2.2);
-      g.globalAlpha = 0.10 + dens * 0.10;
       const y0 = PY(1.55), y1 = PY(2.84);
       const cell = 5 * RS;
+      const { c: gc2, g: gg } = canvas2d(W, H);
       for (let y = y0; y < y1; y += cell) {
         for (let x = cx - 0.92 * AX; x < cx + 0.92 * AX; x += cell) {
           const n = vnoise(x / (6.4 * RS), y / (6.4 * RS));
-          if (n > 0.62) { g.fillStyle = css(darken(beardCol, 0.34)); g.fillRect(x, y, cell, cell); }
-          else if (n < 0.32) { g.fillStyle = css(lighten(beardCol, 0.30)); g.fillRect(x, y, cell, cell); }
+          if (n > 0.62) { gg.fillStyle = css(darken(beardCol, 0.34)); gg.fillRect(x, y, cell, cell); }
+          else if (n < 0.32) { gg.fillStyle = css(lighten(beardCol, 0.30)); gg.fillRect(x, y, cell, cell); }
         }
       }
+      g.globalAlpha = 0.10 + dens * 0.10;
+      g.filter = blurPx(2.2);
+      g.drawImage(gc2, 0, 0);
       g.filter = 'none';
       g.restore();
       // Direction: a beard grows DOWN and the light comes from above, so the

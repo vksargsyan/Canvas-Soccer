@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { rng, makeRng, SEED } from './core/rng.js';
+import { stage, mark } from './core/profile.js';
 import { createEngine } from './core/engine.js';
 import { createPitch } from './world/pitch.js';
 import { createStadium } from './world/stadium.js';
@@ -41,26 +42,27 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   canvas = canvas || document.querySelector('canvas');
   hudRoot = hudRoot || document.body;
 
-  const engine = createEngine(canvas);
+  mark('boot:enter');
+  const engine = stage('engine', () => createEngine(canvas));
   const { scene, camera } = engine;
 
   // ---------------------------------------------------------------- world
-  const pitch = createPitch();
+  const pitch = stage('pitch', () => createPitch());
   scene.add(pitch.group);
 
-  const stadium = createStadium();
+  const stadium = stage('stadium', () => createStadium());
   scene.add(stadium.group);
 
-  const goals = [createGoal(1), createGoal(-1)];
+  const goals = stage('goals', () => [createGoal(1), createGoal(-1)]);
   for (const g of goals) scene.add(g.group);
 
-  const vfx = createVfx(scene);
+  const vfx = stage('vfx', () => createVfx(scene));
   vfx.setCamera(camera);
 
   // The ball reads the key-light direction off the engine rather than keeping its
   // own copy, and it needs the goal volumes so its faked contact shadow stops at
   // the goal line instead of projecting onto the pitch beyond it.
-  const ballView = createBall({ style: 'classic', sunDir: engine.sunDir });
+  const ballView = stage('ball', () => createBall({ style: 'classic', sunDir: engine.sunDir }));
   ballView.setGoals(goals);
   scene.add(ballView.group);
   scene.add(ballView.shadow);
@@ -75,7 +77,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   scene.add(teamGroups[0], teamGroups[1]);
 
   for (let team = 0; team < 2; team++) {
-    const squad = createSquad(team, squadRng);
+    const squad = stage('squad' + team, () => createSquad(team, squadRng));
     squad.forEach((view, slot) => {
       teamGroups[team].add(view.group);
       const f = FORMATION[slot];
@@ -101,8 +103,9 @@ export function boot({ canvas, hudRoot, splash } = {}) {
   }
 
   // ---------------------------------------------------------------- systems
-  const hud = createHud(hudRoot);
-  const audio = createAudio();
+  mark('squads:done');
+  const hud = stage('hud', () => createHud(hudRoot));
+  const audio = stage('audio', () => createAudio());
   const director = createDirector(camera);
 
   let touchCool = 0;
@@ -877,11 +880,14 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     } else if (hudLive) {
       hud.update(dt);
     }
+    if (frames === 0) mark('firstRender:begin');
     engine.render(dt);
+    if (frames === 0) mark('firstRender:end');
     frames++;
     if (!ready && frames >= 2) {
       ready = true;
       window.__debug.ready = true;
+      mark('ready');
       hideSplash(false);
     }
   }
@@ -899,7 +905,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
 
   // Start in a staged kickoff so the very first frame is already a good picture,
   // then hand over to live play on the first user gesture.
-  scenario('kickoff');
+  stage('scenario:kickoff', () => scenario('kickoff'));
   hud.setCooldown('primary', SLIDE_COOL);   // publish the real cooldown, once
   let started = false;
   const start = () => {
@@ -1014,6 +1020,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     setQuality: (q) => engine.setQuality(q),
     pause(v) { paused = v === undefined ? !paused : !!v; return paused; },
   };
+  mark('debug:defined');
   window.__debug = dbg;
 
   return dbg;

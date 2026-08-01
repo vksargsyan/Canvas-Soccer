@@ -177,7 +177,7 @@ function contactTexture() {
   const S = 128;
   const c = document.createElement('canvas');
   c.width = c.height = S;
-  const g = c.getContext('2d');
+  const g = c.getContext('2d', { willReadFrequently: true });
   const img = g.createImageData(S, S);
   const d = img.data;
   for (let y = 0; y < S; y++) {
