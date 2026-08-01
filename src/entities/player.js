@@ -288,7 +288,7 @@ function skullPointRound(az, th, lift = 0) {
 }
 
 function buildHead() {
-  const g = new THREE.SphereGeometry(HEAD_R, 44, 32);
+  const g = new THREE.SphereGeometry(HEAD_R, 38, 28);
   const pos = g.getAttribute('position');
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
@@ -348,7 +348,7 @@ function rimDir(f, phi, k) {
  */
 function buildLids() {
   const parts = [];
-  const NU = 32, NV = 5;
+  const NU = 26, NV = 4;
   const K_OUT = 2.16;                     // rim ellipse -> dish edge
   for (const f of EYE_FRAME) {
     const pos = [], idx = [];
@@ -395,7 +395,7 @@ function buildLids() {
 function buildEyeballs() {
   const parts = [];
   for (const f of EYE_FRAME) {
-    const g = new THREE.SphereGeometry(EYE_R, 22, 16);
+    const g = new THREE.SphereGeometry(EYE_R, 18, 12);
     // planar patch UV about +Z before the sphere is oriented
     const pos = g.getAttribute('position');
     const uv = new Float32Array(pos.count * 2);
@@ -472,7 +472,7 @@ function buildNose(w = 1) {
 function buildBrowGeo(variant) {
   const bs = BROW_SHAPES[variant % BROW_SHAPES.length];
   const parts = [];
-  const NU = 16, NV = 6;
+  const NU = 13, NV = 5;
   for (const s of [-1, 1]) {
     const pos = [], idx = [];
     for (let i = 0; i <= NU; i++) {
@@ -1073,7 +1073,7 @@ function buildBeard(density = 1) {
   // rather than a drawn contour. They are laid DENSE and SHORT and their length
   // varies smoothly with azimuth: scattered long cards on a regular azimuth
   // grid read as a zigzag saw-tooth, which is worse than no cards at all.
-  const NC = 34;
+  const NC = 26;
   for (let i = 0; i < NC; i++) {
     const az = (i / (NC - 1) - 0.5) * 2.55;
     const d = dens(az);
@@ -1082,9 +1082,9 @@ function buildBeard(density = 1) {
     const env = d * (0.80 + 0.20 * Math.sin(az * 5.3 + 1.1));
     parts.push(hairCard(az, bot(az) - 0.055, {
       w: 0.15,
-      len: (0.048 + 0.062 * density) * env,
-      lift: 0.034 + 0.022 * d,
-      sweep: Math.sin(az * 3.7) * 0.22, curl: 0.16, bow: 0.025,
+      len: (0.038 + 0.048 * density) * env,
+      lift: 0.030 + 0.018 * d,
+      sweep: Math.sin(az * 3.7) * 0.22, curl: 0.16, bow: 0.022,
     }));
   }
   return mergeShaded(parts);
@@ -1125,7 +1125,7 @@ function buildHand(s, keeper) {
     const t = i / 3;
     const len = (0.108 - Math.abs(t - 0.30) * 0.030) * K;
     const r = 0.0300 * K;
-    const f = new THREE.CapsuleGeometry(r, len, 3, 8);
+    const f = new THREE.CapsuleGeometry(r, len, 2, 6);
     f.translate(0, -len * 0.5, 0);
     f.rotateX(-0.74 - t * 0.10);
     f.rotateZ(-s * (t - 0.5) * 0.24);
@@ -1139,7 +1139,7 @@ function buildHand(s, keeper) {
   parts.push(kn);
 
   // thumb — the single silhouette cue that says "hand". Swings out and forward.
-  const th = new THREE.CapsuleGeometry(0.036 * K, 0.084 * K, 3, 8);
+  const th = new THREE.CapsuleGeometry(0.036 * K, 0.084 * K, 2, 7);
   th.translate(0, -0.044 * K, 0);
   th.rotateZ(s * 1.02);
   th.rotateX(-0.50);
