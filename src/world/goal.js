@@ -29,16 +29,20 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { HALF_W, GOAL_HALF_W, GOAL_H, GOAL_DEPTH, POST_R, BALL_R } from '../core/constants.js';
 
 const HW = GOAL_HALF_W;
-const D_TOP = 0.95;                 // depth of the net's top rail
+const D_TOP = 0.85;                 // depth of the net's top rail
 const D_BOT = GOAL_DEPTH - 0.06;    // depth where the net meets the ground
-const BACK_P = 2.0;                 // >1 : hangs plumb at the top, kicks back at the foot
+// >1 : hangs plumb off the rail and only kicks back at the foot. Tuned so the
+// sheet at chest height sits IN FRONT of where a scored ball comes to rest, so
+// the ball is through the cord and wearing a pocket rather than floating clear
+// of a sheet parked at the back of the goal.
+const BACK_P = 2.6;
 
 const NX = 45;                      // back sheet columns (across Z)
 const NY = 21;                      // rows, crossbar height -> ground
 const ND = 17;                      // side / roof resolution along depth
 const TIE = 4;                      // one lashing every TIE-th node on a frame edge
 
-const NET_CELL = 0.125;             // world size of one net cell
+const NET_CELL = 0.18;              // world size of one net cell
 const TILE_CELLS = 8;               // cells per texture tile
 const TILE = NET_CELL * TILE_CELLS; // world size of one texture tile (1.0 m)
 
@@ -124,7 +128,8 @@ function goalAoTex() {
       const edge = Math.min(1, Math.min(v, 1 - v) / 0.14);
       const deep = Math.pow(u, 0.55);
       const mouth = Math.min(1, u / 0.10);
-      const a = 0.44 * deep * edge * mouth;
+      const rear = Math.min(1, (1 - u) / 0.07);   // no hard rectangle at the back
+      const a = 0.44 * deep * edge * mouth * rear;
       const k = (j * S + i) * 4;
       img.data[k] = 12; img.data[k + 1] = 22; img.data[k + 2] = 14;
       img.data[k + 3] = Math.round(a * 255);
