@@ -593,8 +593,9 @@ function hairShell({ inner, outer, puff, nu = 34, nv = 9, shadeBias = 0, streak 
       // strand streaks run down the shell
       const su = ((i * streak) / nu) % 1;
       uvs.push(H_OPAQUE_U0 + su * (H_OPAQUE_U1 - H_OPAQUE_U0), 1 - t);
+      const bias = typeof shadeBias === 'function' ? shadeBias(az, t) : shadeBias;
       shade.push(0.46 * t + 0.10 * Math.sin(az * 11 + t * 2.6)
-        + 0.06 * Math.sin(az * 27 + 1.7) + 0.16 + shadeBias);
+        + 0.06 * Math.sin(az * 27 + 1.7) + 0.16 + bias);
     }
   }
   for (let i = 0; i < nu; i++) {
@@ -618,6 +619,14 @@ function hairShell({ inner, outer, puff, nu = 34, nv = 9, shadeBias = 0, streak 
  */
 function hairCard(az, th, o = {}) {
   const w = o.w ?? 0.24, len = o.len ?? 0.24, lift = o.lift ?? 0.03;
+  // How much of the atlas's strand band this card samples. A card that spans
+  // the whole band packs every strand in the texture into its own width, and
+  // once a strand is a couple of pixels wide the alphaTest cutout has nothing
+  // to resolve and the card renders as salt-and-pepper speckle — which is what
+  // every fringe in the build was doing. Sampling a narrow window magnifies
+  // the strands instead, so each card carries three or four fat ones with
+  // edges the sampler can actually filter.
+  const uw = o.uw ?? 1, u0 = o.u0 ?? 0;
   const sweep = o.sweep ?? 0, curl = o.curl ?? 0.30, bow = o.bow ?? 0.05;
   const nu = 3, nv = 4;
   const h = 0.02;
@@ -647,8 +656,11 @@ function hairCard(az, th, o = {}) {
         P[1] + S[1] * (a + sw) + D[1] * b + N[1] * out,
         P[2] + S[2] * (a + sw) + D[2] * b + N[2] * out,
       );
-      uvs.push(H_CARD_U0 + (i / nu) * (H_CARD_U1 - H_CARD_U0), 1 - t);
-      shade.push(0.52 - 0.36 * t);
+      uvs.push(H_CARD_U0 + (u0 + (i / nu) * uw) * (H_CARD_U1 - H_CARD_U0), 1 - t);
+      // 0.52 -> 0.16 put the tips at the light end of the ramp, which on a
+      // blond or grey head is near-white: every fringe turned into a glowing
+      // band across the brow. Tips still lift, but only by a third as much.
+      shade.push(0.58 - 0.14 * t);
     }
   }
   const rows = nv + 1;
@@ -719,6 +731,31 @@ function onSkull(geo, az, th, lift = 0) {
 // every shell's lower edge share this offset so paint and geometry agree.
 const HLD = 8.5 * D2R;
 const line = (f, b) => (az) => (f + (b - f) * (1 - Math.cos(az)) / 2) * D2R + HLD;
+
+// EARS. The hairline runs 86 degrees of polar arc at the side of the head; the
+// top of the ear helix sits at about 72. So the shell's lower edge crossed the
+// ear, and because the head texture paints scalp colour down to the same line,
+// the ear came out the same brown as the cap and vanished into it — 'hair that
+// swallows the ears', exactly.
+//
+// The geometric edge now lifts 15 degrees over each ear and the painted scalp
+// underneath fills the gap. That is not a compromise, it is how hair actually
+// behaves: it thins to nothing over the ear rather than ending in a wall, and
+// the paint-to-geometry offset reads as that taper.
+const earArc = (az) => Math.exp(-((Math.cos(az) / 0.52) ** 2));
+/** narrow gaussian ridge centred on azimuth `at`, for parting grooves */
+const partArc = (az, at) => {
+  let d = (az - at) % TAU;
+  if (d > Math.PI) d -= TAU;
+  if (d < -Math.PI) d += TAU;
+  return Math.exp(-((d / 0.30) ** 2));
+};
+const EAR_LIFT = 11 * D2R;
+/** the geometric lower edge of a shell: the painted hairline, minus the ears */
+const rim = (f, b) => {
+  const L = line(f, b);
+  return (az) => L(az) - EAR_LIFT * earArc(az);
+};
 // deterministic scatter for curl / dread placement
 const h1 = (i) => (Math.sin(i * 12.9898) * 43758.5453) % 1;
 const hs = (i) => Math.abs(h1(i));
@@ -746,12 +783,16 @@ function buildHairGeo(style, seed = 0) {
       const t = (i + 0.5) / n;
       const az = (t - 0.5) * 2 * spread + jitter * 0.12;
       parts.push(hairCard(az, hl.front + 0.03, {
-        w: 0.20 + 0.10 * hs(i * 3 + seed),
+        w: 0.30 + 0.16 * hs(i * 3 + seed),
         len: (opts.len ?? 0.20) * (0.72 + 0.56 * hs(i * 5 + seed * 2)),
-        lift: 0.055,
+        // 0.055 stood the card proud of the scalp, so its cutout edge was read
+        // against forehead skin instead of against hair. Laid down flatter it
+        // reads as the hairline it is.
+        lift: 0.038,
         sweep: partSide * (0.22 + 0.30 * hs(i * 7 + seed)),
-        curl: opts.curl ?? 0.22,
+        curl: opts.curl ?? 0.18,
         bow: 0.05,
+        uw: 0.42, u0: 0.55 * hs(i * 23 + seed * 7),
       }));
     }
   };
@@ -760,8 +801,9 @@ function buildHairGeo(style, seed = 0) {
       const t = (i + 0.5) / n;
       const az = Math.PI + (t - 0.5) * 2.1;
       parts.push(hairCard(az, hl.back - 0.06, {
-        w: 0.24, len: len * (0.7 + 0.6 * hs(i * 11 + seed)),
+        w: 0.30, len: len * (0.7 + 0.6 * hs(i * 11 + seed)),
         lift: 0.04, sweep: (hs(i * 13 + seed) - 0.5) * 0.4, curl: 0.18, bow: 0.04,
+        uw: 0.45, u0: 0.52 * hs(i * 31 + seed * 3),
       }));
     }
   };
@@ -770,8 +812,47 @@ function buildHairGeo(style, seed = 0) {
       const az = hs(i * 17 + seed * 3) * TAU;
       const th = (14 + 26 * hs(i * 19 + seed)) * D2R;
       parts.push(hairCard(az, th, {
-        w: 0.16, len: len * (0.6 + 0.8 * hs(i * 23 + seed)),
+        w: 0.22, len: len * (0.6 + 0.8 * hs(i * 23 + seed)),
         lift: 0.05, sweep: (hs(i * 29 + seed) - 0.5) * 0.9, curl: -0.55, bow: 0.03,
+        uw: 0.40, u0: 0.57 * hs(i * 37 + seed),
+      }));
+    }
+  };
+  /**
+   * Feather the whole lower edge, not just the fringe. A shell alone gives a
+   * mathematically smooth arc against the crowd, and a smooth arc on a head is
+   * a swim cap — that single silhouette is what the panel kept calling a
+   * skullcap. These cards are cheap (24 triangles each) and they are the only
+   * thing between an opaque dome and something that reads as hair.
+   *
+   * Lengths are scaled per card so the edge is ragged rather than fringed at a
+   * uniform depth, and the cards over the ears are cut short so nothing hangs
+   * back down over the arc the shell just cleared.
+   */
+  const rimCards = (n, outer, o = {}) => {
+    // Skip the frontal arc: fringeCards already own it, and two sets of cards
+    // stacked over the same forehead stopped being a feathered hairline and
+    // became a black sawtooth painted across the brow.
+    const A0 = 1.02, span = TAU - 2 * A0;
+    for (let i = 0; i < n; i++) {
+      const az = A0 + ((i + 0.3 + 0.4 * hs(i * 41 + seed)) / n) * span;
+      const ear = earArc(az);
+      // Wide and overlapping, not narrow and separate. An alpha-tested card
+      // 0.15 across is three pixels of cutout at gameplay distance and it
+      // aliases into a black speck; at 0.30 with its neighbours overlapping the
+      // set resolves as one soft mass with a ragged edge, which is the point.
+      // and vacate the ear arc: the shell's edge was just lifted clear of the
+      // ear, so a card hanging back down over it would undo that and stipple
+      // against the helix into the bargain
+      if (ear > 0.45) continue;
+      parts.push(hairCard(az, outer(az) - 0.050, {
+        w: 0.25 + 0.13 * hs(i * 7 + seed),
+        len: (o.len ?? 0.105) * (0.6 + 0.8 * hs(i * 11 + seed * 3)) * (1 - 0.9 * ear),
+        lift: 0.036,
+        sweep: (hs(i * 13 + seed) - 0.5) * (o.sweep ?? 0.6),
+        curl: o.curl ?? 0.14,
+        bow: 0.05,
+        uw: 0.44, u0: 0.53 * hs(i * 19 + seed * 5),
       }));
     }
   };
@@ -784,21 +865,30 @@ function buildHairGeo(style, seed = 0) {
       hl = { front: (49 + jitter * 4) * D2R + HLD, back: 104 * D2R + HLD };
       fringe = 0.16;
       parts.push(hairShell({
-        inner: () => 0, outer: (az) => hl.front + (hl.back - hl.front) * (1 - Math.cos(az)) / 2,
+        inner: () => 0, outer: rim(49 + jitter * 4, 104),
         puff: () => 0.042, streak: 9,
       }));
       fringeCards(5, 0.75, { len: 0.06, curl: 0.1 });
+      rimCards(14, rim(49 + jitter * 4, 104), { len: 0.055, curl: 0.10, sweep: 0.5 });
+      flyaways(4, 0.055);
       break;
 
     case 'fade':
       hl = { front: (46 + jitter * 4) * D2R + HLD, back: 110 * D2R + HLD };
       fringe = 0.22;
+      // A fade is a VALUE haircut, not a shape: solid on top, skin showing
+      // through at the taper. Biasing the whole shell by a constant, as this
+      // did, just made another dark cap. The bias now runs the other way down
+      // the shell, so the sides go pale and the style is recognisable from the
+      // far touchline — which is the whole reason it is in the roster.
       parts.push(hairShell({
-        inner: () => 0, outer: (az) => hl.front + (hl.back - hl.front) * (1 - Math.cos(az)) / 2,
+        inner: () => 0, outer: rim(46 + jitter * 4, 110),
         puff: (az, t) => 0.075 * (1 - smooth(0.24, 0.86, t)) + 0.032,
-        shadeBias: 0.16, streak: 7,
+        shadeBias: (az, t) => -0.62 * smooth(0.42, 1.0, t), streak: 7, nv: 11,
       }));
       fringeCards(6, 0.8, { len: 0.09, curl: 0.12 });
+      rimCards(13, rim(46 + jitter * 4, 110), { len: 0.05, curl: 0.08, sweep: 0.45 });
+      flyaways(4, 0.07);
       break;
 
     case 'crop':
@@ -806,13 +896,17 @@ function buildHairGeo(style, seed = 0) {
       fringe = 0.55;
       parts.push(hairShell({
         inner: () => 0,
-        outer: (az) => line(53, 104)(az) + 3.5 * Math.sin(az * 6 + seed) * D2R,
-        puff: (az, t) => 0.095 * (1 - smooth(0.55, 1.0, t)) + 0.036
-          + 0.030 * (n3(Math.cos(az) * 2, Math.sin(az) * 2, t * 3) - 0.5),
-        streak: 6,
+        outer: (az) => rim(53, 104)(az) + 3.5 * Math.sin(az * 6 + seed) * D2R,
+        // a side part: a real groove in the volume, so this stops being 'the
+        // brown cap with a fringe' and becomes a haircut with a direction
+        puff: (az, t) => 0.105 * (1 - smooth(0.55, 1.0, t)) + 0.036
+          + 0.030 * (n3(Math.cos(az) * 2, Math.sin(az) * 2, t * 3) - 0.5)
+          - 0.075 * partArc(az, partSide * 0.62) * (1 - smooth(0.20, 0.78, t)),
+        streak: 6, nu: 40,
       }));
       fringeCards(9, 1.05, { len: 0.17, curl: 0.20 });
       napeCards(4, 0.11);
+      rimCards(15, rim(53, 104), { len: 0.115, curl: 0.20 });
       flyaways(3, 0.12);
       break;
 
@@ -820,7 +914,7 @@ function buildHairGeo(style, seed = 0) {
       hl = { front: (48 + jitter * 4) * D2R + HLD, back: 104 * D2R + HLD };
       fringe = 0.7;
       parts.push(hairShell({
-        inner: () => 0, outer: line(48, 104), nv: 12,
+        inner: () => 0, outer: rim(48, 104), nv: 12,
         puff: (az, t) => 0.080 * (1 - smooth(0.62, 1.0, t)) + 0.034
           + 0.20 * clamp((front(az) + 0.18) / 1.18, 0, 1) ** 1.1
             * Math.sin(clamp(t / 0.55, 0, 1) * Math.PI) ** 0.8,
@@ -836,13 +930,14 @@ function buildHairGeo(style, seed = 0) {
         }));
       }
       napeCards(4, 0.10);
+      rimCards(13, rim(48, 104), { len: 0.10, curl: 0.16 });
       break;
 
     case 'curls':
       hl = { front: (52 + jitter * 5) * D2R + HLD, back: 100 * D2R + HLD };
       fringe = 0.85;
       parts.push(hairShell({
-        inner: () => 0, outer: line(52, 100), nu: 40, nv: 11,
+        inner: () => 0, outer: rim(52, 100), nu: 40, nv: 11,
         puff: (az, t) => 0.155 * (1 - smooth(0.74, 1.0, t)) + 0.036
           + 0.075 * (n3(Math.cos(az) * 3.2, Math.sin(az) * 3.2, t * 4.4) - 0.5)
             * (1 - smooth(0.62, 1.0, t)),
@@ -874,7 +969,7 @@ function buildHairGeo(style, seed = 0) {
       hl = { front: (56 + jitter * 4) * D2R + HLD, back: 104 * D2R + HLD };
       fringe = 0.9;
       parts.push(hairShell({
-        inner: () => 0, outer: line(56, 104), nu: 44, nv: 12,
+        inner: () => 0, outer: rim(56, 104), nu: 44, nv: 12,
         puff: (az, t) => (0.36 + 0.10 * (n3(Math.cos(az) * 2.6, Math.sin(az) * 2.6, t * 3.1) - 0.5) * 2
           + 0.05 * Math.sin(az * 9 + seed)) * (1 - smooth(0.60, 1.0, t)) + 0.038,
         streak: 3,
@@ -901,9 +996,10 @@ function buildHairGeo(style, seed = 0) {
       hl = { front: (53 + jitter * 4) * D2R + HLD, back: 100 * D2R + HLD };
       fringe = 0.6;
       parts.push(hairShell({
-        inner: () => 0, outer: line(53, 100),
+        inner: () => 0, outer: rim(53, 100),
         puff: (az, t) => 0.085 * (1 - smooth(0.74, 1.0, t)) + 0.038, streak: 5,
       }));
+      rimCards(12, rim(53, 100), { len: 0.09, curl: 0.14 });
       for (let i = 0; i < 18; i++) {
         const az = 1.9 + (i / 17) * (TAU - 3.8);
         const len = 0.24 + 0.20 * hs(i * 5 + 2 + seed);
@@ -922,9 +1018,11 @@ function buildHairGeo(style, seed = 0) {
       hl = { front: (54 + jitter * 5) * D2R + HLD, back: 114 * D2R + HLD };
       fringe = 0.35;
       parts.push(hairShell({
-        inner: () => 0, outer: line(54, 114), nv: 11,
+        inner: () => 0, outer: rim(54, 114), nv: 11,
         puff: (az, t) => 0.062 * (1 - smooth(0.60, 1.0, t)) + 0.036, streak: 8,
       }));
+      rimCards(13, rim(54, 114), { len: 0.10, curl: 0.22, sweep: 0.6 });
+      flyaways(5, 0.09);
       const knot = blobGeo(HEAD_R * 0.33, 14);
       knot.scale(1, 0.86, 1);
       parts.push(onSkull(knot, Math.PI, 40 * D2R, 0.26));
@@ -947,7 +1045,7 @@ function buildHairGeo(style, seed = 0) {
       hl = { front: (50 + jitter * 4) * D2R + HLD, back: 150 * D2R + HLD };
       fringe = 0.95;
       parts.push(hairShell({
-        inner: () => 0, outer: line(50, 150), nv: 15,
+        inner: () => 0, outer: rim(50, 150), nv: 15,
         puff: (az, t) => 0.062 * (1 - smooth(0.92, 1.0, t)) + 0.038
           + 0.15 * Math.max(0, -front(az)) * smooth(0.26, 1.0, t)
           + 0.035 * (n3(Math.cos(az) * 3, Math.sin(az) * 3, t * 2) - 0.5),
@@ -968,9 +1066,11 @@ function buildHairGeo(style, seed = 0) {
       fringe = 0.25;
       // shaved sides: thin and dark, but still hair
       parts.push(hairShell({
-        inner: () => 0, outer: line(56, 104),
-        puff: () => 0.042, shadeBias: 0.34, streak: 11,
+        inner: () => 0, outer: rim(56, 104),
+        puff: () => 0.042, shadeBias: (az, t) => 0.34 - 0.50 * smooth(0.45, 1.0, t),
+        streak: 11,
       }));
+      rimCards(12, rim(56, 104), { len: 0.045, curl: 0.06, sweep: 0.35 });
       // crest: a ridge of cards standing up along the centre line
       for (let i = 0; i <= 12; i++) {
         const s = i / 12;
@@ -992,10 +1092,11 @@ function buildHairGeo(style, seed = 0) {
     default:
       hl = { front: 51 * D2R + HLD, back: 102 * D2R + HLD };
       parts.push(hairShell({
-        inner: () => 0, outer: line(51, 102),
+        inner: () => 0, outer: rim(51, 102),
         puff: (az, t) => 0.065 * (1 - smooth(0.60, 1.0, t)) + 0.036,
       }));
       fringeCards(7, 0.95, { len: 0.15, curl: 0.2 });
+      rimCards(14, rim(51, 102), { len: 0.115, curl: 0.18 });
   }
   return { geo: mergeShaded(parts.map((p) => ensureUv(p))), hairline: hl, fringe };
 }
