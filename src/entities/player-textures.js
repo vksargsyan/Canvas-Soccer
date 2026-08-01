@@ -232,7 +232,17 @@ export const EXPRESSIONS = {
 // background" note. Every anatomical constant in here is in RADIANS of skull
 // arc and scales with AX / AY automatically; the only resolution-bound numbers
 // are the hand-tuned blur radii, which go through blurPx().
-const FACE_W = 1280, FACE_H = 800;
+// BACKED OUT to 1024 x 640. At 1280 x 800 a cold boot stopped reaching
+// __debug.ready inside 23 minutes under headless SwiftShader, against about
+// four minutes at 1024 on the same box — and heads are memoised per
+// (skin, variant, brow, stubble, scalp, EXPRESSION), so a squad of 22 can hold
+// several dozen of these maps and every one of them costs an upload and a
+// mipmap chain. The sharpening was the least valuable item on the list and it
+// was the only change with an open-ended cost, so it goes. The RS / blurPx
+// machinery below stays: at 1024 RS is exactly 1 and every blur radius is
+// byte-identical to the hand-tuned original, so raising this later is a
+// one-line change that keeps the paint looking the same, just resolved finer.
+const FACE_W = 1024, FACE_H = 640;
 const RS = FACE_W / 1024;
 const blurPx = (p) => `blur(${(p * RS).toFixed(2)}px)`;
 // pixels per radian of arc at the face
