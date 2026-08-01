@@ -779,7 +779,6 @@ export function createAI(ctx) {
       // --- lane: can anybody get in front of it? ---
       const laneQ = clamp(1 - plan.risk, 0, 1);
       // --- is he free where the ball is going, when it gets there? ---
-      const openNow = Math.min(opennessAt(t, m.pos.x, m.pos.z, 0), 12);
       const openThen = Math.min(opennessAt(t, plan.x, plan.z, plan.t), 12);
       const openQ = clamp((openThen - 1.8) / 6.2, 0, 1);
       // --- does it go forward? ---
@@ -787,9 +786,17 @@ export function createAI(ctx) {
       const progQ = clamp((gain + 6) / 18, 0, 1);
       // --- is it a sane length? ---
       const rangeQ = rangePref(d);
-      // --- is he running into space, and the right way? ---
-      const ahead = (m.vel.x * TEAMS[t].dir) * 0.5 + Math.max(0, openThen - openNow) * 0.7;
-      const runQ = clamp(ahead / 4.5, 0, 1);
+      // --- is he RUNNING INTO SPACE, or merely standing in some? ---
+      // This has to be the space HIS run buys. The old form compared the room at
+      // the delivery point when the ball lands against the room where he stands
+      // NOW, so it mostly measured everybody else moving, and the two `openness`
+      // calls cancelled: instrumenting every candidate at every release showed
+      // runQ was identically 0.00, i.e. a tenth of the score weight was dead.
+      // Judge both points at the SAME instant — the moment the ball arrives —
+      // and the difference is his movement alone.
+      const stillOpen = Math.min(opennessAt(t, m.pos.x, m.pos.z, plan.t), 12);
+      const mspd = Math.hypot(m.vel.x, m.vel.z);
+      const runQ = clamp(0.30 + (openThen - stillOpen) * 0.22 + Math.min(mspd, 6) * 0.045, 0, 1);
       // --- how long is it in the air/on the deck for? every extra tenth is
       //     another tenth for a defender to arrive ---
       const timeQ = clamp(1 - (plan.t - 0.45) / 1.25, 0, 1);
