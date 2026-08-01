@@ -554,7 +554,10 @@ export function createAI(ctx) {
     const clearFrom = loft ? D * 0.26 : Infinity;
     const clearTo = loft ? D * 0.74 : -1;
 
-    let risk = 0;
+    // The danger is the ONE man who can get there, not the sum of everybody
+    // vaguely near it: a summed risk saturates, every option scores zero and
+    // the lane stops discriminating between a shut corridor and an open one.
+    let worst = 0, rest = 0;
     for (const o of agents) {
       if (o === a || o === mate || o.down) continue;
       const mine = o.team === a.team;
@@ -569,11 +572,11 @@ export function createAI(ctx) {
       const tBall = (loft ? s / Math.max(1, u) : rollTimeTo(u, s)) + delay;
       if (!Number.isFinite(tBall)) continue;      // it never gets that far
       const tMan = CUT_REACT + runTime(Math.max(0, off - reach));
-      const r = clamp(1 - (tMan - tBall) / CUT_SPAN, 0, 1);
       // a team-mate wandering into it is a nuisance, not a turnover
-      risk += r * (mine ? 0.75 : 1);
+      const r = clamp(1 - (tMan - tBall) / CUT_SPAN, 0, 1) * (mine ? 0.75 : 1);
+      if (r > worst) { rest += worst; worst = r; } else rest += r;
     }
-    return clamp(risk, 0, 1.5);
+    return clamp(worst + rest * 0.22, 0, 1.2);
   }
 
   /**
@@ -607,12 +610,12 @@ export function createAI(ctx) {
     // ---- over the top? ----
     // Only when the deck is genuinely shut, and only when the air is clearly
     // better: a chip is harder to weight and arrives bouncing.
-    if (risk > 0.50 && D > 6.5) {
+    if (risk > 0.38 && D > 6.5) {
       const ft = clamp(D / 9.5, 0.85, 1.7);
       const lift = LOFT_G * ft * 0.5;
       const uh = Math.min(PASS_U_MAX, ((D - 2.0) / ft) * 1.07);
       const lr = laneRisk(a, mate, ox, oz, tx, tz, uh, delay, true);
-      if (lr + 0.25 < risk) {
+      if (lr + 0.15 < risk) {
         plan.u = uh; plan.lift = lift; plan.loft = true;
         plan.t = ft + delay; plan.risk = lr; plan.arrive = uh;
       }
@@ -681,7 +684,7 @@ export function createAI(ctx) {
       // never square it across our own six-yard box
       if (toU(t, plan.x) < -20 && Math.abs(plan.z) < BOX_HZ) sc -= 5;
       // a chip is a decision, not a default
-      if (plan.loft) sc -= 0.8;
+      if (plan.loft) sc -= 0.4;
       sc += wobble(a, 1.1);
 
       if (sc > bs) { bs = sc; best = m; bp = plan; }
