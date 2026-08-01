@@ -1,20 +1,30 @@
-// Renderer + scene + post-processing chain + resize + quality tiers.
+// Renderer + scene + lighting + post-processing chain + resize + quality tiers.
 //
 //   createEngine(canvas) -> { renderer, scene, camera, composer, render(dt),
 //                             resize(), setQuality(tier), stats }
 //
 // Chain:
 //
-//   RenderPass  -> HDR linear scene (MSAA 4x where the driver supports it)
+//   RenderPass  -> HDR linear scene (MSAA 4x where the driver supports it) with
+//                  a depth texture attached to the first composer target
+//   DofPass     -> depth-of-field + aerial haze, still in HDR so a defocused
+//                  highlight keeps its energy and blooms afterwards
 //   BloomPass   -> floodlights, the ball's specular and every additive VFX bloom
 //   OutputPass  -> ACES filmic tone map + sRGB transfer
 //   GradePass   -> print-film grade (lift/gain/saturation), radial chromatic
-//                  aberration, vignette and a fine grain floor
+//                  aberration, smooth vignette and a fine grain floor
 //   FXAAPass    -> edge clean-up after the grade, so CA fringes get smoothed too
 //
 // three only tone maps when rendering to the default framebuffer, so with a
 // composer OutputPass owns tone mapping and colour space; the grade therefore
 // runs in display space where lift/gain behave like a colour-grading LUT.
+//
+// Shadowing is PCSS (percentage-closer soft shadows): the stock three PCF branch
+// is replaced at import time with a blocker search + variable-radius filter, so
+// the penumbra grows with the distance between blocker and receiver. That is the
+// difference between "a shadow is drawn" and "the boot is planted" — contact is
+// razor sharp under the studs and the roofline shadow across the pitch is metres
+// wide and soft, from one shadow map.
 
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -25,10 +35,245 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { envMap, skyTexture } from './assets.js';
 
+// ---------------------------------------------------------------------------
+// Sun + shadow rig constants
+// ---------------------------------------------------------------------------
+// The key is deliberately low (≈37° elevation) and swung down the +Z axis. That
+// is not a mood choice: the bowl's roof inner edge sits at z ≈ 52, y = 30.4, so
+// at this elevation the roofline throws a shadow whose leading edge lands around
+// z ≈ +12 — a huge, very soft band across the near third of the pitch, exactly
+// the read in the reference frames. A high sun (the old 56°) parks that shadow
+// outside the touchline and the pitch renders as one flat sheet of green.
+const SUN_POS = new THREE.Vector3(15, 46, 60);
+
+// Square ortho box for the shadow camera, centred between the pitch and the near
+// stand so both the players and the roof that shades them fit in one map.
+const SHADOW_EXTENT = 64;                 // half-width, world units
+const SHADOW_CENTER = new THREE.Vector3(0, 5, 12);
+const SHADOW_DIST = 150;                  // light distance along -sunDir
+const SHADOW_NEAR = 30;
+const SHADOW_FAR = 285;
+
+// PCSS tuning, in metres of world space.
+const SUN_SOFTNESS = 0.052;   // tan(apparent sun radius); 1 m of gap -> 5.2 cm
+const PEN_MIN = 0.030;        // never below this or contact aliases
+const PEN_MAX = 1.90;         // roofline penumbra cap
+
 export const QUALITY_TIERS = {
-  low: { pixelRatio: 1.0, shadow: 1024, bloom: 0.19, msaa: 0, fxaa: true, grade: true },
-  medium: { pixelRatio: 1.0, shadow: 2048, bloom: 0.25, msaa: 4, fxaa: true, grade: true },
-  high: { pixelRatio: 1.5, shadow: 2048, bloom: 0.28, msaa: 4, fxaa: true, grade: true },
+  low: { pixelRatio: 1.0, shadow: 2048, bloom: 0.19, msaa: 0, fxaa: true, grade: true, dof: false },
+  medium: { pixelRatio: 1.0, shadow: 3072, bloom: 0.25, msaa: 4, fxaa: true, grade: true, dof: true },
+  high: { pixelRatio: 1.5, shadow: 4096, bloom: 0.28, msaa: 4, fxaa: true, grade: true, dof: true },
+};
+
+// ---------------------------------------------------------------------------
+// PCSS — patched into three's shadow chunk at import time
+// ---------------------------------------------------------------------------
+// three's SHADOWMAP_TYPE_PCF branch is a fixed 3x3 tap pattern: one penumbra
+// width for the whole scene. Replacing it costs 20 texture reads and buys real
+// contact hardening. The helpers are spliced in ahead of getShadow() so they
+// still see texture2DCompare / unpackRGBAToDepth from the stock chunk.
+let PCSS_INSTALLED = false;
+
+function installSoftShadows() {
+  if (PCSS_INSTALLED) return;
+  const src = THREE.ShaderChunk.shadowmap_pars_fragment;
+  if (!src || src.indexOf('csPCSS') >= 0) { PCSS_INSTALLED = true; return; }
+
+  const anchor = 'float getShadow(';
+  const a = src.indexOf(anchor);
+  const bStart = src.indexOf('#if defined( SHADOWMAP_TYPE_PCF )', a);
+  const bEnd = src.indexOf('#elif defined( SHADOWMAP_TYPE_PCF_SOFT )', bStart);
+  if (a < 0 || bStart < 0 || bEnd < 0) { PCSS_INSTALLED = true; return; }  // vendored three moved; keep stock
+
+  // Depth in an orthographic shadow map is linear, so a depth difference maps
+  // straight back to metres along the light.
+  const depthSpan = (SHADOW_FAR - SHADOW_NEAR).toFixed(2);
+  const uvPerM = (1.0 / (SHADOW_EXTENT * 2.0)).toFixed(8);
+
+  const helpers = `
+	// --- PCSS -------------------------------------------------------------
+	// Vogel disc: even coverage from any tap count, no lookup table, and a
+	// per-pixel rotation so the penumbra dithers instead of ringing.
+	vec2 csDisc( float i, float n, float rot ) {
+		float ang = i * 2.39996323 + rot;
+		float r = sqrt( ( i + 0.5 ) / n );
+		return vec2( cos( ang ), sin( ang ) ) * r;
+	}
+	float csPCSS( sampler2D map, vec2 mapSize, vec2 uv, float zRecv, float radius ) {
+		float rot = fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) ) * 6.2831853;
+		float searchUV = ${(PEN_MAX * (1.0 / (SHADOW_EXTENT * 2.0))).toFixed(8)} * radius;
+		float sum = 0.0;
+		float cnt = 0.0;
+		for ( int i = 0; i < 8; i ++ ) {
+			vec2 o = csDisc( float( i ), 8.0, rot ) * searchUV;
+			float d = unpackRGBAToDepth( texture2D( map, uv + o ) );
+			if ( d < zRecv ) { sum += d; cnt += 1.0; }
+		}
+		if ( cnt < 0.5 ) return 1.0;
+		float gap = ( zRecv - sum / cnt ) * ${depthSpan};
+		float pen = clamp( gap * ${SUN_SOFTNESS.toFixed(4)}, ${PEN_MIN.toFixed(4)}, ${PEN_MAX.toFixed(4)} );
+		float penUV = pen * ${uvPerM} * radius;
+		// one texel floor, otherwise a contact shadow shimmers on its own aliasing
+		penUV = max( penUV, 0.75 / mapSize.x );
+		float s = 0.0;
+		for ( int i = 0; i < 12; i ++ ) {
+			vec2 o = csDisc( float( i ), 12.0, rot + 1.7 ) * penUV;
+			s += texture2DCompare( map, uv + o, zRecv );
+		}
+		return s / 12.0;
+	}
+`;
+
+  const branch = `#if defined( SHADOWMAP_TYPE_PCF )
+			shadow = csPCSS( shadowMap, shadowMapSize, shadowCoord.xy, shadowCoord.z, shadowRadius );
+		`;
+
+  let out = src.slice(0, a) + helpers + '\t' + src.slice(a);
+  const shift = helpers.length + 1;
+  out = out.slice(0, bStart + shift) + branch + out.slice(bEnd + shift);
+  THREE.ShaderChunk.shadowmap_pars_fragment = out;
+  PCSS_INSTALLED = true;
+}
+
+installSoftShadows();
+
+// ---------------------------------------------------------------------------
+// Contact-occlusion decal
+// ---------------------------------------------------------------------------
+// A cast shadow tells you where the light is; it does not tell you that the sole
+// of the boot is touching grass. That is ambient occlusion, and at chibi scale a
+// tight dark core right under the body sells it. Characters ship a generic soft
+// ellipse for this; it is re-pointed at this much tighter falloff during shadow
+// enrolment so it reads as contact rather than as a sticker the player sits on.
+let _contactTex = null;
+function contactTexture() {
+  if (_contactTex) return _contactTex;
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const img = g.createImageData(S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const nx = (x + 0.5) / S * 2 - 1;
+      const ny = (y + 0.5) / S * 2 - 1;
+      const r = Math.min(1, Math.hypot(nx, ny));
+      // flat-ish core out to 0.22, then a quartic tail: dark where the body
+      // meets the ground, gone well before the decal's own edge shows.
+      const t = Math.max(0, 1 - Math.max(0, (r - 0.20) / 0.80));
+      const a = Math.pow(t, 2.6);
+      const i = (y * S + x) * 4;
+      d[i] = 6; d[i + 1] = 14; d[i + 2] = 6;
+      d[i + 3] = Math.round(255 * a * 0.97);
+    }
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  _contactTex = t;
+  return t;
+}
+
+// ---------------------------------------------------------------------------
+// Depth of field + aerial haze
+// ---------------------------------------------------------------------------
+// Runs in HDR straight after the scene pass. The circle of confusion is signed:
+// negative in front of the focal plane, positive behind it, so the near field
+// can be blurred harder than the far field the way a long lens actually behaves.
+// Samples are rejected when they are sharper than the pixel being written, which
+// stops a crisp foreground bleeding a halo into a soft background.
+const DofShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    tDepth: { value: null },
+    uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+    uCam: { value: new THREE.Vector2(0.35, 600) },   // near, far
+    uFocus: { value: 26 },
+    uRange: { value: 0.55 },     // fraction of focus distance that stays sharp
+    uNearK: { value: 1.5 },      // near-field blur multiplier
+    uMaxCoc: { value: 0.012 },   // max blur radius, fraction of frame height
+    uHaze: { value: new THREE.Vector3(0.62, 0.74, 0.86) },
+    uHazeK: { value: 0.0 },
+    uAspect: { value: 16 / 9 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform sampler2D tDepth;
+    uniform vec2  uTexel;
+    uniform vec2  uCam;
+    uniform float uFocus;
+    uniform float uRange;
+    uniform float uNearK;
+    uniform float uMaxCoc;
+    uniform vec3  uHaze;
+    uniform float uHazeK;
+    uniform float uAspect;
+    varying vec2 vUv;
+
+    float viewZ(vec2 uv) {
+      float d = texture2D(tDepth, uv).x;
+      // perspective depth -> positive distance from the eye
+      return (2.0 * uCam.x * uCam.y) / (uCam.y + uCam.x - (2.0 * d - 1.0) * (uCam.y - uCam.x));
+    }
+
+    // signed circle of confusion, -1 .. 1
+    float coc(float z) {
+      float f = uFocus;
+      float sharp = f * uRange;
+      float s = (z - f) / max(0.35, abs(z) * 0.85 + sharp);
+      s = clamp(s, -1.0, 1.0);
+      return s < 0.0 ? s * uNearK : s;
+    }
+
+    vec2 disc(float i, float n, float rot) {
+      float a = i * 2.39996323 + rot;
+      float r = sqrt((i + 0.5) / n);
+      return vec2(cos(a), sin(a)) * r;
+    }
+
+    void main() {
+      float z = viewZ(vUv);
+      float c = coc(z);
+      float ac = min(1.0, abs(c));
+      vec4 here = texture2D(tDiffuse, vUv);
+
+      vec3 col = here.rgb;
+      if (ac > 0.035) {
+        float rot = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) * 6.2831853;
+        float rad = ac * uMaxCoc;
+        vec2 scale = vec2(rad / uAspect, rad);
+        vec3 acc = here.rgb;
+        float wsum = 1.0;
+        for (int i = 0; i < 14; i++) {
+          vec2 o = disc(float(i), 14.0, rot) * scale;
+          vec2 suv = clamp(vUv + o, vec2(0.001), vec2(0.999));
+          float sc = abs(coc(viewZ(suv)));
+          // a tap only contributes if its own blur reaches this pixel
+          float w = smoothstep(0.0, 0.55, sc / max(0.02, ac));
+          vec3 s = texture2D(tDiffuse, suv).rgb;
+          acc += s * w;
+          wsum += w;
+        }
+        col = acc / wsum;
+      }
+
+      // --- aerial perspective: distance eats contrast and pulls toward sky
+      if (uHazeK > 0.0) {
+        float h = 1.0 - exp(-max(0.0, z - 46.0) * uHazeK);
+        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(col, mix(col, vec3(l), 0.35 * h) + uHaze * h * 0.16, clamp(h, 0.0, 1.0));
+      }
+
+      gl_FragColor = vec4(col, 1.0);
+    }`,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,17 +284,22 @@ export const QUALITY_TIERS = {
 // ball. This is a lift/gamma/gain grade plus a per-channel radial resample, i.e.
 // exactly what a 3D LUT would bake — done analytically so there is no texture to
 // ship and it stays tweakable.
+//
+// The vignette is a pure even-power falloff of radius. The old version ran a
+// smoothstep from an inner radius, which is C1-discontinuous where it starts and
+// drew a faint ring the panel could see; x^n has no such onset.
 const GradeShader = {
   uniforms: {
     tDiffuse: { value: null },
-    uAberration: { value: 0.0016 },
-    uVignette: { value: new THREE.Vector2(0.72, 1.34) }, // (inner, power)
-    uVigStrength: { value: 0.36 },
-    uSaturation: { value: 1.24 },
-    uContrast: { value: 1.10 },
-    uLift: { value: new THREE.Vector3(0.004, 0.008, 0.016) },
-    uGain: { value: new THREE.Vector3(1.020, 1.006, 0.992) },
-    uGrain: { value: 0.016 },
+    uAberration: { value: 0.0015 },
+    uVigStrength: { value: 0.30 },
+    uVigPower: { value: 2.35 },
+    uVigCool: { value: 0.055 },
+    uSaturation: { value: 1.20 },
+    uContrast: { value: 1.085 },
+    uLift: { value: new THREE.Vector3(0.004, 0.009, 0.019) },
+    uGain: { value: new THREE.Vector3(1.022, 1.006, 0.988) },
+    uGrain: { value: 0.014 },
     uTime: { value: 0 },
   },
   vertexShader: /* glsl */`
@@ -61,8 +311,9 @@ const GradeShader = {
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse;
     uniform float uAberration;
-    uniform vec2  uVignette;
     uniform float uVigStrength;
+    uniform float uVigPower;
+    uniform float uVigCool;
     uniform float uSaturation;
     uniform float uContrast;
     uniform vec3  uLift;
@@ -97,10 +348,16 @@ const GradeShader = {
       // gentle highlight roll so bloom + white kit never clip to a flat plate
       col = col - 0.055 * col * col * col;
 
-      // --- vignette ---------------------------------------------------------
-      float d = length(c * vec2(1.0, 1.08)) * 1.4142;
-      float v = 1.0 - uVigStrength * pow(smoothstep(uVignette.x, 1.0, d), uVignette.y);
-      col *= v;
+      // --- vignette: even power of normalised radius, so it is smooth at the
+      // centre and has no onset ring anywhere. A touch of cool + desaturation
+      // in the corners reads as lens falloff instead of a painted-on disc.
+      float d = clamp(length(c * vec2(1.0, 1.10)) * 1.4142, 0.0, 1.0);
+      float v = pow(d, uVigPower);
+      float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(col, vec3(lum), v * 0.22);
+      col *= 1.0 - uVigStrength * v;
+      col.b += v * uVigCool * 0.5 * lum;
+      col.r -= v * uVigCool * 0.25 * lum;
 
       // --- grain: breaks up banding in the sky gradient ---------------------
       float g = hash(vUv * vec2(1024.0, 1024.0) + uTime) - 0.5;
@@ -130,9 +387,10 @@ export function createEngine(canvas) {
 
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.07;
+  renderer.toneMappingExposure = 1.06;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // PCF, not PCFSoft: the PCF branch is the one replaced by csPCSS above.
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.setClearColor(0x8ec6ee, 1);
   // The composer issues several renderer.render() calls per frame; without this
   // renderer.info would only ever report the last pass.
@@ -140,11 +398,17 @@ export function createEngine(canvas) {
 
   // --- scene ---------------------------------------------------------------
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0xc6def0, 210, 520);
+  // Aerial perspective. The far stand sits 60-100 units out, so the range has to
+  // start just past the touchline or the pitch itself goes milky. The DOF pass
+  // adds a second, contrast-eating haze term on top of this.
+  scene.fog = new THREE.Fog(0xbdd8ee, 58, 300);
 
   const camera = new THREE.PerspectiveCamera(42, 16 / 9, 0.35, 600);
   camera.position.set(0, 26, 44);
   camera.lookAt(0, 0, 0);
+  // The camera director publishes its focal distance here (see fx/camera.js);
+  // the DOF pass reads it, so focus always tracks whatever the shot is about.
+  camera.userData.dof = { focus: 26, range: 0.55, near: 1.5, max: 0.010, haze: 0.0035 };
 
   // Sky dome (drawn as scene.background would be flat; a dome gives a horizon).
   const sky = new THREE.Mesh(
@@ -156,43 +420,55 @@ export function createEngine(canvas) {
   scene.add(sky);
 
   // --- lighting ------------------------------------------------------------
-  // Balance note: a chibi head is a large smooth sphere and catches far more of a
-  // hard key than a stubby limb does, which used to blow the faces out to near
-  // white. The fix is a softer key with more of the level carried by the sky
-  // hemisphere and the environment: same overall brightness, much flatter
-  // terminator on spheres. Exposure came down to match and the grade pass puts
-  // the contrast back where the reference has it.
-  const hemi = new THREE.HemisphereLight(0xd4eaff, 0x557f3e, 1.62);
+  // Four sources, each with a job:
+  //   hemi   sky/ground bounce — carries everything the sun cannot reach, and is
+  //          what keeps the roof-shadowed third of the pitch from going muddy
+  //   sun    the key, and the only shadow caster
+  //   rim    cool back-light roughly opposite the key: puts a cold edge on the
+  //          shadow side of every head, which is most of what "3D" reads as
+  //   bounce warm low fill off the near stand so the fronts of legs stay warm
+  const hemi = new THREE.HemisphereLight(0xd8ecff, 0x5c8a45, 1.34);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff2d6, 2.30);
-  sun.position.set(34, 62, 24);
+  const sun = new THREE.DirectionalLight(0xfff1d2, 2.62);
+  sun.position.copy(SUN_POS);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -44;
-  sun.shadow.camera.right = 44;
-  sun.shadow.camera.top = 33;
-  sun.shadow.camera.bottom = -33;
-  sun.shadow.camera.near = 12;
-  sun.shadow.camera.far = 170;
-  // One shadow texel is 88/2048 = 43 mm here. A constant bias of that order is
-  // enough to kill acne on the near-planar turf without lifting contact shadows
-  // off the boots (peter-panning); the normal bias does the rest on curved kit.
-  sun.shadow.bias = -0.00042;
-  sun.shadow.normalBias = 0.024;
-  sun.shadow.radius = 3;
+  sun.shadow.mapSize.set(3072, 3072);
+  sun.shadow.camera.left = -SHADOW_EXTENT;
+  sun.shadow.camera.right = SHADOW_EXTENT;
+  sun.shadow.camera.top = SHADOW_EXTENT;
+  sun.shadow.camera.bottom = -SHADOW_EXTENT;
+  sun.shadow.camera.near = SHADOW_NEAR;
+  sun.shadow.camera.far = SHADOW_FAR;
+  // 128 m of ortho over 3072 texels is 42 mm per texel. A constant bias of that
+  // order kills acne on the near-planar turf without lifting contact shadows off
+  // the boots (peter-panning); the normal bias does the rest on curved kit.
+  sun.shadow.bias = -0.00035;
+  sun.shadow.normalBias = 0.020;
+  sun.shadow.radius = 1;
+  // THIS LINE IS THE WHOLE BALL GAME. LightShadow.updateMatrices() refreshes the
+  // shadow camera's world matrix every frame but never its projection matrix, so
+  // resizing the ortho frustum has no effect until it is recomputed by hand.
+  // Without it the map keeps DirectionalLightShadow's constructor default of
+  // (-5, 5, 5, -5) — a ten-metre square at the centre spot — and everything
+  // outside that patch silently casts nothing. That is why the build had a fully
+  // configured sun, castShadow flags, a 2k shadow map, and no shadows on screen.
+  sun.shadow.camera.updateProjectionMatrix();
   scene.add(sun);
   scene.add(sun.target);
-  sun.target.position.set(0, 0, 0);
 
-  // Cool sky-side rim, and a soft warm bounce from the far stand so the shadow
-  // side of a player never goes flat black.
-  const rim = new THREE.DirectionalLight(0xa8ceff, 0.42);
-  rim.position.set(-34, 26, -30);
+  // Aim the key at SHADOW_CENTER and park the lamp SHADOW_DIST back along the
+  // ray, so the ortho box straddles the pitch AND the roofline that shades it.
+  const _sunDirV = new THREE.Vector3().copy(SUN_POS).normalize();
+  sun.target.position.copy(SHADOW_CENTER);
+  sun.position.copy(SHADOW_CENTER).addScaledVector(_sunDirV, SHADOW_DIST);
+
+  const rim = new THREE.DirectionalLight(0xa9d2ff, 0.86);
+  rim.position.set(-26, 30, -58);
   scene.add(rim);
 
-  const bounce = new THREE.DirectionalLight(0xffe6c2, 0.26);
-  bounce.position.set(-18, 6, 34);
+  const bounce = new THREE.DirectionalLight(0xffe3bd, 0.30);
+  bounce.position.set(-14, 5, 40);
   scene.add(bounce);
 
   const env = envMap(renderer);
@@ -206,9 +482,42 @@ export function createEngine(canvas) {
   if (!software) rtOpts.samples = 4;
   const rt = new THREE.WebGLRenderTarget(Math.max(2, size.x), Math.max(2, size.y), rtOpts);
 
+  // Scene depth for DOF.
+  //
+  // EffectComposer ping-pongs two targets, and RenderPass draws into whichever
+  // one is currently the *read* buffer. With an odd number of swapping passes in
+  // the chain that role alternates every frame, so BOTH targets need their own
+  // depth attachment — and the DOF pass has to sample the one that was just
+  // written, not a fixed texture. Everything downstream is a full-screen quad
+  // rendered with autoClear on, which wipes the depth of whatever it writes to;
+  // that is harmless as long as DOF has already consumed the buffer it wants.
+  function makeDepth() {
+    const d = new THREE.DepthTexture(Math.max(2, size.x), Math.max(2, size.y));
+    d.type = THREE.UnsignedIntType;
+    d.minFilter = THREE.NearestFilter;
+    d.magFilter = THREE.NearestFilter;
+    return d;
+  }
+  const depthTex = makeDepth();
+  rt.depthTexture = depthTex;
+
   const composer = new EffectComposer(renderer, rt);
+  if (composer.renderTarget2) composer.renderTarget2.depthTexture = makeDepth();
+
   const renderPass = new RenderPass(scene, camera);
   composer.addPass(renderPass);
+
+  const dof = new ShaderPass(DofShader);
+  dof.material.uniforms.tDepth.value = depthTex;
+  dof.material.uniforms.uCam.value.set(camera.near, camera.far);
+  const _dofRender = dof.render.bind(dof);
+  dof.render = function (r, writeBuffer, readBuffer, deltaTime, maskActive) {
+    if (readBuffer && readBuffer.depthTexture) {
+      dof.material.uniforms.tDepth.value = readBuffer.depthTexture;
+    }
+    _dofRender(r, writeBuffer, readBuffer, deltaTime, maskActive);
+  };
+  composer.addPass(dof);
 
   // Threshold just above 1.0 in linear: only genuinely over-range pixels bloom —
   // floodlight lamp cores, the additive impact stars, the ball's specular hit.
@@ -247,6 +556,7 @@ export function createEngine(canvas) {
     bloom.strength = q.bloom;
     fxaa.enabled = q.fxaa;
     grade.enabled = q.grade;
+    dof.enabled = q.dof;
     resize();
   }
 
@@ -260,6 +570,107 @@ export function createEngine(canvas) {
     bloom.setSize(Math.max(2, w * 0.5), Math.max(2, h * 0.5));
     const pr = renderer.getPixelRatio();
     fxaa.material.uniforms.resolution.value.set(1 / (w * pr), 1 / (h * pr));
+    dof.material.uniforms.uTexel.value.set(1 / (w * pr), 1 / (h * pr));
+    dof.material.uniforms.uAspect.value = w / h;
+  }
+
+  // -------------------------------------------------------------------------
+  // Shadow enrolment
+  // -------------------------------------------------------------------------
+  // Who casts is a *lighting* decision, not a modelling one, so it is made here
+  // rather than scattered across the entity modules — which is exactly how the
+  // build ended up with a fully configured sun and not one player in its shadow
+  // map. The walk is idempotent and marks what it has touched, so it costs a
+  // pointer compare per node after the first pass.
+  //
+  // Only character rigs, the ball and the goals are enrolled. The stands and the
+  // instanced crowd deliberately stay out: they are hundreds of extra shadow
+  // draw calls for silhouettes nobody can see against their own structure. The
+  // roof is already a caster and is the one piece of stadium that matters.
+  let enrolTick = 0;
+
+  function enrolMesh(m) {
+    if (m.userData.__csShadow) return;
+    m.userData.__csShadow = 1;
+    const mat = m.material;
+    if (!mat || mat.isMeshBasicMaterial || mat.isShaderMaterial || mat.transparent) {
+      // decals, rings, fake shadows: never a caster
+      m.castShadow = false;
+      return;
+    }
+    const g = m.geometry;
+    if (g && !g.boundingSphere) { try { g.computeBoundingSphere(); } catch (e) { /* ignore */ } }
+    const r = g && g.boundingSphere ? g.boundingSphere.radius : 1;
+    // Face features (brows, pupils, nostrils) sit inside the head's own
+    // silhouette; they would double the shadow draw calls and change nothing.
+    m.castShadow = r > 0.085;
+    m.receiveShadow = true;
+  }
+
+  // The generic soft ellipse a character ships as its "shadow" is retargeted to
+  // a tight contact-occlusion falloff. Its owner keeps driving position/opacity;
+  // only the profile and the footprint change, so nothing fights over it.
+  function tameContactBlob(m) {
+    if (m.userData.__csContact) return;
+    m.userData.__csContact = 1;
+    const mat = m.material;
+    if (!mat || !mat.map) return;
+    mat.map = contactTexture();
+    mat.needsUpdate = true;
+    if (m.geometry && m.geometry.attributes && m.geometry.attributes.position) {
+      m.geometry.scale(0.72, 0.72, 1);
+      m.geometry.computeBoundingSphere();
+    }
+  }
+
+  function enrolGroup(root) {
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      const isFlatDecal = o.material && o.material.isMeshBasicMaterial
+        && o.material.transparent && o.material.map
+        && Math.abs(o.rotation.x + Math.PI / 2) < 0.01;
+      if (isFlatDecal) { tameContactBlob(o); o.castShadow = false; o.receiveShadow = false; return; }
+      enrolMesh(o);
+    });
+  }
+
+  // The bowl is the reason the reference frames have a shadow at all: the roof
+  // and the upper deck are what throw that huge soft band across the near third
+  // of the pitch. Only the big high structure is enrolled — anything low is
+  // hidden behind the ad boards, and the instanced crowd is never touched (tens
+  // of thousands of tiny casters for a silhouette that lands on their own seats).
+  const _bb = new THREE.Box3();
+  function enrolStadium(root) {
+    if (root.userData.__csStadium) return;
+    root.userData.__csStadium = 1;
+    root.traverse((o) => {
+      if (!o.isMesh || o.isInstancedMesh) return;
+      const g = o.geometry;
+      if (!g) return;
+      if (!g.boundingBox) { try { g.computeBoundingBox(); } catch (e) { return; } }
+      if (!g.boundingSphere) { try { g.computeBoundingSphere(); } catch (e) { return; } }
+      if (!g.boundingBox || !g.boundingSphere) return;
+      _bb.copy(g.boundingBox).applyMatrix4(o.matrixWorld);
+      const tall = _bb.max.y > 13;
+      const big = g.boundingSphere.radius > 6;
+      const mat = o.material;
+      const opaque = mat && !mat.isMeshBasicMaterial && !mat.transparent;
+      if (tall && big && opaque) { o.castShadow = true; o.receiveShadow = true; }
+    });
+  }
+
+  function enrolShadows() {
+    for (let i = 0; i < scene.children.length; i++) {
+      const c = scene.children[i];
+      const n = c.name || '';
+      if (n === 'stadium') { c.updateMatrixWorld(true); enrolStadium(c); continue; }
+      if (n === 'sky' || n === 'vfx' || n === 'pitch') continue;
+      if (n === 'ball' || n.indexOf('goal') === 0) { enrolGroup(c); continue; }
+      // team groups hold the player rigs
+      c.traverse((o) => {
+        if (o.isGroup && o.name && o.name.indexOf('player-') === 0) enrolGroup(o);
+      });
+    }
   }
 
   // Grain has to be deterministic for the capture harness, so it advances on the
@@ -268,9 +679,26 @@ export function createEngine(canvas) {
 
   function render(dt) {
     tickFps(dt || 1 / 60);
+    // Rigs and props are added over the first frames and can be swapped later;
+    // re-walking occasionally is far cheaper than a mutation observer and means
+    // anything that appears mid-match still lands in the shadow map.
+    if ((enrolTick++ % 20) === 0) enrolShadows();
     sky.position.copy(camera.position);
     gradeTick = (gradeTick + 1) % 64;
     grade.material.uniforms.uTime.value = gradeTick * 0.137;
+
+    // depth of field follows the director's focal target
+    const d = camera.userData.dof;
+    if (d && dof.enabled) {
+      const u = dof.material.uniforms;
+      u.uCam.value.set(camera.near, camera.far);
+      u.uFocus.value = d.focus;
+      u.uRange.value = d.range;
+      u.uNearK.value = d.near;
+      u.uMaxCoc.value = d.max;
+      u.uHazeK.value = d.haze;
+    }
+
     renderer.info.reset();
     composer.render(dt || 1 / 60);
   }
@@ -300,9 +728,9 @@ export function createEngine(canvas) {
 
   return {
     renderer, scene, camera, composer, sun, hemi, rim, bounce, sky,
-    bloom, grade,
+    bloom, grade, dof,
     render, resize, setQuality, stats,
-    sunDir,
+    sunDir, enrolShadows,
     get quality() { return tier; },
   };
 }

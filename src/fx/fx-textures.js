@@ -253,7 +253,10 @@ export function particleAtlas() {
     g.translate(0, T);
     const w = T * 0.34, hgt = T * 0.56;
     g.translate(T / 2, T / 2);
-    g.rotate(0.4);
+    // Axis-aligned inside its own tile on purpose: the point shader squeezes
+    // this sprite along texture-x to fake a flake tumbling about its long axis,
+    // and that only reads if the flake's width IS texture-x. Per-particle
+    // rotation still puts it at any angle on screen.
     g.fillStyle = '#ffffff';
     g.beginPath();
     const r = T * 0.06;
@@ -426,6 +429,110 @@ export function scuffDecalTexture() {
       g.ellipse(x, y, rng.range(3, 11), rng.range(2, 6), rng.float() * 3, 0, Math.PI * 2);
       g.fill();
     }
+    return tex(c, { mips: false });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// impact smear — the radial energy that a star sprite alone cannot fake
+// ---------------------------------------------------------------------------
+// A contact flash is not a four-pointed star sitting on a hard white disc; it is
+// a smear of light thrown outward from the point of contact, dense near the hit
+// and shredding into filaments further out. Dozens of tapered radial wedges with
+// randomised length and alpha give exactly that, and because there is no solid
+// core the sprite can be scaled large without turning into a white blob.
+export function impactSmear() {
+  return memo('smear', () => {
+    const S = 512, h = S / 2;
+    const c = canvas(S);
+    const g = c.getContext('2d');
+    const rng = makeRng(0x9e11);
+
+    g.translate(h, h);
+    for (let i = 0; i < 84; i++) {
+      const a = rng.float() * Math.PI * 2;
+      const len = h * rng.range(0.30, 0.99);
+      const wide = h * rng.range(0.010, 0.055);
+      const inner = h * rng.range(0.03, 0.16);
+      const alpha = rng.range(0.16, 0.72);
+      g.save();
+      g.rotate(a);
+      const grad = g.createLinearGradient(inner, 0, len, 0);
+      grad.addColorStop(0.00, `rgba(255,255,255,${alpha})`);
+      grad.addColorStop(0.30, `rgba(255,232,248,${alpha * 0.55})`);
+      grad.addColorStop(0.70, `rgba(255,150,214,${alpha * 0.22})`);
+      grad.addColorStop(1.00, 'rgba(255,110,190,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.moveTo(inner, -wide * 0.35);
+      g.lineTo(len, -wide * 0.06);
+      g.lineTo(len, wide * 0.06);
+      g.lineTo(inner, wide * 0.35);
+      g.closePath();
+      g.fill();
+      g.restore();
+    }
+
+    // a soft, wide, LOW-intensity bed so the filaments read as one event rather
+    // than as loose spokes. Deliberately far dimmer than the old star's core.
+    g.globalCompositeOperation = 'lighter';
+    const bed = g.createRadialGradient(0, 0, 0, 0, 0, h * 0.62);
+    bed.addColorStop(0.00, 'rgba(255,244,252,0.42)');
+    bed.addColorStop(0.26, 'rgba(255,206,238,0.18)');
+    bed.addColorStop(0.62, 'rgba(255,150,214,0.05)');
+    bed.addColorStop(1.00, 'rgba(255,120,196,0)');
+    g.fillStyle = bed;
+    g.beginPath(); g.arc(0, 0, h * 0.62, 0, Math.PI * 2); g.fill();
+
+    return tex(c, { mips: false });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ground shock ring — the dust wave that leaves the contact point
+// ---------------------------------------------------------------------------
+export function shockRingTexture() {
+  return memo('shockring', () => {
+    const S = 256, h = S / 2;
+    const c = canvas(S);
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(h, h, h * 0.38, h, h, h);
+    grad.addColorStop(0.00, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.52, 'rgba(255,250,238,0.10)');
+    grad.addColorStop(0.80, 'rgba(255,244,224,0.55)');
+    grad.addColorStop(0.93, 'rgba(255,236,206,0.22)');
+    grad.addColorStop(1.00, 'rgba(255,232,200,0)');
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(h, h, h, 0, Math.PI * 2); g.fill();
+    return tex(c, { mips: false });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// settled confetti — a flake lying on the grass, seen from above
+// ---------------------------------------------------------------------------
+// Ground accumulation is what stops a celebration reading as a screensaver: the
+// pitch should still be littered after the burst has fallen. One rounded slip of
+// paper with a slight fold highlight, tinted per instance.
+export function litterTexture() {
+  return memo('litter', () => {
+    const S = 64;
+    const c = canvas(S);
+    const g = c.getContext('2d');
+    const w = S * 0.78, hh = S * 0.42, r = S * 0.09;
+    g.translate(S / 2, S / 2);
+    g.fillStyle = '#ffffff';
+    g.beginPath();
+    g.moveTo(-w / 2 + r, -hh / 2);
+    g.arcTo(w / 2, -hh / 2, w / 2, hh / 2, r);
+    g.arcTo(w / 2, hh / 2, -w / 2, hh / 2, r);
+    g.arcTo(-w / 2, hh / 2, -w / 2, -hh / 2, r);
+    g.arcTo(-w / 2, -hh / 2, w / 2, -hh / 2, r);
+    g.closePath();
+    g.fill();
+    // fold: one half slightly darker so a flat quad still has a crease in it
+    g.fillStyle = 'rgba(0,0,0,0.22)';
+    g.fillRect(-w / 2, -hh / 2, w * 0.42, hh);
     return tex(c, { mips: false });
   });
 }

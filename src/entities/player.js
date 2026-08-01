@@ -1,48 +1,62 @@
 // Chibi player rig — geometry build + kit/skin/hair variation.
 //
-//   createPlayer(cfg) -> { group, rig, config, setSelected(b), syncShadow(), dispose() }
+//   createPlayer(cfg) -> { group, rig, config, setSelected(b), syncShadow(),
+//                          setExpression(k), dispose() }
 //     cfg: { team, number, skin, hair, hairColor, isKeeper, faceVariant, beard,
-//            kitStyle, bootColor, build }
+//            kitStyle, bootColor, build, girth, headScale }
 //
-// Proportions (total height 2.0 world units, chibi bobblehead):
+// Proportions (total height 2.0 world units, bobblehead chibi):
 //   sole 0.00 -> ankle 0.06 -> knee 0.34 -> hip 0.64 -> shoulder 1.07
-//   head centre 1.525, chin 1.144, crown 2.026 -> head is 0.88 tall == 44 %.
+//   head centre 1.492, chin 1.05, crown 2.01 -> head is 0.96 tall == 48 %.
 //
 // The rig exposes named bones (plain Object3D): root, hips, torso, head,
 // armL/R, forearmL/R, thighL/R, shinL/R, footL/R. animation.js drives only these.
 //
-// Surfacing lives in ./player-textures.js. Every limb is a body of revolution
-// (LatheGeometry) so the kit textures get a clean u-around / v-along mapping:
+// Surfacing lives in ./player-textures.js. Limbs are bodies of revolution
+// (LatheGeometry) so kit textures get a clean u-around / v-along mapping:
 // u = 0.25 is the chest, u = 0.75 the back, v = 1 the top of the part.
 //
-// Cost: 14 meshes + selection ring + contact blob per player, ~7k triangles.
-// Materials, textures and the fabric normal map are cached and shared.
+// HEAD. The skull is an analytic form (skullR) with a jaw, chin, cheekbones,
+// temples, a brow ridge and two carved eye dishes. Each dish holds a real
+// eyeball sphere and a real eyelid shell whose inner rim lands exactly on the
+// ball, so the eyes are geometry, not a decal. Ears, nose and hands are modelled.
+//
+// Cost: 16 meshes per player, ~13k triangles. Materials, textures and the
+// fabric normal map are cached and shared.
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { softCircle } from '../core/assets.js';
 import { TEAMS } from '../core/constants.js';
 import {
-  headTexture, shirtTexture, armTexture, shortsTexture, sockTexture, gloveTexture,
-  fabricNormal, warpU, warpV, mixHex, darken, lighten, contrastOn,
+  headTexture, eyeTexture, hairAtlas, shirtTexture, armTexture, shortsTexture,
+  sockTexture, fabricNormal, warpU, warpV, mixHex, darken, lighten, contrastOn,
   SKIN_TONES, HAIR_COLORS, HAIR_STYLES, EYE_COLORS, BOOT_COLORS,
+  FACE_ANCHORS, EYE_PROJ_S,
 } from './player-textures.js';
 
 export { SKIN_TONES, HAIR_COLORS, HAIR_STYLES };
 
 const TAU = Math.PI * 2;
 const D2R = Math.PI / 180;
+const FA = FACE_ANCHORS;
 
-export const HEAD_R = 0.46;
+export const HEAD_R = 0.49;
 const HIP_Y = 0.64;
 const THIGH_L = 0.30;
 const SHIN_L = 0.28;
 const TORSO_H = 0.47;
 const HEAD_BONE_Y = 0.50;       // relative to the torso bone
-const HEAD_CENTER = 0.385;      // relative to the head bone
+const HEAD_CENTER = 0.352;      // relative to the head bone
 // egg, not beachball: taller than it is wide, flattened front-to-back
-const HEAD_SX = 0.90, HEAD_SY = 1.09, HEAD_SZ = 0.93;
-const JAW_TAPER = 0.24;
+const HEAD_SX = 0.945, HEAD_SY = 1.055, HEAD_SZ = 0.955;
+const JAW_TAPER = 0.255;
+
+// eye dish (a smooth, low-frequency depression the skull mesh can resolve)
+const DISH_H = 0.300, DISH_UP = 0.185, DISH_DN = 0.235, DISH_D = 0.110;
+// eyeball, in world units
+const EYE_R = FA.eyeR * HEAD_R;
+const EYE_C = FA.eyeC * HEAD_R;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
@@ -73,16 +87,23 @@ function fabricMat(key, map, { rough = 0.86, repeat = [4, 3], normalScale = 0.55
 }
 
 const skinMat = (skin) => sharedMat('skin:' + skin, () => new THREE.MeshStandardMaterial({
-  color: skin, roughness: 0.80, metalness: 0.0,
+  color: skin, roughness: 0.78, metalness: 0.0,
 }));
 
-// one material for every head of hair — the colour lives in vertex colours
+// one material for every head of hair — colour lives in vertex colours, and the
+// atlas carries both the opaque strand streaks and the alpha strand cards.
 const hairMat = () => sharedMat('hair', () => new THREE.MeshStandardMaterial({
-  color: 0xffffff, vertexColors: true, roughness: 0.68, metalness: 0.0,
+  color: 0xffffff, vertexColors: true, map: hairAtlas(),
+  alphaTest: 0.42, side: THREE.DoubleSide,
+  roughness: 0.52, metalness: 0.04,
 }));
 
 const bootMat = () => sharedMat('boot', () => new THREE.MeshStandardMaterial({
   color: 0xffffff, vertexColors: true, roughness: 0.33, metalness: 0.03,
+}));
+
+const eyeMat = (col) => sharedMat('eye:' + col, () => new THREE.MeshStandardMaterial({
+  map: eyeTexture({ color: col }), roughness: 0.16, metalness: 0.0,
 }));
 
 // ---------------------------------------------------------------------------
@@ -98,11 +119,22 @@ function tint(geo, hexColor) {
   return geo;
 }
 
-function ensureUv(geo) {
+/** default UV lands in the opaque half of the hair atlas */
+function ensureUv(geo, u = 0.25, v = 0.5) {
   if (!geo.getAttribute('uv')) {
     const n = geo.getAttribute('position').count;
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2).fill(0.5), 2));
+    const a = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) { a[i * 2] = u; a[i * 2 + 1] = v; }
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(a, 2));
   }
+  return geo;
+}
+
+function setUv(geo, u, v) {
+  const n = geo.getAttribute('position').count;
+  const a = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) { a[i * 2] = u; a[i * 2 + 1] = v; }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(a, 2));
   return geo;
 }
 
@@ -130,8 +162,8 @@ function lathe(keys, segs = 18, n = 14) {
   return new THREE.LatheGeometry(profile(keys, n), segs, -Math.PI / 2, TAU);
 }
 
-/** spherical projection UV for small parts that never cross the -Z seam */
-function projectUV(geo, cy) {
+/** spherical projection UV for parts that never cross the -Z seam */
+function projectUV(geo, cy = 0) {
   const pos = geo.getAttribute('position');
   const n = pos.count;
   const uv = new Float32Array(n * 2);
@@ -145,35 +177,96 @@ function projectUV(geo, cy) {
   return geo;
 }
 
+/** cylindrical UV around Y, for merged limb detail (hands, cuffs) */
+function cylUV(geo, v) {
+  const pos = geo.getAttribute('position');
+  const n = pos.count;
+  const uv = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    uv[i * 2] = 0.25 + Math.atan2(pos.getX(i), pos.getZ(i)) / TAU;
+    uv[i * 2 + 1] = v;
+  }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return geo;
+}
+
 const blobGeo = (r, seg = 8) => new THREE.SphereGeometry(r, seg, Math.max(6, seg - 2));
 
 // ---------------------------------------------------------------------------
-// skull shape — one analytic function drives the head mesh AND every hair
-// shell, so hair hugs the actual skull instead of an idealised sphere.
+// skull shape — one analytic function drives the head mesh, the eye dishes AND
+// every hair shell, so hair hugs the actual skull instead of an ideal sphere.
 // ---------------------------------------------------------------------------
+
+/** unit direction for (azimuth from +Z toward +X, polar from the crown) */
+function dirOf(az, th) {
+  const st = Math.sin(th);
+  return [st * Math.sin(az), Math.cos(th), st * Math.cos(az)];
+}
+
+/** local frame of each eye: axis e, in-plane right r, in-plane up u */
+const EYE_FRAME = [-1, 1].map((s) => {
+  const e = dirOf(s * FA.eyeAz, FA.eyeTh);
+  let rx = e[2], rz = -e[0];
+  const rl = Math.hypot(rx, rz) || 1;
+  rx /= rl; rz /= rl;
+  const r = [rx, 0, rz];
+  const u = [
+    e[1] * r[2] - e[2] * r[1],
+    e[2] * r[0] - e[0] * r[2],
+    e[0] * r[1] - e[1] * r[0],
+  ];
+  const ul = Math.hypot(u[0], u[1], u[2]) || 1;
+  return { s, e, r, u: [u[0] / ul, u[1] / ul, u[2] / ul] };
+});
+
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/** how deep the eye dish cuts at direction n, in skull radii */
+function eyeDish(nx, ny, nz) {
+  const n = [nx, ny, nz];
+  let d = 0;
+  for (const f of EYE_FRAME) {
+    if (dot3(n, f.e) < 0.55) continue;
+    const dh = dot3(n, f.r);
+    const dv = dot3(n, f.u);
+    const av = dv > 0 ? DISH_UP : DISH_DN;
+    const e2 = (dh / DISH_H) * (dh / DISH_H) + (dv / av) * (dv / av);
+    if (e2 < 1) { const k = 1 - e2; d += DISH_D * k * Math.sqrt(k); }
+  }
+  return d;
+}
 
 function skullR(nx, ny, nz) {
   let m = 1.0;
-  const jaw = smooth(-0.10, -0.94, ny);
-  m *= 1 - JAW_TAPER * jaw;                                             // jaw taper
-  m *= 1 + 0.055 * bump((ny + 0.10) / 0.46) * clamp(nz, 0, 1);          // cheeks
-  m += 0.048 * bump((ny - 0.16) / 0.20) * bump(nx / 0.66) * smooth(0.25, 0.85, nz); // brow
-  m += 0.060 * bump((ny + 0.58) / 0.34) * bump(nx / 0.48) * smooth(0.05, 0.55, nz); // chin
-  m += 0.032 * clamp(-nz, 0, 1) * bump((ny - 0.10) / 1.15);             // occiput
-  m -= 0.028 * bump((ny - 0.58) / 0.48) * clamp(nz, 0, 1);              // flatter forehead
+  const jaw = smooth(-0.08, -0.95, ny);
+  m *= 1 - JAW_TAPER * jaw;                                              // jaw taper
+  const ax = Math.abs(nx);
+  m -= 0.050 * bump((ny - 0.34) / 0.52) * bump((ax - 0.84) / 0.32);      // temples
+  m += 0.050 * bump((ny + 0.14) / 0.30) * bump((ax - 0.50) / 0.44)
+    * smooth(-0.10, 0.72, nz);                                           // cheekbones
+  m += 0.038 * bump((ny + 0.54) / 0.30) * bump((ax - 0.42) / 0.40)
+    * smooth(-0.60, 0.30, nz);                                           // jaw corners
+  m += 0.058 * bump((ny - 0.42) / 0.24) * bump(nx / 0.64)
+    * smooth(0.22, 0.88, nz);                                            // brow ridge
+  m += 0.068 * bump((ny + 0.60) / 0.32) * bump(nx / 0.46)
+    * smooth(0.05, 0.60, nz);                                            // chin
+  m += 0.028 * bump((ny + 0.14) / 0.40) * bump(nx / 0.38)
+    * smooth(0.58, 0.96, nz);                                            // muzzle mass
+  m += 0.038 * clamp(-nz, 0, 1) * bump((ny - 0.06) / 1.10);              // occiput
+  m -= 0.030 * bump((ny - 0.62) / 0.46) * clamp(nz, 0, 1);               // flatter forehead
+  m -= eyeDish(nx, ny, nz);                                              // eye sockets
   return m;
 }
 
 /** world offset of the skull surface at (azimuth from +Z, polar from crown) */
 function skullPoint(az, th, lift = 0) {
-  const st = Math.sin(th), ct = Math.cos(th);
-  const nx = st * Math.sin(az), ny = ct, nz = st * Math.cos(az);
+  const [nx, ny, nz] = dirOf(az, th);
   const m = HEAD_R * (skullR(nx, ny, nz) + lift);
   return [nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ];
 }
 
 function buildHead() {
-  const g = new THREE.SphereGeometry(HEAD_R, 30, 22);
+  const g = new THREE.SphereGeometry(HEAD_R, 44, 32);
   const pos = g.getAttribute('position');
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
@@ -193,8 +286,8 @@ function buildHead() {
 
 /** UV-project in the round frame, then squash with the skull — keeps paint aligned */
 function finishFacePart(parts) {
-  const m = mergeGeometries(parts, false);
-  parts.forEach((p) => p.dispose());
+  const m = parts.length === 1 ? parts[0] : mergeGeometries(parts, false);
+  if (parts.length > 1) parts.forEach((p) => p.dispose());
   projectUV(m, 0);
   m.scale(HEAD_SX, HEAD_SY, HEAD_SZ);
   m.computeVertexNormals();
@@ -202,16 +295,128 @@ function finishFacePart(parts) {
   return m;
 }
 
+// ---------------------------------------------------------------------------
+// EYES — the dish, the ball and the lid.
+// ---------------------------------------------------------------------------
+
+/** where a ray along `n` leaves the eyeball of frame `f` (0 if it misses) */
+function ballHit(n, f) {
+  const cd = EYE_C * dot3(n, f.e);
+  const disc = EYE_R * EYE_R - EYE_C * EYE_C + cd * cd;
+  return disc <= 0 ? 0 : cd + Math.sqrt(disc);
+}
+
+/** direction on the rim ellipse at parameter phi, scaled outward by k */
+function rimDir(f, phi, k) {
+  const ch = Math.cos(phi), sh = Math.sin(phi);
+  const ah = FA.rimH * k;
+  const av = (sh > 0 ? FA.rimUp : FA.rimDn) * k;
+  const x = f.e[0] + f.r[0] * ah * ch + f.u[0] * av * sh;
+  const y = f.e[1] + f.r[1] * ah * ch + f.u[1] * av * sh;
+  const z = f.e[2] + f.r[2] * ah * ch + f.u[2] * av * sh;
+  const l = Math.hypot(x, y, z) || 1;
+  return [x / l, y / l, z / l];
+}
+
+/**
+ * Eyelid: a ring that starts exactly on the eyeball at the eye rim and fans out
+ * until it is tucked under the skull at the edge of the dish. Because its inner
+ * edge lies on the ball there is no gap, no decal and no floating outline — the
+ * lash line is a real crease between two surfaces.
+ */
+function buildLids() {
+  const parts = [];
+  const NU = 32, NV = 5;
+  const K_OUT = 2.16;                     // rim ellipse -> dish edge
+  for (const f of EYE_FRAME) {
+    const pos = [], idx = [];
+    for (let i = 0; i <= NU; i++) {
+      const phi = (i / NU) * TAU;
+      // the two ends are fixed per phi: the inner edge lies ON the eyeball, the
+      // outer edge is tucked just under the skull at the edge of the dish.
+      const nIn = rimDir(f, phi, 1);
+      const nOut = rimDir(f, phi, K_OUT);
+      const rIn = ballHit(nIn, f) + 0.0022;
+      const rOut = HEAD_R * skullR(nOut[0], nOut[1], nOut[2]) * 0.996;
+      for (let j = 0; j <= NV; j++) {
+        const t = j / NV;
+        const n = rimDir(f, phi, 1 + (K_OUT - 1) * t);
+        // ease from the ball out to the skull, with a little lid volume on top
+        const e = t * t * (3 - 2 * t);
+        const bulge = 0.009 * Math.sin(Math.PI * Math.pow(t, 0.75))
+          * (Math.sin(phi) > 0 ? 1 : 0.45);
+        const r = rIn + (rOut - rIn) * e + bulge * (1 - e * e);
+        pos.push(n[0] * r * HEAD_SX, n[1] * r * HEAD_SY, n[2] * r * HEAD_SZ);
+      }
+    }
+    const rows = NV + 1;
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const a = i * rows + j, b = a + rows;
+        idx.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    parts.push(g);
+  }
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  projectUV(m, 0);
+  m.computeVertexNormals();
+  m.translate(0, HEAD_CENTER, 0);
+  return m;
+}
+
+/** the two eyeballs, UV-projected down each eye's look axis */
+function buildEyeballs() {
+  const parts = [];
+  for (const f of EYE_FRAME) {
+    const g = new THREE.SphereGeometry(EYE_R, 22, 16);
+    // planar patch UV about +Z before the sphere is oriented
+    const pos = g.getAttribute('position');
+    const uv = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      const dx = pos.getX(i) / EYE_R, dy = pos.getY(i) / EYE_R;
+      uv[i * 2] = clamp(0.5 + (0.5 * dx) / EYE_PROJ_S, 0.001, 0.999);
+      uv[i * 2 + 1] = clamp(0.5 + (0.5 * dy) / EYE_PROJ_S, 0.001, 0.999);
+    }
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+
+    // aim the look axis slightly inward of the socket axis so the pair converges
+    const look = dirOf(f.s * FA.eyeAz * 0.70, FA.eyeTh + 0.012);
+    const q = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1), new THREE.Vector3(look[0], look[1], look[2]));
+    g.applyQuaternion(q);
+    g.translate(f.e[0] * EYE_C, f.e[1] * EYE_C, f.e[2] * EYE_C);
+    parts.push(g);
+  }
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  m.scale(HEAD_SX, HEAD_SY, HEAD_SZ);
+  m.computeVertexNormals();
+  m.translate(0, HEAD_CENTER, 0);
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// NOSE / EARS / NECK
+// ---------------------------------------------------------------------------
+
 function buildNose(w = 1) {
   const parts = [];
   const R = HEAD_R;
   const add = (g, sx, sy, sz, x, y, z) => { g.scale(sx, sy, sz); g.translate(x, y, z); parts.push(g); };
-  // bridge, tip, wings — sized so the tip clears the skull by ~0.12 R
-  add(new THREE.SphereGeometry(R * 0.110, 10, 8), 0.78 * w, 2.30, 1.00, 0, R * 0.075, R * 0.855);
-  add(new THREE.SphereGeometry(R * 0.140, 12, 10), 1.00 * w, 0.94, 1.06, 0, -R * 0.075, R * 0.910);
+  // bridge runs from between the brows down to the ball
+  add(new THREE.SphereGeometry(R * 0.098, 10, 8), 0.80 * w, 3.10, 1.02, 0, R * 0.115, R * 0.845);
+  add(new THREE.SphereGeometry(R * 0.118, 10, 8), 0.86 * w, 1.60, 1.02, 0, R * 0.020, R * 0.895);
+  // ball of the nose
+  add(new THREE.SphereGeometry(R * 0.145, 12, 10), 1.00 * w, 0.96, 1.10, 0, -R * 0.075, R * 0.930);
+  // nostril wings
   for (const s of [-1, 1]) {
-    add(new THREE.SphereGeometry(R * 0.090, 8, 6), 1.0, 0.88, 0.92,
-      s * R * 0.105 * w, -R * 0.105, R * 0.845);
+    add(new THREE.SphereGeometry(R * 0.094, 8, 6), 1.02, 0.90, 0.94,
+      s * R * 0.112 * w, -R * 0.108, R * 0.860);
   }
   return finishFacePart(parts);
 }
@@ -220,25 +425,48 @@ function buildEars() {
   const parts = [];
   const R = HEAD_R;
   for (const s of [-1, 1]) {
-    const outer = new THREE.SphereGeometry(R * 0.255, 10, 10);
-    outer.scale(0.40, 0.93, 0.62);
-    outer.translate(s * R * 0.995, R * 0.005, -R * 0.055);
-    parts.push(outer);
-    const lobe = new THREE.SphereGeometry(R * 0.110, 8, 6);
-    lobe.scale(0.50, 1.0, 0.78);
-    lobe.translate(s * R * 0.990, -R * 0.190, -R * 0.045);
+    // outer plate — thin, tilted back, standing proud of the skull
+    const plate = new THREE.SphereGeometry(R * 0.300, 12, 12);
+    plate.scale(0.30, 1.00, 0.66);
+    plate.rotateY(-s * 0.28);
+    plate.translate(s * R * 0.985, R * 0.010, -R * 0.060);
+    parts.push(plate);
+    // helix rim
+    const helix = new THREE.TorusGeometry(R * 0.225, R * 0.052, 6, 16, Math.PI * 1.60);
+    helix.rotateY(Math.PI / 2);
+    helix.rotateX(Math.PI);
+    helix.rotateZ(s * 0.16);
+    helix.scale(0.60, 1.0, 1.0);
+    helix.translate(s * R * 1.020, R * 0.005, -R * 0.055);
+    parts.push(helix);
+    // antihelix ridge
+    const anti = new THREE.TorusGeometry(R * 0.115, R * 0.036, 5, 10, Math.PI * 1.1);
+    anti.rotateY(Math.PI / 2);
+    anti.rotateX(Math.PI * 0.95);
+    anti.scale(0.55, 1.0, 1.0);
+    anti.translate(s * R * 1.010, R * 0.010, -R * 0.030);
+    parts.push(anti);
+    // lobe
+    const lobe = new THREE.SphereGeometry(R * 0.122, 8, 8);
+    lobe.scale(0.44, 0.96, 0.74);
+    lobe.translate(s * R * 0.985, -R * 0.235, -R * 0.050);
     parts.push(lobe);
+    // tragus
+    const tra = new THREE.SphereGeometry(R * 0.062, 6, 6);
+    tra.scale(0.55, 1.1, 0.9);
+    tra.translate(s * R * 0.965, -R * 0.040, R * 0.075);
+    parts.push(tra);
   }
   return finishFacePart(parts);
 }
 
-/** neck: its own cylindrical UVs sample the dark band at the bottom of the face map */
+/** neck: its own cylindrical UVs sample the dark band under the chin */
 function buildNeck() {
-  const g = new THREE.CylinderGeometry(0.152, 0.188, 0.34, 14, 1, true, -Math.PI / 2, TAU);
-  g.translate(0, -0.030, 0);
+  const g = new THREE.CylinderGeometry(0.158, 0.198, 0.36, 16, 1, true, -Math.PI / 2, TAU);
+  g.translate(0, -0.052, 0);
   const uv = g.getAttribute('uv');
   for (let i = 0; i < uv.count; i++) {
-    uv.setXY(i, warpU(uv.getX(i)), warpV(0.030 + uv.getY(i) * 0.145));
+    uv.setXY(i, warpU(uv.getX(i)), warpV(0.020 + uv.getY(i) * 0.130));
   }
   uv.needsUpdate = true;
   return g;
@@ -248,16 +476,17 @@ function buildNeck() {
 // HAIR
 // ---------------------------------------------------------------------------
 
+const H_OPAQUE_U0 = 0.030, H_OPAQUE_U1 = 0.470;
+const H_CARD_U0 = 0.525, H_CARD_U1 = 0.975;
+
 /**
  * A shell wrapped onto skullR().
  * @param inner (az) -> polar angle of the top edge, radians from the crown
  * @param outer (az) -> polar angle of the bottom edge (hairline / nape)
- * @param puff  (az, t) -> extra thickness in head radii; 0 hugs the skull,
- *              negative buries the strip inside the head (used to hide the
- *              collapsed columns of a partial shell like a beard).
+ * @param puff  (az, t) -> extra thickness in head radii
  */
-function hairShell({ inner, outer, puff, nu = 30, nv = 8, shadeBias = 0 }) {
-  const pos = [], nor = [], shade = [], idx = [];
+function hairShell({ inner, outer, puff, nu = 34, nv = 9, shadeBias = 0, streak = 5 }) {
+  const pos = [], nor = [], uvs = [], shade = [], idx = [];
   const rows = nv + 1;
   for (let i = 0; i <= nu; i++) {
     const az = (i / nu) * TAU;
@@ -269,19 +498,19 @@ function hairShell({ inner, outer, puff, nu = 30, nv = 8, shadeBias = 0 }) {
       const st = Math.sin(th), ct = Math.cos(th);
       const nx = st * sa, ny = ct, nz = st * ca;
       // The rim must never graze the scalp or the two surfaces z-fight into a
-      // dashed fringe. Scale the whole radius down late and hard instead.
-      const rim = smooth(0.84, 1.0, t);
-      const m = HEAD_R * (skullR(nx, ny, nz) + puff(az, t)) * (1 - 0.26 * rim);
+      // dashed fringe: scale the radius down hard at the very end so the edge
+      // is buried in the painted scalp underneath.
+      const rim = smooth(0.86, 1.0, t);
+      const m = HEAD_R * (skullR(nx, ny, nz) + puff(az, t)) * (1 - 0.22 * rim);
       pos.push(nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ);
       nor.push(nx, ny, nz);
-      shade.push(0.50 * t + 0.075 * Math.sin(az * 9 + t * 2.2) + 0.16 + shadeBias);
+      // strand streaks run down the shell
+      const su = ((i * streak) / nu) % 1;
+      uvs.push(H_OPAQUE_U0 + su * (H_OPAQUE_U1 - H_OPAQUE_U0), 1 - t);
+      shade.push(0.46 * t + 0.10 * Math.sin(az * 11 + t * 2.6)
+        + 0.06 * Math.sin(az * 27 + 1.7) + 0.16 + shadeBias);
     }
   }
-  // WINDING: +i walks azimuth clockwise seen from +Y and +j walks DOWN from the
-  // crown, so (a -> b -> a+1) is clockwise on the outside of the skull, i.e. a
-  // back face. Written that way every shell was culled and only the solid lumps
-  // (bun knot, mohawk crest, afro beads) survived — hair read as a stray spike on
-  // a bald head. The order below faces outward.
   for (let i = 0; i < nu; i++) {
     for (let j = 0; j < nv; j++) {
       const a = i * rows + j, b = a + rows;
@@ -291,8 +520,63 @@ function hairShell({ inner, outer, puff, nu = 30, nv = 8, shadeBias = 0 }) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.setIndex(idx);
-  ensureUv(g);
+  g.userData.shade = shade;
+  return g;
+}
+
+/**
+ * An alpha strand card tangent to the skull at (az, th). This is what turns a
+ * solid shell into hair: a soft, feathered silhouette with visible strands.
+ */
+function hairCard(az, th, o = {}) {
+  const w = o.w ?? 0.24, len = o.len ?? 0.24, lift = o.lift ?? 0.03;
+  const sweep = o.sweep ?? 0, curl = o.curl ?? 0.30, bow = o.bow ?? 0.05;
+  const nu = 3, nv = 4;
+  const h = 0.02;
+  const P = skullPoint(az, th, lift);
+  const pa = skullPoint(az + h, th, lift), pb = skullPoint(az - h, th, lift);
+  const pc = skullPoint(az, th + h, lift), pd = skullPoint(az, th - h, lift);
+  const norm = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+  const S = norm([pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]]);
+  const D = norm([pc[0] - pd[0], pc[1] - pd[1], pc[2] - pd[2]]);
+  let N = norm([
+    S[1] * D[2] - S[2] * D[1],
+    S[2] * D[0] - S[0] * D[2],
+    S[0] * D[1] - S[1] * D[0],
+  ]);
+  if (dot3(N, P) < 0) N = [-N[0], -N[1], -N[2]];
+
+  const pos = [], uvs = [], shade = [], idx = [];
+  for (let i = 0; i <= nu; i++) {
+    const a = (i / nu - 0.5) * w;
+    for (let j = 0; j <= nv; j++) {
+      const t = j / nv;
+      const b = t * len;
+      const out = bow * (1 - 4 * (a / w) * (a / w)) + curl * len * t * t;
+      const sw = sweep * len * t * t;
+      pos.push(
+        P[0] + S[0] * (a + sw) + D[0] * b + N[0] * out,
+        P[1] + S[1] * (a + sw) + D[1] * b + N[1] * out,
+        P[2] + S[2] * (a + sw) + D[2] * b + N[2] * out,
+      );
+      uvs.push(H_CARD_U0 + (i / nu) * (H_CARD_U1 - H_CARD_U0), 1 - t);
+      shade.push(0.72 - 0.46 * t);
+    }
+  }
+  const rows = nv + 1;
+  for (let i = 0; i < nu; i++) {
+    for (let j = 0; j < nv; j++) {
+      const a = i * rows + j, b2 = a + rows;
+      idx.push(a, a + 1, b2, a + 1, b2 + 1, b2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
   g.userData.shade = shade;
   return g;
 }
@@ -318,8 +602,8 @@ function shadeHair(geo, color) {
   const shade = geo.userData.shade;
   const n = geo.getAttribute('position').count;
   const arr = new Float32Array(n * 3);
-  const light = new THREE.Color(lighten(color, 0.18)).convertSRGBToLinear();
-  const dark = new THREE.Color(darken(color, 0.50)).convertSRGBToLinear();
+  const light = new THREE.Color(lighten(color, 0.30)).convertSRGBToLinear();
+  const dark = new THREE.Color(darken(color, 0.58)).convertSRGBToLinear();
   for (let i = 0; i < n; i++) {
     const t = clamp(shade ? shade[i] : 0.45, 0, 1);
     arr[i * 3] = light.r + (dark.r - light.r) * t;
@@ -343,168 +627,290 @@ const line = (f, b) => (az) => (f + (b - f) * (1 - Math.cos(az)) / 2) * D2R;
 // deterministic scatter for curl / dread placement
 const h1 = (i) => (Math.sin(i * 12.9898) * 43758.5453) % 1;
 const hs = (i) => Math.abs(h1(i));
+// smooth pseudo-noise for organic shell displacement
+const n3 = (a, b, c) => 0.5 + 0.5 * (
+  Math.sin(a * 3.1 + b * 1.7 + c) * 0.55
+  + Math.sin(a * 7.3 - b * 4.1 + c * 2.3) * 0.30
+  + Math.sin(a * 13.7 + b * 9.3 - c * 1.4) * 0.15);
 
-function buildHairGeo(style) {
+/**
+ * @returns { geo, hairline: {front, back}, fringe }
+ * `hairline` is handed to the face texture, which paints the scalp and a
+ * feathered fringe underneath — that is what removes the shell seam.
+ */
+function buildHairGeo(style, seed = 0) {
   const parts = [];
   const front = (az) => Math.cos(az);          // +1 face, -1 nape
+  const jitter = (hs(seed * 7 + 3) - 0.5);
+  const partSide = hs(seed * 5 + 1) > 0.5 ? 1 : -1;
+  let hl = { front: 51 * D2R, back: 104 * D2R };
+  let fringe = 0.5;
+
+  const fringeCards = (n, spread, opts) => {
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      const az = (t - 0.5) * 2 * spread + jitter * 0.12;
+      parts.push(hairCard(az, hl.front + 0.03, {
+        w: 0.20 + 0.10 * hs(i * 3 + seed),
+        len: (opts.len ?? 0.20) * (0.72 + 0.56 * hs(i * 5 + seed * 2)),
+        lift: 0.055,
+        sweep: partSide * (0.22 + 0.30 * hs(i * 7 + seed)),
+        curl: opts.curl ?? 0.22,
+        bow: 0.05,
+      }));
+    }
+  };
+  const napeCards = (n, len = 0.16) => {
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      const az = Math.PI + (t - 0.5) * 2.1;
+      parts.push(hairCard(az, hl.back - 0.06, {
+        w: 0.24, len: len * (0.7 + 0.6 * hs(i * 11 + seed)),
+        lift: 0.04, sweep: (hs(i * 13 + seed) - 0.5) * 0.4, curl: 0.18, bow: 0.04,
+      }));
+    }
+  };
+  const flyaways = (n, len = 0.15) => {
+    for (let i = 0; i < n; i++) {
+      const az = hs(i * 17 + seed * 3) * TAU;
+      const th = (14 + 26 * hs(i * 19 + seed)) * D2R;
+      parts.push(hairCard(az, th, {
+        w: 0.16, len: len * (0.6 + 0.8 * hs(i * 23 + seed)),
+        lift: 0.05, sweep: (hs(i * 29 + seed) - 0.5) * 0.9, curl: -0.55, bow: 0.03,
+      }));
+    }
+  };
 
   switch (style) {
     case 'bald':
-      return null;
+      return { geo: null, hairline: null, fringe: 0 };
 
     case 'buzz':
+      hl = { front: (49 + jitter * 4) * D2R, back: 104 * D2R };
+      fringe = 0.16;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(50, 102),
-        puff: () => 0.040,
+        inner: () => 0, outer: line(hl.front / D2R, hl.back / D2R),
+        puff: () => 0.042, streak: 9,
       }));
+      fringeCards(5, 0.75, { len: 0.06, curl: 0.1 });
       break;
 
     case 'fade':
+      hl = { front: (46 + jitter * 4) * D2R, back: 110 * D2R };
+      fringe = 0.22;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(47, 108),
-        puff: (az, t) => 0.065 * (1 - smooth(0.28, 0.90, t)) + 0.034,
-        shadeBias: 0.18,
+        inner: () => 0, outer: line(hl.front / D2R, hl.back / D2R),
+        puff: (az, t) => 0.075 * (1 - smooth(0.24, 0.86, t)) + 0.032,
+        shadeBias: 0.16, streak: 7,
       }));
+      fringeCards(6, 0.8, { len: 0.09, curl: 0.12 });
       break;
 
     case 'crop':
+      hl = { front: (53 + jitter * 5) * D2R, back: 104 * D2R };
+      fringe = 0.55;
       parts.push(hairShell({
         inner: () => 0,
-        outer: (az) => line(53, 104)(az) + 3.5 * Math.sin(az * 6) * D2R,
-        puff: (az, t) => 0.085 * (1 - smooth(0.55, 1.0, t)) + 0.036,
+        outer: (az) => line(53, 104)(az) + 3.5 * Math.sin(az * 6 + seed) * D2R,
+        puff: (az, t) => 0.095 * (1 - smooth(0.55, 1.0, t)) + 0.036
+          + 0.030 * (n3(Math.cos(az) * 2, Math.sin(az) * 2, t * 3) - 0.5),
+        streak: 6,
       }));
+      fringeCards(9, 1.05, { len: 0.17, curl: 0.20 });
+      napeCards(4, 0.11);
+      flyaways(3, 0.12);
       break;
 
     case 'quiff':
+      hl = { front: (48 + jitter * 4) * D2R, back: 104 * D2R };
+      fringe = 0.7;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(49, 104),
-        nv: 11,
-        puff: (az, t) => 0.075 * (1 - smooth(0.62, 1.0, t)) + 0.036
-          + 0.17 * clamp((front(az) + 0.20) / 1.20, 0, 1) ** 1.1
+        inner: () => 0, outer: line(48, 104), nv: 12,
+        puff: (az, t) => 0.080 * (1 - smooth(0.62, 1.0, t)) + 0.034
+          + 0.20 * clamp((front(az) + 0.18) / 1.18, 0, 1) ** 1.1
             * Math.sin(clamp(t / 0.55, 0, 1) * Math.PI) ** 0.8,
+        streak: 5,
       }));
+      // the swept-up front is built from cards so it has real strand edges
+      for (let i = 0; i < 9; i++) {
+        const t = (i + 0.5) / 9;
+        const az = (t - 0.5) * 1.9;
+        parts.push(hairCard(az, 0.34, {
+          w: 0.22, len: 0.30 + 0.10 * hs(i * 3 + seed), lift: 0.16,
+          sweep: partSide * 0.35, curl: -0.85, bow: 0.06,
+        }));
+      }
+      napeCards(4, 0.10);
       break;
 
     case 'curls':
+      hl = { front: (52 + jitter * 5) * D2R, back: 100 * D2R };
+      fringe = 0.85;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(52, 100),
-        puff: (az, t) => 0.10 * (1 - smooth(0.74, 1.0, t)) + 0.036,
+        inner: () => 0, outer: line(52, 100), nu: 40, nv: 11,
+        puff: (az, t) => 0.155 * (1 - smooth(0.74, 1.0, t)) + 0.036
+          + 0.075 * (n3(Math.cos(az) * 3.2, Math.sin(az) * 3.2, t * 4.4) - 0.5)
+            * (1 - smooth(0.62, 1.0, t)),
+        streak: 4,
       }));
-      // lumps scattered across the whole cap, not a bead necklace at the rim
-      for (let i = 0; i < 26; i++) {
-        const az = hs(i * 3 + 1) * TAU;
+      // irregular clumps, never a bead necklace: overlapping, varied, sunk in
+      for (let i = 0; i < 22; i++) {
+        const az = hs(i * 3 + 1 + seed) * TAU;
         const rim = line(52, 100)(az) / D2R;
-        const th = (8 + hs(i * 7 + 5) * (rim - 14)) * D2R;
-        parts.push(onSkull(blobGeo(HEAD_R * (0.115 + 0.045 * hs(i * 11 + 3)), 7), az, th, 0.075));
+        const th = (10 + hs(i * 7 + 5 + seed) * (rim - 18)) * D2R;
+        const b = blobGeo(HEAD_R * (0.105 + 0.075 * hs(i * 11 + 3 + seed)), 7);
+        b.scale(1 + 0.5 * hs(i * 13 + seed), 0.72 + 0.5 * hs(i * 17 + seed), 1);
+        b.rotateY(hs(i * 19 + seed) * TAU);
+        parts.push(onSkull(b, az, th, 0.055));
       }
+      for (let i = 0; i < 16; i++) {
+        const az = hs(i * 23 + seed * 5) * TAU;
+        const rim = line(52, 100)(az);
+        const th = 0.25 + hs(i * 29 + seed) * (rim - 0.3);
+        parts.push(hairCard(az, th, {
+          w: 0.20, len: 0.13 + 0.07 * hs(i * 31 + seed), lift: 0.12,
+          sweep: (hs(i * 37 + seed) - 0.5) * 1.2, curl: -0.4, bow: 0.05,
+        }));
+      }
+      fringeCards(7, 1.0, { len: 0.15, curl: 0.3 });
       break;
 
     case 'afro':
+      hl = { front: (56 + jitter * 4) * D2R, back: 104 * D2R };
+      fringe = 0.9;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(56, 104),
-        nu: 34, nv: 10,
-        puff: (az, t) => (0.34 + 0.06 * Math.sin(az * 5) + 0.05 * Math.sin(az * 11 + 1.3)
-          + 0.04 * Math.sin(t * 9 + az * 3)) * (1 - smooth(0.58, 1.0, t)) + 0.038,
+        inner: () => 0, outer: line(56, 104), nu: 44, nv: 12,
+        puff: (az, t) => (0.36 + 0.10 * (n3(Math.cos(az) * 2.6, Math.sin(az) * 2.6, t * 3.1) - 0.5) * 2
+          + 0.05 * Math.sin(az * 9 + seed)) * (1 - smooth(0.60, 1.0, t)) + 0.038,
+        streak: 3,
       }));
-      for (let i = 0; i < 44; i++) {
-        const az = hs(i * 5 + 9) * TAU;
-        const rimA = line(56, 104)(az) / D2R;
-        const th = (5 + hs(i * 13 + 2) * (rimA - 7)) * D2R;
-        parts.push(onSkull(blobGeo(HEAD_R * (0.085 + 0.030 * hs(i * 3 + 7)), 6), az, th,
-          0.31 + 0.045 * hs(i * 17 + 1)));
+      // fuzz the whole silhouette with cards instead of stacking spheres
+      for (let i = 0; i < 34; i++) {
+        const az = hs(i * 5 + 9 + seed) * TAU;
+        const rim = line(56, 104)(az);
+        const th = 0.16 + hs(i * 13 + 2 + seed) * (rim - 0.22);
+        parts.push(hairCard(az, th, {
+          w: 0.26, len: 0.16 + 0.10 * hs(i * 3 + 7 + seed),
+          lift: 0.30 + 0.09 * hs(i * 17 + 1 + seed),
+          sweep: (hs(i * 7 + seed) - 0.5) * 1.4, curl: -0.5, bow: 0.06,
+        }));
       }
       break;
 
     case 'dreads':
+      hl = { front: (53 + jitter * 4) * D2R, back: 100 * D2R };
+      fringe = 0.6;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(53, 100),
-        puff: (az, t) => 0.075 * (1 - smooth(0.74, 1.0, t)) + 0.038,
+        inner: () => 0, outer: line(53, 100),
+        puff: (az, t) => 0.085 * (1 - smooth(0.74, 1.0, t)) + 0.038, streak: 5,
       }));
-      for (let i = 0; i < 16; i++) {
-        const az = 1.95 + (i / 15) * (TAU - 3.9);
-        const len = 0.26 + 0.16 * hs(i * 5 + 2);
-        const strand = new THREE.CylinderGeometry(HEAD_R * 0.078, HEAD_R * 0.058, len, 6, 1);
+      for (let i = 0; i < 18; i++) {
+        const az = 1.9 + (i / 17) * (TAU - 3.8);
+        const len = 0.24 + 0.20 * hs(i * 5 + 2 + seed);
+        const strand = new THREE.CylinderGeometry(HEAD_R * 0.072, HEAD_R * 0.050, len, 6, 1);
         strand.translate(0, -len * 0.46, 0);
-        strand.rotateZ(Math.sin(az) * 0.18);
-        parts.push(onSkull(strand, az, (78 + 18 * hs(i * 9 + 4)) * D2R, 0.045));
+        strand.rotateZ(Math.sin(az) * 0.20);
+        parts.push(onSkull(strand, az, (76 + 20 * hs(i * 9 + 4 + seed)) * D2R, 0.055));
+        parts.push(hairCard(az, (74 + 22 * hs(i * 11 + seed)) * D2R, {
+          w: 0.12, len: len * 0.9, lift: 0.09,
+          sweep: (hs(i * 3 + seed) - 0.5) * 0.5, curl: 0.10, bow: 0.02,
+        }));
       }
       break;
 
     case 'bun': {
+      hl = { front: (54 + jitter * 5) * D2R, back: 114 * D2R };
+      fringe = 0.35;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(53, 112),
-        puff: (az, t) => 0.055 * (1 - smooth(0.60, 1.0, t)) + 0.036,
+        inner: () => 0, outer: line(54, 114), nv: 11,
+        puff: (az, t) => 0.062 * (1 - smooth(0.60, 1.0, t)) + 0.036, streak: 8,
       }));
-      const knot = blobGeo(HEAD_R * 0.32, 12);
-      knot.scale(1, 0.88, 1);
+      const knot = blobGeo(HEAD_R * 0.33, 14);
+      knot.scale(1, 0.86, 1);
       parts.push(onSkull(knot, Math.PI, 40 * D2R, 0.26));
-      const band = new THREE.TorusGeometry(HEAD_R * 0.21, HEAD_R * 0.045, 6, 12);
+      const band = new THREE.TorusGeometry(HEAD_R * 0.22, HEAD_R * 0.046, 6, 14);
       band.rotateX(Math.PI * 0.46);
       parts.push(onSkull(band, Math.PI, 52 * D2R, 0.12));
+      // strands sweeping back into the knot + loose wisps at the nape
+      for (let i = 0; i < 10; i++) {
+        const az = (i / 9 - 0.5) * 2.4 + Math.PI;
+        parts.push(hairCard(az, 0.9, {
+          w: 0.18, len: 0.22, lift: 0.05,
+          sweep: (hs(i * 3 + seed) - 0.5) * 0.6, curl: 0.15, bow: 0.03,
+        }));
+      }
+      fringeCards(5, 0.8, { len: 0.10, curl: 0.15 });
       break;
     }
 
     case 'long':
+      hl = { front: (50 + jitter * 4) * D2R, back: 150 * D2R };
+      fringe = 0.95;
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(50, 150),
-        nv: 13,
-        puff: (az, t) => 0.055 * (1 - smooth(0.90, 1.0, t)) + 0.038
-          + 0.13 * Math.max(0, -front(az)) * smooth(0.28, 1.0, t),
+        inner: () => 0, outer: line(50, 150), nv: 15,
+        puff: (az, t) => 0.062 * (1 - smooth(0.92, 1.0, t)) + 0.038
+          + 0.15 * Math.max(0, -front(az)) * smooth(0.26, 1.0, t)
+          + 0.035 * (n3(Math.cos(az) * 3, Math.sin(az) * 3, t * 2) - 0.5),
+        streak: 4,
       }));
+      for (let i = 0; i < 14; i++) {
+        const az = Math.PI + (i / 13 - 0.5) * 4.0;
+        parts.push(hairCard(az, 2.05, {
+          w: 0.22, len: 0.26 + 0.12 * hs(i * 5 + seed), lift: 0.05,
+          sweep: (hs(i * 7 + seed) - 0.5) * 0.5, curl: 0.20, bow: 0.03,
+        }));
+      }
+      fringeCards(8, 1.1, { len: 0.22, curl: 0.24 });
       break;
 
     case 'mohawk': {
-      // shaved sides: a thin, dark shell that still reads as hair
+      hl = { front: (56 + jitter * 4) * D2R, back: 104 * D2R };
+      fringe = 0.25;
+      // shaved sides: thin and dark, but still hair
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(56, 104),
-        puff: () => 0.044,
-        shadeBias: 0.34,
+        inner: () => 0, outer: line(56, 104),
+        puff: () => 0.042, shadeBias: 0.34, streak: 11,
       }));
-      // crest: a chunky ridge over the crown, front to back
+      // crest: a ridge of cards standing up along the centre line
       for (let i = 0; i <= 12; i++) {
-        const s = i / 12;                      // 0 front hairline, 1 nape
-        const ang = (s - 0.42) / 0.58;         // crown sits at s = 0.42
+        const s = i / 12;
+        const ang = (s - 0.42) / 0.58;
         const az = ang < 0 ? 0 : Math.PI;
         const th = Math.abs(ang) * (ang < 0 ? 46 : 62) * D2R;
         const h = Math.sin(s ** 0.8 * Math.PI) ** 0.55;
-        const blade = blobGeo(HEAD_R * 0.185, 9);
-        blade.scale(0.90, 0.55 + h * 1.30, 1.30);
-        parts.push(onSkull(blade, az, th, h * 0.26));
+        const blade = blobGeo(HEAD_R * 0.150, 9);
+        blade.scale(0.72, 0.50 + h * 1.35, 1.25);
+        parts.push(onSkull(blade, az, th, h * 0.24));
+        parts.push(hairCard(az, th, {
+          w: 0.10, len: 0.10 + h * 0.26, lift: 0.05 + h * 0.20,
+          sweep: 0, curl: -0.25, bow: 0.02,
+        }));
       }
       break;
     }
 
     default:
+      hl = { front: 51 * D2R, back: 102 * D2R };
       parts.push(hairShell({
-        inner: () => 0,
-        outer: line(51, 102),
-        puff: (az, t) => 0.06 * (1 - smooth(0.60, 1.0, t)) + 0.036,
+        inner: () => 0, outer: line(51, 102),
+        puff: (az, t) => 0.065 * (1 - smooth(0.60, 1.0, t)) + 0.036,
       }));
+      fringeCards(7, 0.95, { len: 0.15, curl: 0.2 });
   }
-  return mergeShaded(parts.map(ensureUv));
+  return { geo: mergeShaded(parts.map((p) => ensureUv(p))), hairline: hl, fringe };
 }
 
 /**
- * Beard shell. Azimuths outside the front arc collapse onto a single ring that
- * is buried inside the skull (puff < 0), so no sheet stretches across the head.
+ * Beard shell. Azimuths outside the front arc collapse onto a ring buried
+ * inside the skull (puff < 0), so no sheet stretches across the head.
  */
 function buildBeard(density = 1) {
   const inArc = (az) => Math.cos(az) > -0.10;
-  // sideburn starts high by the ear (74 deg) and drops to below the lip at the chin
   const top = (az) => (74 + 30 * Math.max(0, Math.cos(az))) * D2R;
   const chin = hairShell({
     inner: top,
     outer: (az) => (inArc(az) ? (114 + (12 + 12 * density) * Math.cos(az)) * D2R : top(az)),
-    nu: 28, nv: 7,
+    nu: 30, nv: 8, streak: 6,
     puff: (az, t) => (inArc(az)
       ? (0.020 + 0.060 * density) * Math.sin(Math.min(1, t * 1.05) * Math.PI) + 0.032
       : -0.12),
@@ -513,15 +919,75 @@ function buildBeard(density = 1) {
   const tache = hairShell({
     inner: mtop,
     outer: (az) => (Math.cos(az) > 0.62 ? 99 * D2R : mtop(az)),
-    nu: 22, nv: 3,
+    nu: 22, nv: 3, streak: 4,
     puff: (az, t) => (Math.cos(az) > 0.62 ? 0.05 * Math.sin(t * Math.PI) + 0.036 : -0.10),
   });
-  return mergeShaded([ensureUv(chin), ensureUv(tache)]);
+  const parts = [chin, tache];
+  // jaw-line strand cards so the beard has a soft edge
+  for (let i = 0; i < 11; i++) {
+    const az = (i / 10 - 0.5) * 2.5;
+    parts.push(hairCard(az, (118 + 14 * Math.cos(az)) * D2R, {
+      w: 0.16, len: 0.10 + 0.06 * density, lift: 0.05, sweep: 0, curl: 0.12, bow: 0.02,
+    }));
+  }
+  return mergeShaded(parts);
+}
+
+// ---------------------------------------------------------------------------
+// HANDS — a real palm with fingers, a thumb and a wrist. Merged into the
+// forearm mesh so they cost no extra draw call; UV'd into the bare-skin (or
+// glove) band of the arm texture.
+// ---------------------------------------------------------------------------
+
+function buildHand(s, keeper) {
+  const parts = [];
+  const K = keeper ? 1.30 : 1.0;
+  const y0 = -0.196;                                   // wrist
+
+  // wrist / cuff
+  const cuff = new THREE.CylinderGeometry(0.056 * K, 0.050 * K, 0.030, 12, 1);
+  cuff.translate(0, y0 + 0.012, 0);
+  parts.push(cuff);
+
+  // palm
+  const palm = blobGeo(0.062 * K, 12);
+  palm.scale(1.16, 0.86, 0.72);
+  palm.translate(0, y0 - 0.044 * K, 0.004);
+  parts.push(palm);
+
+  // four fingers, curled forward and fanned
+  for (let i = 0; i < 4; i++) {
+    const t = i / 3;
+    const len = (0.072 - Math.abs(t - 0.34) * 0.020) * K;
+    const r = 0.0165 * K;
+    const f = new THREE.CapsuleGeometry(r, len, 2, 6);
+    f.translate(0, -len * 0.5, 0);
+    f.rotateX(-0.62 - t * 0.14);
+    f.rotateZ(-s * (t - 0.5) * 0.30);
+    f.translate(s * (0.044 - t * 0.030) * K, y0 - 0.086 * K, 0.008 * K);
+    parts.push(f);
+  }
+  // thumb, medial and forward
+  const th = new THREE.CapsuleGeometry(0.020 * K, 0.048 * K, 2, 6);
+  th.translate(0, -0.026 * K, 0);
+  th.rotateZ(s * 1.00);
+  th.rotateX(-0.42);
+  th.translate(-s * 0.052 * K, y0 - 0.048 * K, 0.020 * K);
+  parts.push(th);
+  // knuckle mass
+  const kn = blobGeo(0.040 * K, 8);
+  kn.scale(1.35, 0.62, 0.80);
+  kn.translate(0, y0 - 0.080 * K, 0.014 * K);
+  parts.push(kn);
+
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  return m;
 }
 
 // ---------------------------------------------------------------------------
 // BOOT — vertex-coloured so every player shares one material.
-// Built so the sole plane sits at y = -0.06 (the foot bone lives at y = 0.06).
+// The sole plane sits at y = -0.06 (the foot bone lives at y = 0.06).
 // ---------------------------------------------------------------------------
 
 function buildBoot(main, accent, sole) {
@@ -558,7 +1024,7 @@ function buildBoot(main, accent, sole) {
   lace.translate(0, 0.054, 0.078);
   parts.push(tint(lace, accent));
 
-  const m = mergeGeometries(parts.map(ensureUv), false);
+  const m = mergeGeometries(parts.map((p) => ensureUv(p)), false);
   parts.forEach((p) => p.dispose());
   return m;
 }
@@ -566,6 +1032,9 @@ function buildBoot(main, accent, sole) {
 // ---------------------------------------------------------------------------
 
 let uid = 0;
+
+const NAMES = ['SILVA', 'KANE', 'MBAPPE', 'HALLER', 'DIAZ', 'ROSSI', 'MULLER',
+  'OKAFOR', 'TANAKA', 'NOVAK', 'BRUNO', 'LEWIN'];
 
 export function createPlayer(cfg = {}) {
   const team = TEAMS[cfg.team ?? 0];
@@ -576,16 +1045,20 @@ export function createPlayer(cfg = {}) {
   const hairStyle = cfg.hair ?? HAIR_STYLES[0];
   const faceVariant = cfg.faceVariant ?? 0;
   const beard = cfg.beard ?? 0;             // 0 clean, 1 stubble, 2 full beard
-  const kitStyle = cfg.kitStyle ?? 'plain';
+  const kitStyle = isKeeper ? 'keeper' : (cfg.kitStyle ?? 'plain');
   const build = cfg.build ?? 1.0;
+  const girth = cfg.girth ?? 1.0;
+  const headScale = cfg.headScale ?? 1.0;
+  const seed = (number * 7 + (cfg.team ?? 0) * 13 + faceVariant * 3) % 97;
 
   const kitColor = isKeeper ? team.keeper : team.kit;
   const kitAlt = isKeeper ? darken(team.keeper, 0.42) : (team.kitDark ?? darken(team.kit, 0.4));
   const shortsColor = isKeeper ? team.keeperShorts : team.shorts;
-  const sockColor = isKeeper ? team.keeper : team.socks;
+  const sockColor = isKeeper ? darken(team.keeper, 0.30) : team.socks;
   const trimColor = isKeeper ? lighten(team.keeper, 0.72) : team.trim;
-  const sockTrim = isKeeper ? darken(team.keeper, 0.5)
+  const sockTrim = isKeeper ? lighten(team.keeper, 0.6)
     : (contrastOn(sockColor) === 0xffffff ? 0xffffff : darken(sockColor, 0.45));
+  const gloveColor = lighten(team.keeper, 0.78);
 
   const group = new THREE.Group();
   group.name = `player-${team.name}-${number}`;
@@ -601,6 +1074,7 @@ export function createPlayer(cfg = {}) {
   hips.add(torso);
   const head = new THREE.Object3D(); head.name = 'head';
   head.position.y = HEAD_BONE_Y;
+  head.scale.setScalar(headScale);
   torso.add(head);
 
   const meshes = [];
@@ -620,20 +1094,22 @@ export function createPlayer(cfg = {}) {
     [0.44, 0.316, -0.100],
     [0.76, 0.306, -0.022],
     [1.00, 0.292, 0.048],
-  ], 20, 12);
-  shortsGeo.scale(1, 1, 0.86);
+  ], 22, 12);
+  shortsGeo.scale(girth, 1, 0.86 * girth);
+  if (isKeeper) shortsGeo.scale(1.04, 1.10, 1.04);
   addMesh(hips, shortsGeo,
-    fabricMat(`shortsM:${shortsColor}:${trimColor}:${number}`,
-      shortsTexture({ color: shortsColor, trim: trimColor, number }),
+    fabricMat(`shortsM:${shortsColor}:${trimColor}:${kitColor}:${isKeeper ? 1 : 0}`,
+      shortsTexture({ color: shortsColor, trim: trimColor, kit: kitColor, long: isKeeper }),
       { rough: 0.88, repeat: [5, 2], normalScale: 0.5 }), true);
 
   // plug the open bottom of the shorts lathe
   const gusset = blobGeo(0.30, 12);
-  gusset.scale(1, 0.50, 0.86);
+  gusset.scale(girth, 0.50, 0.86 * girth);
   gusset.translate(0, -0.175, 0);
-  addMesh(hips, ensureUv(gusset), skinMat(skin));
+  addMesh(hips, ensureUv(gusset), skinMat(darken(skin, 0.22)));
 
   // ---- torso --------------------------------------------------------------
+  const torsoParts = [];
   const torsoGeo = lathe([
     [0.00, 0.302, -0.030],
     [0.10, 0.320, 0.030],
@@ -643,11 +1119,23 @@ export function createPlayer(cfg = {}) {
     [0.88, 0.330, 0.502],
     [0.95, 0.215, 0.546],
     [1.00, 0.040, 0.566],
-  ], 24, 16);
-  torsoGeo.scale(1, 1, 0.80);
-  const torsoMesh = addMesh(torso, torsoGeo,
-    fabricMat(`shirtM:${kitColor}:${trimColor}:${kitAlt}:${number}:${kitStyle}`,
-      shirtTexture({ kit: kitColor, trim: trimColor, alt: kitAlt, number, style: kitStyle }),
+  ], 30, 16);
+  torsoGeo.scale(girth, 1, 0.80 * girth);
+  torsoParts.push(torsoGeo);
+  // real collar: a ring around the neck, UV'd into the shirt's trim band
+  const collar = new THREE.TorusGeometry(0.176, 0.042, 8, 22);
+  collar.rotateX(Math.PI / 2);
+  collar.scale(1.06 * girth, 1, 0.92 * girth);
+  collar.translate(0, 0.520, 0);
+  torsoParts.push(cylUV(collar, 0.985));
+  const torsoMerged = mergeGeometries(torsoParts, false);
+  torsoParts.forEach((p) => p.dispose());
+  const torsoMesh = addMesh(torso, torsoMerged,
+    fabricMat(`shirtM:${kitColor}:${trimColor}:${kitAlt}:${number}:${kitStyle}:${team.id}`,
+      shirtTexture({
+        kit: kitColor, trim: trimColor, alt: kitAlt, number, style: kitStyle,
+        letter: (team.short || team.name || 'C')[0], name: NAMES[number % NAMES.length],
+      }),
       { rough: 0.84, repeat: [6, 3], normalScale: 0.6 }), true);
 
   // ---- head ---------------------------------------------------------------
@@ -655,25 +1143,30 @@ export function createPlayer(cfg = {}) {
     buildHead(),
     buildNose(1 + (faceVariant % 3) * 0.08),
     buildEars(),
+    buildLids(),
     buildNeck(),
   ];
   const headMerged = mergeGeometries(headParts, false);
   headParts.forEach((p) => p.dispose());
+
+  const hairInfo = buildHairGeo(hairStyle, seed);
+  const scalp = hairInfo.hairline
+    ? { color: hairColor, front: hairInfo.hairline.front, back: hairInfo.hairline.back, fringe: hairInfo.fringe }
+    : null;
+  const faceOpts = { skin, variant: faceVariant, browColor: hairColor, stubble: beard, scalp };
+  const headMat = new THREE.MeshStandardMaterial({
+    map: headTexture({ ...faceOpts, expr: 'set' }),
+    roughness: 0.80, metalness: 0.0,
+  });
+  addMesh(head, headMerged, headMat, true);
+
+  // ---- eyeballs -----------------------------------------------------------
   const eyeIdx = (faceVariant + (number % 3)) % EYE_COLORS.length;
-  addMesh(head, headMerged,
-    sharedMat(`headM:${skin}:${faceVariant}:${hairColor}:${beard}:${eyeIdx}`, () =>
-      new THREE.MeshStandardMaterial({
-        map: headTexture({
-          skin, variant: faceVariant, browColor: hairColor,
-          eyeColor: EYE_COLORS[eyeIdx], stubble: beard,
-        }),
-        roughness: 0.85, metalness: 0.0,
-      })), true);
+  const eyeMesh = addMesh(head, buildEyeballs(), eyeMat(EYE_COLORS[eyeIdx]));
 
   // ---- hair + beard -------------------------------------------------------
   const hairParts = [];
-  const hairGeo = buildHairGeo(hairStyle);
-  if (hairGeo) hairParts.push(shadeHair(hairGeo, hairColor));
+  if (hairInfo.geo) hairParts.push(shadeHair(hairInfo.geo, hairColor));
   if (beard === 2) hairParts.push(shadeHair(buildBeard(1), mixHex(hairColor, 0x24160e, 0.30)));
   if (hairParts.length) {
     let merged;
@@ -685,32 +1178,35 @@ export function createPlayer(cfg = {}) {
 
   // ---- arms ---------------------------------------------------------------
   const bones = {};
-  const armMat = fabricMat(`armM:${kitColor}:${trimColor}:${skin}:${isKeeper ? 1 : 0}`,
-    armTexture({ kit: kitColor, trim: trimColor, skin, long: isKeeper }),
+  const armMat = fabricMat(
+    `armM:${kitColor}:${trimColor}:${skin}:${kitAlt}:${isKeeper ? 1 : 0}:${kitStyle}`,
+    armTexture({
+      kit: kitColor, trim: trimColor, skin, alt: kitAlt,
+      long: isKeeper, style: kitStyle, glove: isKeeper ? gloveColor : 0,
+    }),
     { rough: 0.78, repeat: [3, 1], normalScale: 0.35 });
-  const handMat = isKeeper
-    ? fabricMat(`gloveM:${team.keeper}`,
-      gloveTexture({ color: lighten(team.keeper, 0.72), accent: darken(team.keeper, 0.45) }),
-      { rough: 0.55, repeat: [2, 2], normalScale: 0.4 })
-    : skinMat(skin);
 
+  const shoulderX = 0.330 * (0.94 + girth * 0.10);
   for (const s of [-1, 1]) {
     const side = s < 0 ? 'L' : 'R';
     const arm = new THREE.Object3D();
     arm.name = 'arm' + side;
-    arm.position.set(s * 0.345, TORSO_H - 0.075, 0);
+    arm.position.set(s * shoulderX, TORSO_H - 0.075, 0);
     torso.add(arm);
     bones['arm' + side] = arm;
 
-    addMesh(arm, lathe([
+    // shoulder -> elbow, strongly tapered: a deltoid, not a pipe
+    const upper = lathe([
       [0.00, 0.030, -0.250],
-      [0.07, 0.080, -0.238],
-      [0.28, 0.089, -0.178],
-      [0.55, 0.098, -0.104],
-      [0.78, 0.110, -0.034],
-      [0.92, 0.112, 0.014],
+      [0.06, 0.074, -0.240],
+      [0.24, 0.081, -0.186],
+      [0.50, 0.092, -0.112],
+      [0.72, 0.108, -0.048],
+      [0.88, 0.124, 0.004],
+      [0.96, 0.122, 0.036],
       [1.00, 0.045, 0.058],
-    ], 14, 14), armMat);
+    ], 16, 14);
+    addMesh(arm, upper, armMat);
 
     const fore = new THREE.Object3D();
     fore.name = 'forearm' + side;
@@ -718,37 +1214,30 @@ export function createPlayer(cfg = {}) {
     arm.add(fore);
     bones['forearm' + side] = fore;
 
+    // elbow -> wrist, tapering into the hand
     const foreGeo = lathe([
-      [0.00, 0.032, -0.250],
-      [0.07, 0.076, -0.238],
-      [0.18, 0.106, -0.210],
-      [0.32, 0.089, -0.174],
-      [0.46, 0.082, -0.144],
-      [0.72, 0.090, -0.074],
-      [0.92, 0.099, -0.012],
-      [1.00, 0.050, 0.016],
-    ], 14, 14);
-    {   // flatten the hand into a paddle (and inflate it for a keeper glove)
-      const p = foreGeo.getAttribute('position');
-      const hs = isKeeper ? 1.30 : 1.0;
-      for (let i = 0; i < p.count; i++) {
-        const y = p.getY(i);
-        if (y < -0.150) {
-          const k = smooth(-0.150, -0.235, y);
-          const g1 = (1 + 0.34 * k) * (1 + (hs - 1) * k);
-          const g2 = (1 - 0.28 * k) * (1 + (hs - 1) * k * 0.6);
-          p.setXYZ(i, p.getX(i) * g1, y, p.getZ(i) * g2);
-        }
+      [0.00, 0.044, -0.206],
+      [0.10, 0.058, -0.198],
+      [0.28, 0.068, -0.166],
+      [0.50, 0.079, -0.118],
+      [0.74, 0.092, -0.058],
+      [0.92, 0.100, -0.008],
+      [1.00, 0.052, 0.016],
+    ], 16, 14);
+    // the forearm samples only the bare-skin (or glove) band of the arm strip
+    {
+      const uv = foreGeo.getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) {
+        uv.setY(i, (isKeeper ? 0.16 + uv.getY(i) * 0.66 : 0.06 + uv.getY(i) * 0.42));
       }
-      p.needsUpdate = true;
-      foreGeo.computeVertexNormals();
+      uv.needsUpdate = true;
     }
-    const thumb = blobGeo(isKeeper ? 0.054 : 0.043, 8);
-    thumb.scale(1, 1.5, 0.9);
-    thumb.translate(-s * (isKeeper ? 0.108 : 0.090), -0.178, 0.024);
-    const foreMerged = mergeGeometries([foreGeo, ensureUv(thumb)], false);
-    foreGeo.dispose(); thumb.dispose();
-    addMesh(fore, foreMerged, handMat);
+    const hand = buildHand(s, isKeeper);
+    cylUV(hand, isKeeper ? 0.055 : 0.045);
+    const foreMerged = mergeGeometries([foreGeo, hand], false);
+    foreGeo.dispose(); hand.dispose();
+    foreMerged.computeVertexNormals();
+    addMesh(fore, foreMerged, armMat, true);
   }
 
   // ---- legs ---------------------------------------------------------------
@@ -760,12 +1249,13 @@ export function createPlayer(cfg = {}) {
   const bootAccent = cfg.bootAccent ?? (bright ? 0xffffff : 0x1a1d24);
   const bootSole = cfg.bootSole ?? (bright ? 0xe9edf3 : 0x2b3038);
   const bootGeo = buildBoot(bootMain, bootAccent, bootSole);
+  const thighMat = skinMat(skin);
 
   for (const s of [-1, 1]) {
     const side = s < 0 ? 'L' : 'R';
     const thigh = new THREE.Object3D();
     thigh.name = 'thigh' + side;
-    thigh.position.set(s * 0.148, -0.02, 0);
+    thigh.position.set(s * 0.148 * girth, -0.02, 0);
     hips.add(thigh);
     bones['thigh' + side] = thigh;
 
@@ -773,10 +1263,10 @@ export function createPlayer(cfg = {}) {
       [0.00, 0.072, -0.300],
       [0.10, 0.108, -0.284],
       [0.34, 0.121, -0.216],
-      [0.64, 0.134, -0.120],
-      [0.88, 0.146, -0.034],
+      [0.64, 0.136, -0.120],
+      [0.88, 0.150, -0.034],
       [1.00, 0.118, 0.018],
-    ], 14, 12), skinMat(skin), true);
+    ], 14, 12), thighMat, true);
 
     const shin = new THREE.Object3D();
     shin.name = 'shin' + side;
@@ -843,13 +1333,44 @@ export function createPlayer(cfg = {}) {
 
   const config = {
     team: team.id, teamData: team, number, skin, hair: hairStyle, hairColor,
-    isKeeper, faceVariant, beard, kitStyle, build,
+    isKeeper, faceVariant, beard, kitStyle, build, girth, headScale,
   };
 
+  // ---- expression ---------------------------------------------------------
+  // The rig is the only per-frame signal player.js gets, and it is enough:
+  // root pitch says "on the floor", root lift and the arm yaw say "celebrating".
+  const restExpr = (seed % 3 === 0) ? 'focus' : 'set';
+  let expr = 'set';
+  let squint = 0;
+
+  function setExpression(kind) {
+    if (kind === expr) return;
+    expr = kind;
+    headMat.map = headTexture({ ...faceOpts, expr: kind });
+  }
+
+  function pickExpression() {
+    const pitch = root.rotation.x;
+    const lift = root.position.y;
+    if (pitch < -0.40) return 'strain';
+    if (isKeeper) return lift > 0.13 ? 'strain' : restExpr;
+    if (lift > 0.11 || Math.abs(bones.armL.rotation.y) > 0.10) return 'joy';
+    return restExpr;
+  }
+
   return {
-    group, rig, config, meshes, ring, blob,
+    group, rig, config, meshes, ring, blob, setExpression,
+    get expression() { return expr; },
     setSelected(v) { ring.visible = !!v; },
     syncShadow() {
+      setExpression(pickExpression());
+      // squinting is real: pulling the balls back into the dishes narrows the
+      // openings, so a grin or a grimace closes the eyes down.
+      const want = { set: 0.06, focus: 0.24, joy: 0.62, strain: 0.58 }[expr] ?? 0.06;
+      squint += (want - squint) * 0.22;
+      eyeMesh.position.z = -0.020 * squint;
+      eyeMesh.position.y = -0.004 * squint;
+
       blob.position.x = 0;
       blob.position.z = 0;
       const lift = Math.max(0, root.position.y);
@@ -859,6 +1380,7 @@ export function createPlayer(cfg = {}) {
     },
     dispose() {
       group.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+      headMat.dispose();
       ring.material.dispose();
       blob.material.dispose();
     },
@@ -892,19 +1414,23 @@ export function createSquad(teamIndex, rng) {
 
   for (let i = 0; i < numbers.length; i++) {
     const isKeeper = i === 0;
-    const hair = hairs[i];
+    // build, girth and head size vary enough that the silhouettes differ at a
+    // glance: a short stocky number 6 next to a tall lean number 10.
+    const tall = 0.90 + rng.float() * 0.20;
     squad.push(createPlayer({
       team: teamIndex,
       number: numbers[i],
       isKeeper,
       skin: skins[i],
-      hair,
+      hair: hairs[i],
       hairColor: rng.pick(HAIR_COLORS),
       faceVariant: (i * 2 + teamIndex * 3 + rng.int(2)) % 6,
-      beard: rng.chance(0.26) ? 2 : rng.chance(0.34) ? 1 : 0,
-      kitStyle: isKeeper ? 'plain' : kitStyle,
+      beard: rng.chance(0.30) ? 2 : rng.chance(0.34) ? 1 : 0,
+      kitStyle: isKeeper ? 'keeper' : kitStyle,
       bootColor: boots[i],
-      build: 0.955 + rng.float() * 0.09,
+      build: tall,
+      girth: 1.14 - (tall - 0.90) * 0.55 + (rng.float() - 0.5) * 0.10,
+      headScale: 1.06 - (tall - 0.90) * 0.35,
     }));
   }
   return squad;

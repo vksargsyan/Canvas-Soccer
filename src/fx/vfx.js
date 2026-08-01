@@ -25,6 +25,7 @@ import { makeRng } from '../core/rng.js';
 import {
   impactStar, swooshStrip, softGlow, particleAtlas, SPRITE,
   selectRingTexture, slideMarkTexture, smokeTexture, scuffDecalTexture,
+  impactSmear, shockRingTexture, litterTexture,
 } from './fx-textures.js';
 
 const MAX_MATTER = 900;
@@ -234,13 +235,20 @@ function createBatch({ map, blending, capacity, mode, depthTest = true, boost = 
 // ---------------------------------------------------------------------------
 // Point-sprite particle cloud (atlas)
 // ---------------------------------------------------------------------------
-function createCloud({ capacity, blending, boost }) {
+// `viewRef.m` is the live view matrix; particles flagged `align` use it to point
+// their sprite along their own screen-space velocity, which is what turns a
+// round spark into a motion streak.
+// `onLand(p)` fires once, the first time a flagged particle touches the turf —
+// that is where confetti hands itself to the ground-litter batch.
+function createCloud({ capacity, blending, boost, viewRef, onLand }) {
   const pos = new Float32Array(capacity * 3);
   const col = new Float32Array(capacity * 3);
   const siz = new Float32Array(capacity);
   const alp = new Float32Array(capacity);
   const til = new Float32Array(capacity);
   const rot = new Float32Array(capacity);
+  const str = new Float32Array(capacity * 2);
+  const shd = new Float32Array(capacity);
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -249,6 +257,8 @@ function createCloud({ capacity, blending, boost }) {
   geo.setAttribute('aAlpha', new THREE.BufferAttribute(alp, 1));
   geo.setAttribute('aTile', new THREE.BufferAttribute(til, 1));
   geo.setAttribute('aRot', new THREE.BufferAttribute(rot, 1));
+  geo.setAttribute('aStretch', new THREE.BufferAttribute(str, 2));
+  geo.setAttribute('aShade', new THREE.BufferAttribute(shd, 1));
   geo.setDrawRange(0, 0);
   geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 400);
 
@@ -264,15 +274,19 @@ function createCloud({ capacity, blending, boost }) {
       attribute float aAlpha;
       attribute float aTile;
       attribute float aRot;
+      attribute vec2 aStretch;
+      attribute float aShade;
       uniform float uScale;
       varying vec3 vColor;
       varying float vAlpha;
       varying vec2 vTile;
       varying float vRot;
+      varying vec2 vStretch;
       void main() {
-        vColor = aColor;
+        vColor = aColor * aShade;
         vAlpha = aAlpha;
         vRot = aRot;
+        vStretch = aStretch;
         float ti = floor(aTile + 0.5);
         vTile = vec2(mod(ti, 2.0), floor(ti * 0.5));
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -286,11 +300,17 @@ function createCloud({ capacity, blending, boost }) {
       varying float vAlpha;
       varying vec2 vTile;
       varying float vRot;
+      varying vec2 vStretch;
       void main() {
         if (vAlpha <= 0.003) discard;
         vec2 p = gl_PointCoord - 0.5;
         float s = sin(vRot), c = cos(vRot);
-        p = vec2(p.x * c - p.y * s, p.x * s + p.y * c) + 0.5;
+        p = vec2(p.x * c - p.y * s, p.x * s + p.y * c);
+        // A point sprite is square. Dividing the sample coordinate squeezes the
+        // drawn shape inside it, which is how a confetti flake gets to be a thin
+        // slip of paper that tumbles edge-on, and how a spark gets to be a
+        // streak instead of a dot.
+        p = p / max(vStretch, vec2(0.02)) + 0.5;
         if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) discard;
         // 2x2 atlas. The atlas texture is uploaded with flipY off, so both
         // gl_PointCoord and the sampler run top-left origin and agree.
@@ -315,6 +335,8 @@ function createCloud({ capacity, blending, boost }) {
       live: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, max: 1,
       size: 1, size1: 1, drag: 1, grav: -9, r: 1, g: 1, b: 1, fade: 1,
       tile: 0, rot: 0, spin: 0, bounce: 0.28, ease: 2,
+      sx: 1, sy: 1, flutter: 0, phase: 0, align: 0, blur: 0,
+      landTag: 0, landed: 0,
     });
   }
   let cursor = 0;
@@ -338,11 +360,19 @@ function createCloud({ capacity, blending, boost }) {
     p.drag = o.drag ?? 1.6; p.grav = o.grav ?? -9;
     c3.set(o.color).convertSRGBToLinear();
     p.r = c3.r; p.g = c3.g; p.b = c3.b;
+    p.hex = o.color;
     p.fade = o.fade ?? 1;
     p.tile = o.tile ?? SPRITE.PUFF;
     p.rot = o.rot ?? 0; p.spin = o.spin ?? 0;
     p.bounce = o.bounce ?? 0.28;
     p.ease = o.ease ?? 2;
+    p.sx = o.sx ?? 1; p.sy = o.sy ?? 1;
+    p.flutter = o.flutter ?? 0;
+    p.phase = o.phase ?? 0;
+    p.align = o.align ? 1 : 0;
+    p.blur = o.blur ?? 0;
+    p.landTag = o.land ? 1 : 0;
+    p.landed = 0;
     return p;
   }
 
@@ -359,15 +389,47 @@ function createCloud({ capacity, blending, boost }) {
       p.vy *= d;
       p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
       p.rot += p.spin * dt;
-      if (p.y < 0.02) { p.y = 0.02; p.vy *= -p.bounce; p.vx *= 0.62; p.vz *= 0.62; p.spin *= 0.5; }
+      if (p.y < 0.02) {
+        p.y = 0.02; p.vy *= -p.bounce; p.vx *= 0.62; p.vz *= 0.62; p.spin *= 0.5;
+        if (p.landTag && !p.landed) { p.landed = 1; if (onLand) onLand(p); }
+      }
       const t = p.life / p.max;
       const o = n * 3;
       pos[o] = p.x; pos[o + 1] = p.y; pos[o + 2] = p.z;
+
+      // ---- tumble: a foil flake presents anything from its full face to a
+      // hairline edge, and it is *darker* edge-on because it catches less of the
+      // key. Without that shading term confetti reads as flat coloured stickers.
+      let sx = p.sx, sy = p.sy, shade = 1;
+      if (p.flutter) {
+        p.phase += p.flutter * dt;
+        const f = Math.abs(Math.cos(p.phase));
+        sx = p.sx * (0.11 + 0.89 * f);
+        shade = 0.38 + 0.62 * f;
+      }
+
+      // ---- motion: fast particles smear along their own screen velocity
+      if (p.align || p.blur) {
+        const spd = Math.hypot(p.vx, p.vy, p.vz);
+        if (p.align && viewRef && viewRef.m && spd > 0.35) {
+          const e = viewRef.m.elements;
+          const vxv = e[0] * p.vx + e[4] * p.vy + e[8] * p.vz;
+          const vyv = e[1] * p.vx + e[5] * p.vy + e[9] * p.vz;
+          if (Math.abs(vxv) + Math.abs(vyv) > 1e-4) p.rot = Math.atan2(vyv, vxv);
+        }
+        if (p.blur) {
+          const st = Math.min(0.86, spd * p.blur);
+          sy *= 1 - st;                      // thinner across the direction of travel
+        }
+      }
+
       col[o] = p.r; col[o + 1] = p.g; col[o + 2] = p.b;
       siz[n] = p.size + (p.size1 - p.size) * t;
       alp[n] = Math.pow(1 - t, p.ease) * p.fade;
       til[n] = p.tile;
       rot[n] = p.rot;
+      str[n * 2] = sx; str[n * 2 + 1] = sy;
+      shd[n] = shade;
       n++;
     }
     geo.setDrawRange(0, n);
@@ -378,6 +440,8 @@ function createCloud({ capacity, blending, boost }) {
       geo.getAttribute('aAlpha').needsUpdate = true;
       geo.getAttribute('aTile').needsUpdate = true;
       geo.getAttribute('aRot').needsUpdate = true;
+      geo.getAttribute('aStretch').needsUpdate = true;
+      geo.getAttribute('aShade').needsUpdate = true;
     }
     return n;
   }
@@ -402,8 +466,21 @@ export function createVfx(scene) {
   group.name = 'vfx';
   scene.add(group);
 
-  const matter = createCloud({ capacity: MAX_MATTER, blending: THREE.NormalBlending, boost: 1 });
-  const energy = createCloud({ capacity: MAX_ENERGY, blending: THREE.AdditiveBlending, boost: 1.5 });
+  // Live view matrix, refreshed each update: sparks and streaks orient to their
+  // own screen-space velocity, which needs the camera basis on the CPU.
+  const viewRef = { m: null };
+
+  // forward declaration: matter's landing hook writes into the litter batch,
+  // which is created below.
+  let dropLitter = null;
+
+  const matter = createCloud({
+    capacity: MAX_MATTER, blending: THREE.NormalBlending, boost: 1, viewRef,
+    onLand: (p) => { if (dropLitter) dropLitter(p); },
+  });
+  const energy = createCloud({
+    capacity: MAX_ENERGY, blending: THREE.AdditiveBlending, boost: 1.5, viewRef,
+  });
   matter.points.renderOrder = 20;
   energy.points.renderOrder = 21;
   group.add(matter.points, energy.points);
@@ -438,12 +515,55 @@ export function createVfx(scene) {
   });
   glows.mesh.renderOrder = 25;
   const stars = createBatch({
-    map: impactStar('pink'), blending: THREE.AdditiveBlending, capacity: 10, mode: 0, boost: 1.35,
+    map: impactStar('pink'), blending: THREE.AdditiveBlending, capacity: 10, mode: 0, boost: 1.20,
   });
   stars.mesh.renderOrder = 26;
-  group.add(decals.mesh, scuffs.mesh, rings.mesh, smoke.mesh, ribbons.mesh, glows.mesh, stars.mesh);
 
-  const batches = [decals, scuffs, rings, smoke, ribbons, glows, stars];
+  // Radial energy smear: the part of a contact flash that is NOT a star. It goes
+  // in first and larger, so the star reads as the glint at the centre of an
+  // event rather than as the whole event.
+  const smears = createBatch({
+    map: impactSmear(), blending: THREE.AdditiveBlending, capacity: 12, mode: 0, boost: 1.05,
+  });
+  smears.mesh.renderOrder = 23;
+
+  // World-aligned ground streaks: the drag mark a sliding boot smears through
+  // the turf. Ribbon mode, so the long axis follows the slide instead of the
+  // screen.
+  const trails = createBatch({
+    map: swooshStrip(), blending: THREE.NormalBlending, capacity: 14, mode: 1, zBias: 0.12,
+  });
+  trails.mesh.renderOrder = 22;
+
+  // Ground shock ring — the dust wave leaving the point of contact.
+  const shocks = createBatch({
+    map: shockRingTexture(), blending: THREE.AdditiveBlending, capacity: 12, mode: 2,
+  });
+  shocks.mesh.renderOrder = 7;
+
+  // Settled confetti. Long-lived ground quads, so the pitch stays littered after
+  // the burst has fallen instead of the celebration evaporating.
+  const litter = createBatch({
+    map: litterTexture(), blending: THREE.NormalBlending, capacity: 240, mode: 2,
+  });
+  litter.mesh.renderOrder = 6;
+
+  group.add(decals.mesh, scuffs.mesh, litter.mesh, rings.mesh, shocks.mesh,
+    smoke.mesh, trails.mesh, ribbons.mesh, smears.mesh, glows.mesh, stars.mesh);
+
+  const batches = [decals, scuffs, litter, rings, shocks, smoke, trails, ribbons, smears, glows, stars];
+
+  // A flake that has come to rest leaves a slip of paper on the grass, tinted to
+  // match and rotated to however it landed.
+  dropLitter = (p) => {
+    if (!p.flutter) return;                       // only confetti settles
+    litter.add({
+      x: p.x, y: 0.019, z: p.z,
+      w0: p.size * 1.05, h0: p.size * 0.62,
+      rot: p.rot + frng.range(-0.4, 0.4),
+      life: 26, color: p.hex ?? 0xffffff, alpha: 0.92, ease: 0.8, hold: 0.82,
+    });
+  };
 
   // ---- ball reference -----------------------------------------------------
   // The shot streak has to end ON the ball or it reads as a stray white slash
@@ -500,23 +620,55 @@ export function createVfx(scene) {
     });
   }
 
-  /** generic impact — sparks fly out, a star pops, dust lifts */
+  /**
+   * Generic impact. Five layers, because a contact event is not one sprite:
+   *
+   *   1  radial smear   the energy thrown out of the contact point
+   *   2  star           the glint at its centre, small and late
+   *   3  spark streaks  velocity-aligned, so they read as motion not as dots
+   *   4  turf + debris  blades and paper chips torn loose
+   *   5  ground layer   a dust ring leaving the point and a low dust skirt
+   *
+   * `flashSize` still means what it meant, so every existing call site gets the
+   * upgrade without changing.
+   */
   function burst(p, opts = {}) {
     const n = opts.count ?? 16;
     const spd = opts.speed ?? 5;
     const color = opts.color ?? 0xffffff;
+    const size = opts.flashSize ?? 2.2;
+    const life = opts.flashLife ?? 0.26;
+    const ground = opts.ground !== false && p.y < 1.9;
+
+    // ---- 1. radial energy smear ------------------------------------------
+    if (opts.flash !== false) {
+      smears.add({
+        x: p.x, y: p.y + 0.06, z: p.z,
+        w0: size * 0.30, w1: size * 1.55, h0: size * 0.30, h1: size * 1.55,
+        life: life * 1.5, color: opts.flashColor ?? 0xffe4f4, alpha: 0.88,
+        rot: frng.range(-3, 3), spin: frng.range(-2.2, 2.2), ease: 1.9,
+      });
+      // ---- 2. the star, deliberately smaller than the smear it sits in
+      flash(0, p.x, p.y + 0.08, p.z, size * 0.62, life,
+        opts.flashColor ?? 0xffffff, frng.range(-1.2, 1.2));
+    }
+
+    // ---- 3. spark streaks -------------------------------------------------
     for (let i = 0; i < n; i++) {
       const a = frng.float() * Math.PI * 2;
       const e = frng.range(0.15, 1.0);
       energy.emit({
         x: p.x, y: p.y, z: p.z,
         vx: Math.cos(a) * spd * e, vy: frng.range(0.4, 1.4) * spd * 0.6, vz: Math.sin(a) * spd * e,
-        life: frng.range(0.20, 0.42), size: frng.range(0.09, 0.20), size1: 0.02,
-        color, drag: 3.0, grav: -9, tile: SPRITE.SPARK, ease: 1.6,
+        life: frng.range(0.20, 0.46), size: frng.range(0.14, 0.30), size1: 0.02,
+        color, drag: 2.6, grav: -9, tile: SPRITE.SPARK, ease: 1.6,
+        align: true, blur: 0.075, sy: 0.55,
       });
     }
-    // a few solid white flecks like the reference's paper-chip debris
-    for (let i = 0; i < Math.max(3, n * 0.3) | 0; i++) {
+
+    // ---- 4. torn turf and paper debris ------------------------------------
+    const chips = Math.max(3, (n * 0.3) | 0);
+    for (let i = 0; i < chips; i++) {
       const a = frng.float() * Math.PI * 2;
       matter.emit({
         x: p.x, y: p.y, z: p.z,
@@ -528,9 +680,30 @@ export function createVfx(scene) {
         rot: frng.float() * 6.28, spin: frng.range(-14, 14), ease: 1.2,
       });
     }
-    if (opts.flash !== false) {
-      flash(0, p.x, p.y + 0.08, p.z, opts.flashSize ?? 2.2, opts.flashLife ?? 0.26,
-        opts.flashColor ?? 0xffffff, frng.range(-1.2, 1.2));
+    if (ground) {
+      const blades = Math.max(4, (n * 0.55) | 0);
+      for (let i = 0; i < blades; i++) {
+        const a = frng.float() * Math.PI * 2;
+        matter.emit({
+          x: p.x + Math.cos(a) * 0.18, y: 0.07, z: p.z + Math.sin(a) * 0.18,
+          vx: Math.cos(a) * frng.range(1.4, 5.0),
+          vy: frng.range(1.6, 4.8),
+          vz: Math.sin(a) * frng.range(1.4, 5.0),
+          life: frng.range(0.4, 0.85), size: frng.range(0.09, 0.19),
+          color: frng.chance(0.6) ? 0x93e35d : (frng.chance(0.5) ? 0xc9f08c : 0x8a6d3c),
+          drag: 1.5, grav: -14, tile: SPRITE.BLADE,
+          rot: frng.float() * 6.28, spin: frng.range(-20, 20), ease: 1.3,
+        });
+      }
+
+      // ---- 5. ground dust: a ring leaving the hit, plus a low skirt --------
+      shocks.add({
+        x: p.x, y: 0.024, z: p.z,
+        w0: size * 0.30, w1: size * 2.10, h0: size * 0.30, h1: size * 2.10,
+        rot: frng.float() * 3.14, life: life * 2.1, color: 0xfff0dc,
+        alpha: 0.50, ease: 1.7,
+      });
+      dust({ x: p.x, y: 0, z: p.z }, { count: Math.max(5, (n * 0.5) | 0) });
     }
   }
 
@@ -573,6 +746,27 @@ export function createVfx(scene) {
       });
     }
     dust(p, { count: Math.max(5, (n * 0.6) | 0) });
+
+    // Motion streaks: two or three low, fast ribbons trailing the boot along the
+    // slide. Without them a tackle is a puff of particles that could have come
+    // from anywhere; with them the frame says which way the leg went.
+    if (opts.streak !== false && n >= 10) {
+      const marks = n >= 22 ? 3 : 2;
+      for (let i = 0; i < marks; i++) {
+        const side = (i - (marks - 1) * 0.5) * 0.30;
+        const len = frng.range(1.6, 3.0) * (n >= 22 ? 1.25 : 1);
+        trails.add({
+          x: p.x - ux * len * 0.42 + px * side,
+          y: 0.11 + i * 0.06,
+          z: p.z - uz * len * 0.42 + pz * side,
+          ax: -ux, ay: 0, az: -uz,
+          w0: len * 0.55, w1: len * 1.2,
+          h0: 0.17, h1: 0.05,
+          life: frng.range(0.24, 0.38), color: 0xfff0dc, alpha: 0.55, ease: 1.9,
+        });
+      }
+    }
+
     if (opts.decal !== false && frng.chance(0.9)) {
       scuffs.add({
         x: p.x - ux * 0.35 + frng.range(-0.12, 0.12), y: 0.017,
@@ -612,38 +806,74 @@ export function createVfx(scene) {
       x: p.x, y: s.oy, z: p.z, ax: ux, ay: 0, az: uz,
       w0: 0.01, h0: s.width, life: s.max, color: 0xffc4de, alpha: 1.0, ease: 1.4, hold: 0.30,
     });
-    // strike star at the boot, sized off the power
-    flash(0, p.x + ux * 0.18, (p.y ?? 0.45) + 0.12, p.z + uz * 0.18,
-      2.0 + 1.5 * power, 0.30, 0xffffff, frng.range(-1.0, 1.0));
-    for (let i = 0; i < 10; i++) {
+    // Strike: smear first and wide, star second and small — the same ordering
+    // as burst(), so a struck ball and a tackle read as the same physics.
+    const sx = p.x + ux * 0.18, sy = (p.y ?? 0.45) + 0.12, sz = p.z + uz * 0.18;
+    const fs = 2.0 + 1.5 * power;
+    smears.add({
+      x: sx, y: sy, z: sz,
+      w0: fs * 0.26, w1: fs * 1.35, h0: fs * 0.26, h1: fs * 1.35,
+      life: 0.40, color: 0xffd0ea, alpha: 0.85,
+      rot: frng.range(-3, 3), spin: frng.range(-2.4, 2.4), ease: 1.9,
+    });
+    flash(0, sx, sy, sz, fs * 0.66, 0.30, 0xffffff, frng.range(-1.0, 1.0));
+    for (let i = 0; i < 14; i++) {
       energy.emit({
         x: p.x, y: (p.y ?? 0.45) + frng.range(-0.12, 0.2), z: p.z,
-        vx: ux * frng.range(2, 8) + frng.range(-1.4, 1.4),
-        vy: frng.range(-0.2, 1.4),
-        vz: uz * frng.range(2, 8) + frng.range(-1.4, 1.4),
-        life: frng.range(0.14, 0.30), size: frng.range(0.08, 0.18), size1: 0.02,
-        color: 0xffbfe4, drag: 3.4, grav: -3, tile: SPRITE.SPARK, ease: 1.5,
+        vx: ux * frng.range(2, 10) + frng.range(-1.6, 1.6),
+        vy: frng.range(-0.2, 1.6),
+        vz: uz * frng.range(2, 10) + frng.range(-1.6, 1.6),
+        life: frng.range(0.14, 0.32), size: frng.range(0.12, 0.26), size1: 0.02,
+        color: 0xffbfe4, drag: 3.0, grav: -3, tile: SPRITE.SPARK, ease: 1.5,
+        align: true, blur: 0.070, sy: 0.5,
       });
     }
   }
 
   const CONFETTI = [0xff3b6b, 0xffd93b, 0x3bd6ff, 0x6bff8c, 0xc06bff, 0xffffff, 0xff8a3b];
+  const STREAMER = [0xffe36b, 0xff5f95, 0x7fdcff];
+
+  /**
+   * Falling paper. Every flake is an individual: its own size, its own tumble
+   * rate and phase, its own drift, and its own drag. The tumble is what does the
+   * heavy lifting — the point shader squeezes each flake toward edge-on and
+   * darkens it as it goes, so a cloud of confetti shimmers instead of hanging in
+   * the air as a field of identical stickers. Anything that reaches the turf
+   * leaves a slip of paper behind (see dropLitter).
+   */
   function confetti(p, opts = {}) {
     const n = opts.count ?? 220;
     const spread = opts.spread ?? 9;
     for (let i = 0; i < n; i++) {
       const a = frng.float() * Math.PI * 2;
       const r = Math.sqrt(frng.float()) * spread;
+      // three size classes, so the cloud has depth instead of one uniform grain
+      const roll = frng.float();
+      const size = roll > 0.90 ? frng.range(0.34, 0.52)
+        : roll > 0.55 ? frng.range(0.19, 0.31)
+          : frng.range(0.11, 0.19);
+      const big = size > 0.31;
+      const pal = (big && frng.chance(0.4)) ? STREAMER : CONFETTI;
       matter.emit({
         x: p.x + Math.cos(a) * r * 0.5,
         y: (opts.y ?? 7) + frng.range(0, 4),
         z: p.z + Math.sin(a) * r,
-        vx: frng.range(-2.2, 2.2), vy: frng.range(-0.6, 2.8), vz: frng.range(-2.2, 2.2),
-        life: frng.range(1.8, 3.6),
-        size: frng.chance(0.14) ? frng.range(0.30, 0.46) : frng.range(0.15, 0.27),
-        color: CONFETTI[frng.int(CONFETTI.length)],
-        drag: 1.5, grav: -3.1, fade: 1, tile: SPRITE.CHIP,
-        rot: frng.float() * 6.28, spin: frng.range(-9, 9), ease: 0.7, bounce: 0.1,
+        vx: frng.range(-2.4, 2.4), vy: frng.range(-0.6, 3.0), vz: frng.range(-2.4, 2.4),
+        life: frng.range(2.2, 4.4),
+        size,
+        color: pal[frng.int(pal.length)],
+        // Heavier flakes fall faster and flutter slower — the correlation is
+        // what keeps the cloud from looking like one particle system.
+        drag: big ? 1.15 : frng.range(1.5, 2.3),
+        grav: big ? -3.6 : frng.range(-2.4, -3.2),
+        fade: frng.range(0.86, 1.0), tile: SPRITE.CHIP,
+        rot: frng.float() * 6.28, spin: frng.range(-7, 7),
+        ease: 0.55, bounce: 0.06,
+        sx: frng.range(0.62, 0.86), sy: frng.range(0.86, 1.0),
+        flutter: frng.range(5.5, 13.0) * frng.sign(),
+        phase: frng.float() * 6.28,
+        blur: 0.030,
+        land: true,
       });
     }
   }
@@ -723,9 +953,19 @@ export function createVfx(scene) {
   // update
   // =========================================================================
   let camera = null;
+  const viewM = new THREE.Matrix4();
   function setCamera(c) { camera = c; }
 
   function update(dt) {
+    // The capture harness runs many simulation steps between renders, so
+    // camera.matrixWorldInverse can be seconds stale. Rebuild it here: velocity
+    // alignment for sparks and streaks is a screen-space operation and a stale
+    // basis points every streak the wrong way.
+    if (camera) {
+      camera.updateMatrixWorld();
+      viewM.copy(camera.matrixWorld).invert();
+      viewRef.m = viewM;
+    }
     matter.update(dt);
     energy.update(dt);
 
