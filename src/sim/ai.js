@@ -73,6 +73,7 @@ const CARRY_R = PLAYER_R + BALL_R + 0.42;
 const _v = new THREE.Vector3();
 const _aim = new THREE.Vector3();
 const _o = new THREE.Vector3();
+const _sup = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
 // pass ballistics
@@ -140,6 +141,19 @@ function rollTimeTo(u, s) {
   const v = rollSpeedAfter(u, s);
   if (v <= 0) return Infinity;
   return (Math.atan(u / ROLL_VT) - Math.atan(v / ROLL_VT)) / ROLL_W;
+}
+/** the arrival pace whose remaining roll-out is exactly `R` metres */
+function speedForRange(R) {
+  return Math.sqrt(Math.max(0, ROLL_C * (Math.exp(2 * ROLL_K * Math.max(0, R)) - 1) / ROLL_K));
+}
+/** how far a ball at (x,z) heading (nx,nz) can run before it crosses a line */
+function roomAhead(x, z, nx, nz) {
+  let r = 1e9;
+  if (nx > 1e-6) r = Math.min(r, (HALF_W - 0.6 - x) / nx);
+  else if (nx < -1e-6) r = Math.min(r, (-HALF_W + 0.6 - x) / nx);
+  if (nz > 1e-6) r = Math.min(r, (HALF_D - 0.6 - z) / nz);
+  else if (nz < -1e-6) r = Math.min(r, (-HALF_D + 0.6 - z) / nz);
+  return Math.max(0, r);
 }
 /** time for a player to cover `d` metres from a standing start */
 function runTime(d, v = CUT_SPEED, acc = CUT_ACCEL) {
@@ -425,6 +439,15 @@ export function createAI(ctx) {
       if (Math.sign(f.z) !== wideSide) z = lerp(z, bz * 0.20, 0.45);
     } else if (f.line === 2) {
       // Midfield: supports the ball, one on each flank, ahead of the back line.
+      // With the ball, "support" is not a slot — it is an ANGLE. He looks for a
+      // spot the carrier can actually find him in, which is a different problem
+      // from standing a fixed distance away.
+      if (att && carrier && carrier !== a) {
+        const sup = supportSpot(a, _sup);
+        home.set(clamp(sup.x, -HALF_W + 2.5, HALF_W - 2.5), 0,
+          clamp(sup.z, -HALF_D + 2.2, HALF_D - 2.2));
+        return home;
+      }
       u = clamp(Math.max(bu + (att ? -1 : -3), att ? -14 : -20), -20, att ? 18 : 9);
       // the ball-side midfielder pushes wide to give an outlet, the far one tucks
       const wideSide = Math.sign(bz) || 1;
@@ -449,6 +472,58 @@ export function createAI(ctx) {
    * Evaluated for one player per team per frame (round robin) — 12 agents at
    * 60 Hz means every runner is re-evaluated ~10x/second, which is plenty.
    */
+  /**
+   * OFF-BALL SUPPORT. A midfielder with a team-mate on the ball is not trying to
+   * stand somewhere tidy, he is trying to be FINDABLE: far enough away not to
+   * crowd him, on an angle the ball can actually reach, and in space when it
+   * gets there. So he scores a fan of spots around the carrier with the same
+   * lane sweep the passer will use to judge him, and takes the best one.
+   *
+   * Evaluated for one player per team per think tick (round robin) and held in
+   * between, which is what stops the whole midfield sliding onto the ball —
+   * three men supporting the same angle is the swarm this is meant to avoid.
+   */
+  const SUPPORT_ANG = [-2.2, -1.5, -0.95, -0.45, 0, 0.45, 0.95, 1.5, 2.2];
+  const SUPPORT_R = [8.0, 12.0, 16.0];
+  function supportSpot(a, out) {
+    const t = a.team;
+    const s = side[t];
+    if (s.runner !== a.slot && a.supX !== undefined) { out.set(a.supX, 0, a.supZ); return out; }
+    const dir = TEAMS[t].dir;
+    const bx = carrier.pos.x, bz = carrier.pos.z;
+    const flank = Math.sign(FORMATION[a.slot].z) || 1;
+    // the other midfielder's spot, so the two of them do not pick the same one
+    let other = null;
+    for (const k of agents) {
+      if (k !== a && k.team === t && FORMATION[k.slot] && FORMATION[k.slot].line === 2) other = k;
+    }
+    const oz = other && other.supZ !== undefined ? other.supZ : (other ? other.pos.z : 99);
+    const ox2 = other && other.supX !== undefined ? other.supX : (other ? other.pos.x : 99);
+
+    let bestX = a.pos.x, bestZ = a.pos.z, bs = -1e9;
+    for (const r of SUPPORT_R) {
+      for (const ang of SUPPORT_ANG) {
+        // angle measured off the attacking direction, positive toward his flank
+        const px = bx + dir * Math.cos(ang) * r;
+        const pz = bz + flank * Math.sin(ang) * r;
+        if (Math.abs(px) > HALF_W - 3 || Math.abs(pz) > HALF_D - 3) continue;
+        const d = Math.hypot(px - bx, pz - bz);
+        const u = rollLaunch(d, ARRIVE_MIN);
+        const risk = laneRisk(carrier, a, bx, bz, px, pz, u, 0.07, false);
+        const open = Math.min(opennessAt(t, px, pz, 0.8), 11);
+        const gain = toU(t, px) - toU(t, bx);
+        const move = Math.hypot(px - a.pos.x, pz - a.pos.z);
+        const crowd = Math.hypot(px - ox2, pz - oz);
+        const sc = (1 - risk) * 9.0 + open * 0.9 + gain * 0.30
+          - move * 0.30 - Math.max(0, 9 - crowd) * 0.55
+          - Math.max(0, Math.abs(pz) - 15) * 0.8;
+        if (sc > bs) { bs = sc; bestX = px; bestZ = pz; }
+      }
+    }
+    a.supX = bestX; a.supZ = bestZ;
+    return out.set(bestX, 0, bestZ);
+  }
+
   const CHANNELS = [-11, -6.5, -2, 2, 6.5, 11];
   function runChannel(a, x) {
     const s = side[a.team];
@@ -604,6 +679,14 @@ export function createAI(ctx) {
       // A tight window is drilled, an open one is rolled — the same call a real
       // passer makes when he sees the gap closing.
       arrive = clamp(ARRIVE_MIN + risk * 3.0, ARRIVE_MIN, ARRIVE_MAX);
+      // Weight it so that if he misses it, it stays on the pitch. A pass that
+      // arrives at 8 m/s still has eleven metres of roll left in it, and drilling
+      // that at a man standing three metres off the touchline is a throw-in
+      // however good the pass was.
+      if (D > 1e-3) {
+        const room = roomAhead(tx, tz, (tx - ox) / D, (tz - oz) / D);
+        arrive = Math.min(arrive, Math.max(2.6, speedForRange(room - 0.8)));
+      }
       u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
       // ...but never so soft that it dies before it gets there
       u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
@@ -635,6 +718,8 @@ export function createAI(ctx) {
         tx = clamp(tx + rx * away * push, -HALF_W + 1.4, HALF_W - 1.4);
         tz = clamp(tz + rz * away * push, -HALF_D + 1.4, HALF_D - 1.4);
         D = Math.hypot(tx - ox, tz - oz);
+        const room2 = roomAhead(tx, tz, (tx - ox) / D, (tz - oz) / D);
+        arrive = Math.min(arrive, Math.max(2.6, speedForRange(room2 - 0.8)));
         u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
         u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
         risk = laneRisk(a, mate, ox, oz, tx, tz, u, delay, false);
@@ -653,7 +738,9 @@ export function createAI(ctx) {
       const lift = LOFT_G * ft * 0.5;
       const uh = Math.min(PASS_U_MAX, ((D - 2.0) / ft) * 1.07);
       const lr = laneRisk(a, mate, ox, oz, tx, tz, uh, delay, true);
-      if (lr + 0.15 < risk) {
+      const dl = Math.hypot(tx - ox, tz - oz) || 1;
+      const roomL = roomAhead(tx, tz, (tx - ox) / dl, (tz - oz) / dl);
+      if (lr + 0.15 < risk && roomL > 3.5) {
         plan.u = uh; plan.lift = lift; plan.loft = true;
         plan.t = ft + delay; plan.risk = lr; plan.arrive = uh;
       }
@@ -1466,6 +1553,8 @@ export function createAI(ctx) {
       a.sawKick = body.kickId;
       a.hasBall = false;
       a.runZ = 0;
+      a.supX = undefined;
+      a.supZ = undefined;
     }
   }
 
