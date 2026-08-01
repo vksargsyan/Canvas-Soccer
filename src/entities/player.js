@@ -1033,7 +1033,13 @@ function buildBeard(density = 1) {
   // The band's lower edge must stop on the mandible. Wrapped further under the
   // jaw its cards crossed the neck mesh, and alphaTest fringing along that
   // intersection showed as a scatter of black speckle at the collar.
-  const bot = (az) => (113 + (11 + 13 * density) * Math.max(0, cw(az))) * D2R;
+  // 113 + 24 deg at the chin put the edge at 137 deg, which on this skull is
+  // already past the jaw and out over the collar. The beard then hung in front
+  // of the jersey, and since the shell is alphaTest'd only the texels that
+  // happened to clear 0.42 survived — a chain of isolated dark dots tracing the
+  // beard's outline across the chest. Stopping at 128 keeps the band on the
+  // mandible, where a beard actually sits.
+  const bot = (az) => (113 + (7 + 8 * density) * Math.max(0, cw(az))) * D2R;
 
   parts.push(hairShell({
     inner: (az) => (inArc(az) ? top(az) : bot(az)),
@@ -1086,9 +1092,17 @@ function buildBeard(density = 1) {
     if (d < 0.14) continue;
     // smooth length envelope + a small, bounded jitter
     const env = d * (0.80 + 0.20 * Math.sin(az * 5.3 + 1.1));
-    parts.push(hairCard(az, bot(az) - 0.075, {
+    // The cards must STRADDLE the jaw edge, not hang off it. Anchored at
+    // bot-0.075 and grown 0.086 further down, the tips landed ~12 deg past the
+    // mandible, i.e. on the neck — and where an alphaTest'd strand card
+    // interpenetrates the neck mesh the cutout edge stipples, which is the
+    // scatter of black dots that kept reappearing on the collar. Anchoring
+    // higher and running shorter puts the tips a fraction of a degree past
+    // bot(): still enough to break the contour into hair, never enough to
+    // reach the neck.
+    parts.push(hairCard(az, bot(az) - 0.130, {
       w: 0.15,
-      len: (0.038 + 0.048 * density) * env,
+      len: (0.030 + 0.030 * density) * env,
       lift: 0.030 + 0.018 * d,
       sweep: Math.sin(az * 3.7) * 0.22, curl: 0.16, bow: 0.022,
     }));
