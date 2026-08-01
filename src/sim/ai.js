@@ -612,6 +612,37 @@ export function createAI(ctx) {
       t = (Number.isFinite(tt) ? tt : D / Math.max(2, u)) + delay;
     }
 
+    // ---- put it on his free side ----
+    // A ball played at a marked man's feet is a ball played at his marker too.
+    // Slide the delivery across to whichever side the nearest opponent is NOT
+    // on, by as much as the pressure warrants — he is already running onto it,
+    // so a metre into his open side costs him nothing and costs the defender
+    // the yard he needed.
+    if (D > 1e-3) {
+      const nx = (tx - ox) / D, nz = (tz - oz) / D;
+      const rx = -nz, rz = nx;                      // right of the pass line
+      let near = null, nd = 1e9;
+      for (const o of agents) {
+        if (o.team === a.team || o.down) continue;
+        const px = o.pos.x + o.vel.x * t, pz = o.pos.z + o.vel.z * t;
+        const dd = Math.hypot(px - tx, pz - tz);
+        if (dd < nd) { nd = dd; near = { x: px, z: pz }; }
+      }
+      if (near && nd < 4.2) {
+        const sideOf = (near.x - tx) * rx + (near.z - tz) * rz;
+        const away = -(Math.sign(sideOf) || 1);
+        const push = clamp((4.2 - nd) * 0.5, 0, 1.5);
+        tx = clamp(tx + rx * away * push, -HALF_W + 1.4, HALF_W - 1.4);
+        tz = clamp(tz + rz * away * push, -HALF_D + 1.4, HALF_D - 1.4);
+        D = Math.hypot(tx - ox, tz - oz);
+        u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
+        u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
+        risk = laneRisk(a, mate, ox, oz, tx, tz, u, delay, false);
+        const tt2 = rollTimeTo(u, D);
+        t = (Number.isFinite(tt2) ? tt2 : D / Math.max(2, u)) + delay;
+      }
+    }
+
     const plan = { mate, x: tx, z: tz, u, lift: 0, loft: false, t, risk, arrive, dist: D };
 
     // ---- over the top? ----
