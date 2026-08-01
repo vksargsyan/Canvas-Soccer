@@ -72,6 +72,87 @@ const CARRY_R = PLAYER_R + BALL_R + 0.42;
 
 const _v = new THREE.Vector3();
 const _aim = new THREE.Vector3();
+const _o = new THREE.Vector3();
+
+// ---------------------------------------------------------------------------
+// pass ballistics
+// ---------------------------------------------------------------------------
+// A pass is three problems, solved in this order:
+//
+//   1. WEIGHT     what launch pace puts the ball on a given point at a speed a
+//                 man can actually take down?
+//   2. LEAD       where will the receiver BE when a ball launched at that pace
+//                 gets there? (a fixed point of 1)
+//   3. SELECTION  of the men available, who gives the best combination of a lane
+//                 nobody can cut, space on arrival, forward progress, a sensible
+//                 range, a run worth leading, and a heading near the one the
+//                 player asked for
+//
+// The weighting is not a fitted curve. sim/physics.js rolls a grounded ball at
+//     dv/dt = -(ROLL_RES + DRAG_K v^2)   with ROLL_RES = 2.35, DRAG_K = 0.0195
+// which integrates in closed form, so "launch pace to arrive at v after D
+// metres" and "flight time to any point on the way" are exact:
+//
+//     D(u->v) = 1/(2k) * ln((c + k u^2) / (c + k v^2))
+//     T(u->v) = (atan(u/vt) - atan(v/vt)) / w,   vt = sqrt(c/k), w = sqrt(ck)
+//
+// Everything else below is geometry on top of those two lines. Getting this
+// right is what turns "kick it at a fixed impulse and hope" into a ball that
+// arrives at a team-mate's feet at a pace he can take down.
+const ROLL_C = 2.35;              // sim/physics.js ROLL_RES
+const ROLL_K = 0.0195;            // sim/physics.js DRAG_K
+const ROLL_VT = Math.sqrt(ROLL_C / ROLL_K);
+const ROLL_W = Math.sqrt(ROLL_C * ROLL_K);
+
+// How fast a pass should be doing when it reaches him. Under the floor it dies
+// short and is a gift to a defender; over the ceiling it cannot be controlled.
+const ARRIVE_MIN = 4.4;
+const ARRIVE_MAX = 8.0;
+const PASS_U_MAX = 26;
+
+// Interception model. A defender gets something on anything that comes inside
+// CUT_R of him: sim/control.js will trap a ball within 1.15 m and
+// sim/physics.js deflects one off his boot band, so a lane is not "clear"
+// merely because it misses his collision cylinder.
+const CUT_R = 1.35;
+const CUT_SPEED = 9.6;
+const CUT_ACCEL = 9.0;
+const CUT_REACT = 0.20;
+const CUT_SPAN = 0.60;            // s of margin over which a lane goes bad
+
+// Lofting. sim/physics.js lets a ball above BAND_HEAD_Y (1.90 m) sail over a
+// player untouched, so a chip really does beat a man instead of merely looking
+// like it. Gravity there is 20.5 m/s^2.
+const LOFT_G = 20.5;
+
+/** launch pace that leaves the ball doing `v` after rolling `D` metres */
+function rollLaunch(D, v) {
+  const u2 = ((ROLL_C + ROLL_K * v * v) * Math.exp(2 * ROLL_K * Math.max(0, D)) - ROLL_C) / ROLL_K;
+  return Math.sqrt(Math.max(0.04, u2));
+}
+/** speed left after rolling `s` metres from `u`; 0 if it stops first */
+function rollSpeedAfter(u, s) {
+  const v2 = ((ROLL_C + ROLL_K * u * u) * Math.exp(-2 * ROLL_K * Math.max(0, s)) - ROLL_C) / ROLL_K;
+  return v2 > 0 ? Math.sqrt(v2) : 0;
+}
+/** time for a ball launched at `u` to roll `s` metres; Infinity if it never does */
+function rollTimeTo(u, s) {
+  const v = rollSpeedAfter(u, s);
+  if (v <= 0) return Infinity;
+  return (Math.atan(u / ROLL_VT) - Math.atan(v / ROLL_VT)) / ROLL_W;
+}
+/** time for a player to cover `d` metres from a standing start */
+function runTime(d, v = CUT_SPEED, acc = CUT_ACCEL) {
+  if (d <= 0) return 0;
+  const dAcc = (v * v) / (2 * acc);
+  return d <= dAcc ? Math.sqrt(2 * d / acc) : v / acc + (d - dAcc) / v;
+}
+/** preferred pass range: flat through the useful band, punished at both ends */
+function rangePref(d) {
+  if (d < 5.5) return clamp((d - 2.0) / 3.5, 0, 1) * 0.8;
+  if (d <= 15) return 1;
+  return clamp(1 - (d - 15) / 13, 0, 1);
+}
 
 export function createAI(ctx) {
   const { agents, body } = ctx;
@@ -85,7 +166,7 @@ export function createAI(ctx) {
   // Behaviour counters — not gameplay, but the only way to tell whether the AI
   // is actually doing football things without watching it for ten minutes.
   const stats = {
-    shots: 0, passes: 0, clears: 0, headers: 0, tackles: 0,
+    shots: 0, passes: 0, lofts: 0, clears: 0, headers: 0, tackles: 0,
     dives: 0, saves: 0, catches: 0, parries: 0, smothers: 0, distributions: 0,
   };
 
@@ -432,38 +513,182 @@ export function createAI(ctx) {
     return { z: bestZ, dist: d, q: range * 0.55 + lane * 0.30 + angle * 0.15 };
   }
 
-  /** best pass: openness of the lane, of the receiver, and progression */
+  // ---- pass assist ---------------------------------------------------------
+
+  /**
+   * Where the ball actually leaves from. A carrier keeps it in a pocket up to a
+   * metre ahead of him; aiming from his navel and then launching from the ball
+   * puts every pass out by that metre, which is most of a lead error by itself.
+   */
+  function passOrigin(a, out) {
+    const d = Math.hypot(body.pos.x - a.pos.x, body.pos.z - a.pos.z);
+    if (d < 2.2 && body.pos.y < 1.3) out.set(body.pos.x, 0, body.pos.z);
+    else out.set(a.pos.x, 0, a.pos.z);
+    return out;
+  }
+
+  /** free space around a point, with everyone predicted `t` seconds forward */
+  function opennessAt(team, x, z, t) {
+    let best = 40;
+    for (const o of agents) {
+      if (o.team === team || o.down) continue;
+      const d = Math.hypot(o.pos.x + o.vel.x * t - x, o.pos.z + o.vel.z * t - z);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  /**
+   * Sweep the pass corridor. Not a thin ray and not a static offset test: for
+   * every other player on the pitch, work out when the BALL passes his station
+   * on the lane, and when HE could be standing in it. The lane is only clear if
+   * he loses that race. 0 = nobody can touch it, 1 = somebody is already in it.
+   */
+  function laneRisk(a, mate, ox, oz, tx, tz, u, delay, loft) {
+    const dx = tx - ox, dz = tz - oz;
+    const D = Math.hypot(dx, dz);
+    if (D < 1e-3) return 1;
+    const nx = dx / D, nz = dz / D;
+    // A lofted ball is over their heads through the middle of its flight, so
+    // only the two ends of the corridor can be attacked.
+    const clearFrom = loft ? D * 0.26 : Infinity;
+    const clearTo = loft ? D * 0.74 : -1;
+
+    let risk = 0;
+    for (const o of agents) {
+      if (o === a || o === mate || o.down) continue;
+      const mine = o.team === a.team;
+      const px0 = o.pos.x + o.vel.x * CUT_REACT;
+      const pz0 = o.pos.z + o.vel.z * CUT_REACT;
+      let s = (px0 - ox) * nx + (pz0 - oz) * nz;
+      s = clamp(s, 0.55, D + 0.9);
+      if (s > clearFrom && s < clearTo) continue;
+      const lx = ox + nx * s, lz = oz + nz * s;
+      const off = Math.hypot(px0 - lx, pz0 - lz);
+      const reach = CUT_R + (o.isKeeper ? 0.55 : 0);
+      const tBall = (loft ? s / Math.max(1, u) : rollTimeTo(u, s)) + delay;
+      if (!Number.isFinite(tBall)) continue;      // it never gets that far
+      const tMan = CUT_REACT + runTime(Math.max(0, off - reach));
+      const r = clamp(1 - (tMan - tBall) / CUT_SPAN, 0, 1);
+      // a team-mate wandering into it is a nuisance, not a turnover
+      risk += r * (mine ? 0.3 : 1);
+    }
+    return clamp(risk, 0, 1.5);
+  }
+
+  /**
+   * Solve the pass to one man: lead him, weight it, and decide deck or air.
+   * Returns { mate, x, z, u, lift, loft, t, risk, arrive, dist }.
+   */
+  function planPassTo(a, mate, ox, oz) {
+    const delay = (a.anim && a.anim.passContactDelay) || 0.07;
+    let tx = mate.pos.x, tz = mate.pos.z;
+    let t = 0.4, u = 12, arrive = ARRIVE_MIN, risk = 0, D = 1;
+
+    // fixed point: lead -> weight -> flight time -> lead
+    for (let i = 0; i < 3; i++) {
+      const lead = clamp(t, 0, 1.7);
+      tx = clamp(mate.pos.x + mate.vel.x * lead, -HALF_W + 1.4, HALF_W - 1.4);
+      tz = clamp(mate.pos.z + mate.vel.z * lead, -HALF_D + 1.4, HALF_D - 1.4);
+      D = Math.hypot(tx - ox, tz - oz);
+      // A tight window is drilled, an open one is rolled — the same call a real
+      // passer makes when he sees the gap closing.
+      arrive = clamp(ARRIVE_MIN + risk * 4.5, ARRIVE_MIN, ARRIVE_MAX);
+      u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
+      // ...but never so soft that it dies before it gets there
+      u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
+      risk = laneRisk(a, mate, ox, oz, tx, tz, u, delay, false);
+      const tt = rollTimeTo(u, D);
+      t = (Number.isFinite(tt) ? tt : D / Math.max(2, u)) + delay;
+    }
+
+    const plan = { mate, x: tx, z: tz, u, lift: 0, loft: false, t, risk, arrive, dist: D };
+
+    // ---- over the top? ----
+    // Only when the deck is genuinely shut, and only when the air is clearly
+    // better: a chip is harder to weight and arrives bouncing.
+    if (risk > 0.60 && D > 6.5) {
+      const ft = clamp(D / 9.5, 0.85, 1.7);
+      const lift = LOFT_G * ft * 0.5;
+      const uh = Math.min(PASS_U_MAX, ((D - 2.0) / ft) * 1.07);
+      const lr = laneRisk(a, mate, ox, oz, tx, tz, uh, delay, true);
+      if (lr + 0.35 < risk) {
+        plan.u = uh; plan.lift = lift; plan.loft = true;
+        plan.t = ft + delay; plan.risk = lr; plan.arrive = uh;
+      }
+    }
+    return plan;
+  }
+
+  /**
+   * ASSISTED PASS. Score every team-mate and return the best, aimed at where he
+   * WILL be. The cone term is what keeps this an assist rather than an autopilot:
+   * the player (or the AI's own carry heading) chooses roughly where the ball is
+   * going, and this picks who, and weights it.
+   *
+   * opts: { minDist, maxDist, floor, allowKeeper, dirX, dirZ, cone }
+   */
   function bestPass(a, opts = {}) {
     const t = a.team;
-    const dir = TEAMS[t].dir;
-    const minD = opts.minDist ?? 3.5;
-    const maxD = opts.maxDist ?? 30;
-    let best = null, bs = opts.floor ?? -2;
+    const minD = opts.minDist ?? 4.0;
+    const maxD = opts.maxDist ?? 28;
+    const floor = opts.floor ?? 0.2;
+    const coneW = opts.cone ?? 0.14;
+
+    const o = passOrigin(a, _o);
+    const ox = o.x, oz = o.z;
+    // the heading he has asked for: the stick for a human, the carry line for AI
+    let fx = opts.dirX ?? a.faceX ?? 0;
+    let fz = opts.dirZ ?? a.faceZ ?? 0;
+    let fl = Math.hypot(fx, fz);
+    if (fl < 1e-3) { fx = TEAMS[t].dir; fz = 0; fl = 1; }
+    fx /= fl; fz /= fl;
+
+    let best = null, bs = floor, bp = null;
     for (const m of agents) {
       if (m === a || m.team !== t || m.down) continue;
       if (m.isKeeper && !opts.allowKeeper) continue;
-      const lead = clamp(Math.hypot(m.pos.x - a.pos.x, m.pos.z - a.pos.z) / 16, 0.12, 0.5);
-      const tx = m.pos.x + m.vel.x * lead;
-      const tz = m.pos.z + m.vel.z * lead;
-      const d = Math.hypot(tx - a.pos.x, tz - a.pos.z);
+      const plan = planPassTo(a, m, ox, oz);
+      const d = plan.dist;
       if (d < minD || d > maxD) continue;
 
-      // lane must be clean
-      let block = 0;
-      for (const o of agents) {
-        if (o.team === t || o.down) continue;
-        const off = laneOffset(a.pos.x, a.pos.z, tx, tz, o.pos.x, o.pos.z);
-        if (off < 2.4) block += (2.4 - off) * (o.isKeeper ? 1.4 : 1.0);
-      }
-      const space = Math.min(openness(t, tx, tz), 10);
-      const gain = (toU(t, tx) - toU(t, a.pos.x));      // metres of progress
-      let sc = gain * 0.42 + space * 0.85 - d * 0.13 - block * 5.0;
-      // do not pass into our own box
-      if (toU(t, tx) < -20 && Math.abs(tz) < BOX_HZ) sc -= 8;
-      sc += wobble(a, 2.2);
-      if (sc > bs) { bs = sc; best = m; _aim.set(tx, 0, tz); }
+      // --- lane: can anybody get in front of it? ---
+      const laneQ = clamp(1 - plan.risk, 0, 1);
+      // --- is he free where the ball is going, when it gets there? ---
+      const openNow = Math.min(opennessAt(t, m.pos.x, m.pos.z, 0), 12);
+      const openThen = Math.min(opennessAt(t, plan.x, plan.z, plan.t), 12);
+      const openQ = clamp((openThen - 1.8) / 6.2, 0, 1);
+      // --- does it go forward? ---
+      const gain = toU(t, plan.x) - toU(t, ox);
+      const progQ = clamp((gain + 6) / 18, 0, 1);
+      // --- is it a sane length? ---
+      const rangeQ = rangePref(d);
+      // --- is he running into space, and the right way? ---
+      const ahead = (m.vel.x * TEAMS[t].dir) * 0.5 + Math.max(0, openThen - openNow) * 0.7;
+      const runQ = clamp(ahead / 4.5, 0, 1);
+      // --- is it roughly where the player is pointing? ---
+      const lx = (plan.x - ox) / (d || 1), lz = (plan.z - oz) / (d || 1);
+      const coneQ = clamp((lx * fx + lz * fz + 0.25) / 1.25, 0, 1);
+
+      const q = (0.28 - coneW * 0.35) * openQ + 0.22 * rangeQ + 0.22 * progQ
+        + coneW * coneQ + 0.14 * runQ;
+      // The lane MULTIPLIES everything. A beautiful ball into a covered corridor
+      // is a turnover, and no amount of progress buys it back.
+      let sc = 10 * q * (0.10 + 0.90 * laneQ);
+      // never square it across our own six-yard box
+      if (toU(t, plan.x) < -20 && Math.abs(plan.z) < BOX_HZ) sc -= 5;
+      // a chip is a decision, not a default
+      if (plan.loft) sc -= 0.8;
+      sc += wobble(a, 1.1);
+
+      if (sc > bs) { bs = sc; best = m; bp = plan; }
     }
-    return best ? { mate: best, x: _aim.x, z: _aim.z, score: bs } : null;
+    if (!best) return null;
+    _aim.set(bp.x, 0, bp.z);
+    return {
+      mate: best, x: bp.x, z: bp.z, score: bs,
+      plan: bp, risk: bp.risk, loft: bp.loft, dist: bp.dist,
+    };
   }
 
   function doShoot(a, look) {
@@ -490,19 +715,46 @@ export function createAI(ctx) {
     face(a, gx, look.z);
   }
 
+  /**
+   * Play the pass. The aim is RE-SOLVED on the contact frame against live
+   * geometry — between the decision and the boot meeting the ball the receiver
+   * has run another stride — and the weight is solved for the point it is
+   * actually going to, so a pass that strays still arrives at a takeable pace.
+   */
   function doPass(a, p, opts = {}) {
     stats.passes++;
+    if (p.loft || opts.loft) stats.lofts++;
+    const mate = p.mate;
     const foot = p.z > a.pos.z ? 1 : -1;
     strike(a, 'pass', foot, () => {
-      const ex = p.x + wobble(a, 1.6), ez = p.z + wobble(a, 1.6);
-      _v.set(ex - a.pos.x, 0, ez - a.pos.z);
-      const d = _v.length();
-      // chip over a crowded lane, drill it along the deck otherwise
-      const lofted = !!opts.loft || d > 16;
-      const power = lofted ? clamp(d * 1.02, 11, 26) : clamp(d * 1.30 + 2.5, 9, 25);
-      body.kick(_v, power, lofted ? clamp(d * 0.22, 2.6, 5.4) : 0.35, 0);
+      const o = passOrigin(a, _o);
+      const plan = (mate && !mate.down) ? planPassTo(a, mate, o.x, o.z) : p.plan;
+      let tx = plan ? plan.x : p.x;
+      let tz = plan ? plan.z : p.z;
+      let loft = plan ? plan.loft : false;
+      const arrive = plan ? plan.arrive : ARRIVE_MIN;
+      // a hint from the caller (clearing our own box) can force it into the air
+      if (opts.loft) loft = true;
+
+      // aim error, tighter than it was: this pass has been solved, not guessed
+      const spread = 0.75 + (plan ? plan.risk : 0) * 0.45;
+      tx += wobble(a, spread);
+      tz += wobble(a, spread);
+
+      _v.set(tx - o.x, 0, tz - o.z);
+      const d = _v.length() || 1;
+      let power, lift;
+      if (loft) {
+        const ft = clamp(d / 9.5, 0.85, 1.7);
+        lift = LOFT_G * ft * 0.5;
+        power = clamp(((d - 2.0) / ft) * 1.07, 6, PASS_U_MAX);
+      } else {
+        lift = 0;
+        power = clamp(rollLaunch(d, arrive), 5, PASS_U_MAX);
+      }
+      body.kick(_v, power, lift, 0);
       body.lastTouch = a; body.lastTouchTeam = a.team;
-      if (events.onPass) events.onPass(a, p.mate);
+      if (events.onPass) events.onPass(a, mate || a);
     });
     face(a, p.x, p.z);
   }
@@ -659,8 +911,8 @@ export function createAI(ctx) {
 
         // clear the danger first
         if (deep && press >= 1) {
-          const out = bestPass(a, { minDist: 5, maxDist: 24, floor: 2.5 });
-          if (out) { doPass(a, out, { loft: true }); return; }
+          const out = bestPass(a, { minDist: 5, maxDist: 24, floor: 1.6 });
+          if (out) { doPass(a, out, { loft: out.risk > 0.35 }); return; }
           doClear(a);
           return;
         }
@@ -674,7 +926,8 @@ export function createAI(ctx) {
         if (p) {
           const solo = pressure(a, 3.6);
           // the further he has already run with it, the readier he is to release
-          const need = (solo >= 2 ? 0 : solo >= 1 ? 3.5 : 9.0) - clamp(a.carry - 4, 0, 12) * 0.85;
+          const need = (solo >= 2 ? 0.5 : solo >= 1 ? 2.4 : 4.8)
+            - clamp(a.carry - 4, 0, 12) * 0.30;
           if (p.score > need) { doPass(a, p); return; }
         }
       }
