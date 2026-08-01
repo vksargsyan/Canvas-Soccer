@@ -136,7 +136,7 @@ export const SURFACES = {
     // green" instinct produces — the blue channel in particular runs around 40%
     // of green, not 25%. Undershooting it is what made our pitch read as a
     // poster-paint field next to theirs.
-    lo: [30, 58, 20], hi: [128, 178, 88], tint: [128, 148, 70], tintAmt: 0.22,
+    lo: [34, 64, 16], hi: [136, 186, 78], tint: [132, 152, 62], tintAmt: 0.22,
     // streaks per tile across U — the mow direction runs along world Z, so the
     // blades are lines of constant U.
     //
@@ -386,7 +386,11 @@ export function pitchMacroTexture(o = {}) {
 
         // clump mottle (grass only — dirt and concrete have their own blotching)
         if (D.stripes) {
-          const km = 1 + (kn - 0.5) * 0.19;
+          // Kept deliberately quiet. At 0.19 this layer stopped reading as turf
+          // variation and started reading as splotches painted on top of it —
+          // the structure the eye wants at this scale comes from the streaks in
+          // the detail tile, not from isotropic noise.
+          const km = 1 + (kn - 0.5) * 0.085;
           m0 *= km; m1 *= km; m2 *= km;
         }
 

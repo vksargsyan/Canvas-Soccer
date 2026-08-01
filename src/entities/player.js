@@ -50,7 +50,7 @@ const HEAD_BONE_Y = 0.50;       // relative to the torso bone
 const HEAD_CENTER = 0.352;      // relative to the head bone
 // egg, not beachball: taller than it is wide, flattened front-to-back
 const HEAD_SX = 0.945, HEAD_SY = 1.055, HEAD_SZ = 0.955;
-const JAW_TAPER = 0.255;
+const JAW_TAPER = 0.288;
 
 // eye dish (a smooth, low-frequency depression the skull mesh can resolve)
 const DISH_H = 0.300, DISH_UP = 0.185, DISH_DN = 0.235, DISH_D = 0.110;
@@ -241,19 +241,26 @@ function skullR(nx, ny, nz) {
   const jaw = smooth(-0.08, -0.95, ny);
   m *= 1 - JAW_TAPER * jaw;                                              // jaw taper
   const ax = Math.abs(nx);
-  m -= 0.050 * bump((ny - 0.34) / 0.52) * bump((ax - 0.84) / 0.32);      // temples
-  m += 0.050 * bump((ny + 0.14) / 0.30) * bump((ax - 0.50) / 0.44)
+  m -= 0.058 * bump((ny - 0.34) / 0.52) * bump((ax - 0.84) / 0.32);      // temples
+  m += 0.074 * bump((ny + 0.10) / 0.26) * bump((ax - 0.52) / 0.40)
     * smooth(-0.10, 0.72, nz);                                           // cheekbones
-  m += 0.038 * bump((ny + 0.54) / 0.30) * bump((ax - 0.42) / 0.40)
+  // Buccal hollow under the cheekbone. This is the single term that separates
+  // a sculpted head from a puffy one: without a dip beneath the zygomatic the
+  // whole lower face reads as one continuous balloon.
+  m -= 0.046 * bump((ny + 0.40) / 0.26) * bump((ax - 0.46) / 0.32)
+    * smooth(0.05, 0.78, nz);
+  m += 0.056 * bump((ny + 0.56) / 0.28) * bump((ax - 0.44) / 0.36)
     * smooth(-0.60, 0.30, nz);                                           // jaw corners
-  m += 0.058 * bump((ny - 0.42) / 0.24) * bump(nx / 0.64)
+  m += 0.062 * bump((ny - 0.40) / 0.22) * bump(nx / 0.62)
     * smooth(0.22, 0.88, nz);                                            // brow ridge
-  m += 0.068 * bump((ny + 0.60) / 0.32) * bump(nx / 0.46)
+  m += 0.086 * bump((ny + 0.62) / 0.30) * bump(nx / 0.44)
     * smooth(0.05, 0.60, nz);                                            // chin
-  m += 0.028 * bump((ny + 0.14) / 0.40) * bump(nx / 0.38)
+  m -= 0.032 * bump((ny + 0.44) / 0.18) * bump(nx / 0.34)
+    * smooth(0.35, 0.90, nz);                                            // mento-labial crease
+  m += 0.030 * bump((ny + 0.14) / 0.40) * bump(nx / 0.38)
     * smooth(0.58, 0.96, nz);                                            // muzzle mass
   m += 0.038 * clamp(-nz, 0, 1) * bump((ny - 0.06) / 1.10);              // occiput
-  m -= 0.030 * bump((ny - 0.62) / 0.46) * clamp(nz, 0, 1);               // flatter forehead
+  m -= 0.034 * bump((ny - 0.62) / 0.46) * clamp(nz, 0, 1);               // flatter forehead
   m -= eyeDish(nx, ny, nz);                                              // eye sockets
   return m;
 }
@@ -432,10 +439,11 @@ function buildNose(w = 1) {
   add(new THREE.SphereGeometry(R * 0.168, 14, 11), 1.00 * w, 0.94, 1.16, 0, -R * 0.112, R * 0.975);
   // septum / underside, so the tip has a shadow line beneath it
   add(new THREE.SphereGeometry(R * 0.070, 8, 6), 0.90 * w, 0.72, 0.86, 0, -R * 0.196, R * 0.945);
-  // nostril wings, flaring out and slightly back
+  // nostril wings — buried most of the way into the muzzle so they read as a
+  // flare on the base of the nose, not as two spheres flanking it
   for (const s of [-1, 1]) {
-    add(new THREE.SphereGeometry(R * 0.112, 9, 7), 0.96, 0.86, 0.92,
-      s * R * 0.142 * w, -R * 0.158, R * 0.905);
+    add(new THREE.SphereGeometry(R * 0.098, 9, 7), 0.88, 0.72, 0.74,
+      s * R * 0.128 * w, -R * 0.166, R * 0.862);
   }
   return finishFacePart(parts);
 }
@@ -495,40 +503,6 @@ function buildBrowGeo(variant) {
   return parts;
 }
 
-/**
- * CHEEKBONE + JAW blocks. skullR() can only push the sphere so far before the
- * 44 x 32 head mesh stops resolving it, so the two forms that most define a
- * face at chibi scale get explicit geometry: a zygomatic pad under each eye and
- * a mandible corner running back toward the ear.
- */
-function buildCheeks() {
-  const parts = [];
-  const R = HEAD_R;
-  for (const s of [-1, 1]) {
-    // cheekbone: a flattened wedge under the outer half of the eye
-    const cb = new THREE.SphereGeometry(R * 0.235, 12, 10);
-    cb.scale(1.02, 0.52, 0.62);
-    cb.rotateZ(-s * 0.30);
-    cb.rotateY(-s * 0.42);
-    const p = skullPointRound(s * 0.60, 1.545, -0.045);
-    cb.translate(p[0], p[1], p[2]);
-    parts.push(cb);
-    // mandible corner
-    const jw = new THREE.SphereGeometry(R * 0.190, 10, 9);
-    jw.scale(0.80, 0.86, 0.72);
-    jw.rotateY(-s * 0.5);
-    const q = skullPointRound(s * 0.72, 2.070, -0.055);
-    jw.translate(q[0], q[1], q[2]);
-    parts.push(jw);
-  }
-  // chin button
-  const ch = new THREE.SphereGeometry(R * 0.200, 12, 10);
-  ch.scale(1.06, 0.80, 0.74);
-  const c = skullPointRound(0, 2.235, -0.060);
-  ch.translate(c[0], c[1], c[2]);
-  parts.push(ch);
-  return parts;
-}
 
 function buildEars() {
   const parts = [];
@@ -1318,9 +1292,8 @@ export function createPlayer(cfg = {}) {
     buildEars(),
     buildLids(),
     buildNeck(),
-    // brow ridge, cheekbones and jaw are skin: form the head texture paints on
+    // the brow ridge is skin: form for the head texture to paint hair onto
     finishFacePart(buildBrowGeo(faceVariant)),
-    finishFacePart(buildCheeks()),
   ];
   const headMerged = mergeGeometries(headParts, false);
   headParts.forEach((p) => p.dispose());

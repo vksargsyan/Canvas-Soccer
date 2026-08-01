@@ -173,11 +173,19 @@ export function createPitch(opts = {}) {
     uPaintWear: { value: 0.34 },
     uMow: { value: 1 },
     uMowW: { value: MOW_W },
-    // Measured off the reference: the light band is very close to twice the
-    // linear albedo of the dark one, and the dark band is distinctly cooler
-    // because the blades lean away and it is lit more by sky than by sun.
-    uMowLo: { value: new THREE.Vector3(0.688, 0.664, 0.796) },
-    uMowHi: { value: new THREE.Vector3(1.308, 1.352, 1.196) },
+    // Measured off the reference, and the surprise is the SATURATION, not the
+    // brightness. Their dark band is (72,132,35) against a light band of
+    // (110,169,72): green barely moves between the two, red drops a third and
+    // blue drops by half. So the dark stripe is not a cooler grey-green — it is
+    // a DEEPER, more saturated green, which is what you get when the blades
+    // lean away and you are looking at shaft and soil shade instead of at
+    // sunlit tips. The first version of this had it backwards and lifted blue
+    // in the dark band, which is why the pitch read grey where theirs reads
+    // rich. Ratios here are pulled a little toward neutral: matching their
+    // display-space numbers exactly would need a 2.2x blue gain on the light
+    // band, and that is their tone curve talking, not their albedo.
+    uMowLo: { value: new THREE.Vector3(0.700, 0.740, 0.610) },
+    uMowHi: { value: new THREE.Vector3(1.290, 1.245, 1.360) },
   };
 
   const mat = new THREE.MeshStandardMaterial({
