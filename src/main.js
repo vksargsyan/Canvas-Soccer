@@ -17,6 +17,7 @@ import {
   createBallBody, separatePlayers, ballPlayerContact, shieldOwner,
 } from './sim/physics.js';
 import { createAI, FORMATION } from './sim/ai.js';
+import { launchMotion } from './sim/locomotion.js';
 import { createMatch } from './sim/match.js';
 import { createGameplayProbe, gameplayTargets } from './sim/probe.js';
 import { createVfx } from './fx/vfx.js';
@@ -577,19 +578,19 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     attack() {
       const hero = agentAt(0, 5);
       place(hero, 11.0, -2.0, 1, 0.1, 'run');
-      hero.vel.set(RUN_SPEED, 0, 0.6);
+      launchMotion(hero, RUN_SPEED, 0.6);
       place(agentAt(0, 4), 13.5, 8.4, 1, -0.2, 'run');
-      agentAt(0, 4).vel.set(RUN_SPEED * 0.9, 0, -1.2);
+      launchMotion(agentAt(0, 4), RUN_SPEED * 0.9, -1.2);
       place(agentAt(0, 3), 4.0, -9.5, 1, 0, 'run');
-      agentAt(0, 3).vel.set(RUN_SPEED * 0.8, 0, 0);
+      launchMotion(agentAt(0, 3), RUN_SPEED * 0.8, 0);
       place(agentAt(0, 1), -4.0, -6.0, 1, 0, 'run');
       place(agentAt(0, 2), -6.0, 6.5, 1, 0, 'idle');
       place(agentAt(0, 0), -26.0, 0, 1, 0, 'keeperIdle');
 
       place(agentAt(1, 1), 15.5, -4.6, -1, -0.35, 'sprint');
-      agentAt(1, 1).vel.set(-SPRINT_SPEED * 0.8, 0, -2.0);
+      launchMotion(agentAt(1, 1), -SPRINT_SPEED * 0.8, -2.0);
       place(agentAt(1, 2), 16.5, 2.2, -1, 0.4, 'sprint');
-      agentAt(1, 2).vel.set(-SPRINT_SPEED * 0.75, 0, 2.4);
+      launchMotion(agentAt(1, 2), -SPRINT_SPEED * 0.75, 2.4);
       place(agentAt(1, 3), 20.0, -8.0, -1, 0, 'run');
       place(agentAt(1, 4), 21.0, 7.0, -1, 0, 'run');
       place(agentAt(1, 5), 6.0, 3.0, -1, 0, 'run');
@@ -655,7 +656,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       place(agentAt(0, 5), 23.2, -4.6, -0.35, -0.94, 'celebrate');
       place(agentAt(0, 4), 20.6, -1.2, 0.2, -1, 'celebrate');
       place(agentAt(0, 3), 17.0, 6.0, -0.2, -1, 'run');
-      agentAt(0, 3).vel.set(-1.2, 0, -5.0);
+      launchMotion(agentAt(0, 3), -1.2, -5.0);
       place(agentAt(0, 1), 8.0, -7.0, 1, 0, 'celebrate');
       place(agentAt(0, 2), 6.0, 7.5, 1, 0, 'run');
       place(agentAt(0, 0), -26.0, 0, 1, 0, 'celebrate');
@@ -704,7 +705,7 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       const tackler = agentAt(1, 1);
       const carrier = agentAt(0, 5);
       place(carrier, 1.6, 1.2, 1, 0.15, 'run');
-      carrier.vel.set(RUN_SPEED * 0.8, 0, 0.5);
+      launchMotion(carrier, RUN_SPEED * 0.8, 0.5);
       place(tackler, 3.4, 2.0, -1, -0.35, 'idle');
       place(agentAt(0, 4), -3.5, 7.0, 1, 0, 'run');
       place(agentAt(0, 3), -5.0, -6.5, 1, 0, 'run');

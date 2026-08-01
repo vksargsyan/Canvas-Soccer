@@ -362,6 +362,31 @@ export function placeMotion(a) {
 }
 
 /**
+ * Stage a body already in motion. `requestVelocity` asks for a velocity and the
+ * envelope ramps into it over the next second, which is right for a controller
+ * and wrong for a SNAPSHOT: a debug scenario or a replay that drops a player
+ * into mid-stride wants him running at that speed on the first frame, not
+ * accelerating from a standstill with a run cycle playing over sliding feet.
+ * This writes the committed velocity directly; from the next frame on the model
+ * has him and every bound applies as usual.
+ */
+export function launchMotion(a, vx, vz) {
+  const L = locoState(a);
+  L.rx = vx; L.rz = vz;
+  L.vx = vx; L.vz = vz;
+  L.cx = vx; L.cz = vz;
+  L.dirty = false;
+  const sp = Math.hypot(vx, vz);
+  L.sp0 = sp;
+  if (sp > 1e-5) {
+    L.d0x = vx / sp; L.d0z = vz / sp;
+    L.yaw = Math.atan2(vx, vz);
+    a.bodyYaw = L.yaw;
+  }
+  return a;
+}
+
+/**
  * Seek: aim at (tx,tz) at up to `speed`, easing off on arrival. Returns the
  * distance remaining. A drop-in replacement for a hand-rolled steering blend —
  * the smoothing is the locomotion model's job now, not the caller's.
