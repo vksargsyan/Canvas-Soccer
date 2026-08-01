@@ -121,6 +121,16 @@ const CUT_ACCEL = 9.0;
 const CUT_REACT = 0.20;
 const CUT_SPAN = 0.80;            // s of margin over which a lane goes bad
 
+// How far ahead of himself a receiver can be trusted. Straight-line
+// extrapolation is only honest for about a stride: a man running to a support
+// spot is already easing off, and leading him by v*t on a 1.5 s ball throws it
+// six metres past him. The lead therefore SATURATES —
+//     displacement = v * tau * (1 - e^(-t/tau))
+// which is the full v*t for a short ball and tends to a fixed stride for a long
+// one. Under-leading is the safe error anyway: the man it is played to is the
+// one going for it, so he runs onto it.
+const LEAD_TAU = 0.85;
+
 // Lofting. sim/physics.js lets a ball above BAND_HEAD_Y (1.90 m) sail over a
 // player untouched, so a chip really does beat a man instead of merely looking
 // like it. Gravity there is 20.5 m/s^2.
@@ -672,7 +682,7 @@ export function createAI(ctx) {
 
     // fixed point: lead -> weight -> flight time -> lead
     for (let i = 0; i < 3; i++) {
-      const lead = clamp(t, 0, 1.7);
+      const lead = LEAD_TAU * (1 - Math.exp(-clamp(t, 0, 2.5) / LEAD_TAU));
       tx = clamp(mate.pos.x + mate.vel.x * lead, -HALF_W + 1.4, HALF_W - 1.4);
       tz = clamp(mate.pos.z + mate.vel.z * lead, -HALF_D + 1.4, HALF_D - 1.4);
       D = Math.hypot(tx - ox, tz - oz);
