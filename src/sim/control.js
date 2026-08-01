@@ -37,8 +37,8 @@
 //    controlled touch, which is what makes the metric hold rather than hoping.
 //
 //    Touches land on FOOTFALLS, not every frame and not on a fixed timer: the
-//    stride phase advances at a rate tied to running speed (~1.4 Hz at a walk,
-//    ~2.6 Hz at a sprint) and a touch fires when the phase wraps. That rhythm —
+//    stride phase advances at a rate tied to running speed (~1.25 Hz at a walk,
+//    ~2.3 Hz at a sprint) and a touch fires when the phase wraps. That rhythm —
 //    ball, stride, stride, ball — is what reads as a human carrying it. Between
 //    touches nothing here runs; the ball just rolls under sim/physics.js.
 //
@@ -124,6 +124,7 @@ const TRAP_MAX_HEIGHT = 1.45;     // above this it is a header, not a trap
 const TRAP_SETTLE = 0.34;         // s the good touch has to put it in the pocket
 const TRAP_KEEP = 0.16;           // share of arrival pace a scruffy touch leaves on
 const TRAP_COOLDOWN = 0.35;       // s before the same man may re-take the ball
+const GATHER_MIN_SPEED = 2.5;     // m/s he must be running to gather a dead ball
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -346,6 +347,7 @@ export function createBallControl(ctx) {
    * defenders on him.
    */
   function trapQuality(a, hx, hz, bs, skill) {
+    if (bs < 1e-3) return 0.9;
     const inx = body.vel.x / bs, inz = body.vel.z / bs;
     // +1 when the ball is travelling the same way he is (over the shoulder),
     // -1 when it is coming straight at him.
@@ -367,8 +369,6 @@ export function createBallControl(ctx) {
   function firstTouch(a, opts = {}) {
     const st = stateOf(a);
     const bs = ballSpeed();
-    if (bs < 0.05) return false;
-
     const s = speedOf(a);
     let hx = a.vel.x, hz = a.vel.z;
     let hl = Math.hypot(hx, hz);
@@ -396,20 +396,47 @@ export function createBallControl(ctx) {
       strikeBall(a, st, sol.dx || hx, sol.dz || hz, u, 0);
       if (a.anim && a.anim.play) a.anim.play('dribble', { force: true });
     } else {
-      // bad touch: it bounces off him and runs loose
-      const keep = 0.30 + 0.26 * rng.float();
+      // Bad touch: it runs loose. A mishit pass carries on roughly the way it
+      // arrived; a mistimed gather is overrun, so it squirts off HIS line rather
+      // than the ball's — a dead ball has no line of its own to keep.
+      const live = bs > TRAP_MIN_SPEED * 0.6;
+      const bx = live ? body.vel.x / bs : hx;
+      const bz = live ? body.vel.z / bs : hz;
       const splay = rng.gauss() * 0.5 + (rng.float() < 0.5 ? -0.28 : 0.28);
       const ca = Math.cos(splay), sa = Math.sin(splay);
-      const inx = body.vel.x / bs, inz = body.vel.z / bs;
-      const dx = inx * ca - inz * sa;
-      const dz = inx * sa + inz * ca;
-      const u = Math.max(2.0, bs * keep);
+      const dx = bx * ca - bz * sa;
+      const dz = bx * sa + bz * ca;
+      const keep = 0.30 + 0.26 * rng.float();
+      const u = live ? Math.max(2.0, bs * keep) : Math.max(2.2, s * 0.5);
       const lift = rng.float() < 0.32 ? 0.7 + 1.3 * rng.float() : 0;
       strikeBall(a, st, dx, dz, u, lift);
     }
 
     if (events.onFirstTouch) events.onFirstTouch(a, { quality: q, good, speed: bs });
     return true;
+  }
+
+  /**
+   * Gather a loose ball he is running onto. Same servo, different problem: the
+   * ball has no pace worth killing, the danger is his own. sim/physics.js hands
+   * a running player's momentum to the ball on contact (vel -> 1.28 * his), so a
+   * man sprinting onto a stationary ball punts it fifteen metres up the pitch
+   * without ever deciding to — the loose-ball half of "kicks it through the
+   * pitch". Taking the touch first turns that into a player knocking it into his
+   * stride, which is the whole point of the module.
+   */
+  function gather(a) {
+    const s = speedOf(a);
+    const skill = a.skill ?? 0.8;
+    // easy at a jog, harder the faster he arrives and the tighter he is marked
+    const q = clamp(
+      1 - clamp((s - 7.5) / 12, 0, 0.34)
+        - Math.min(0.24, pressureOn(a, 2.4) * 0.12)
+        - clamp((body.pos.y - BALL_R) / 1.1, 0, 1) * 0.18
+        + (clamp(skill, 0.35, 1) - 0.8) * 0.5,
+      0.25, 0.98,
+    );
+    return firstTouch(a, { quality: q, skill });
   }
 
   /** should `a` be allowed to take this ball down on this frame? */
@@ -426,6 +453,7 @@ export function createBallControl(ctx) {
     const dx = body.pos.x - a.pos.x, dz = body.pos.z - a.pos.z;
     const gap = Math.hypot(dx, dz);
     if (gap > TRAP_R || gap < 1e-4) return false;
+    if (body.pos.y > TRAP_MAX_HEIGHT) return false;
 
     // must actually be arriving at him, not leaving
     const rvx = body.vel.x - (a.vel.x || 0);
@@ -433,8 +461,10 @@ export function createBallControl(ctx) {
     const closing = -(dx * rvx + dz * rvz) / gap;
     if (closing < TRAP_MIN_CLOSING) return false;
 
-    if (body.pos.y > TRAP_MAX_HEIGHT) return false;
-    if (bs < TRAP_MIN_SPEED) return false;
+    // A pass has pace to kill; a loose ball has none, and he must be the one
+    // doing the closing (otherwise a stationary player "gathers" a ball that is
+    // merely trickling past him).
+    if (bs < TRAP_MIN_SPEED && speedOf(a) < GATHER_MIN_SPEED) return false;
     return true;
   }
 
@@ -457,7 +487,6 @@ export function createBallControl(ctx) {
     }
 
     const bs = ballSpeed();
-    if (bs < TRAP_MIN_SPEED) return;
 
     // Nearest eligible man wins the ball — one reception per frame, so two
     // players cannot both trap the same pass.
@@ -467,7 +496,9 @@ export function createBallControl(ctx) {
       const d = gapTo(a);
       if (d < bd) { bd = d; best = a; }
     }
-    if (best) firstTouch(best, { skill: best.skill });
+    if (!best) return;
+    if (bs >= TRAP_MIN_SPEED) firstTouch(best, { skill: best.skill });
+    else gather(best);
   }
 
   function reset() {
