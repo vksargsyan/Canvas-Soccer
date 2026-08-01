@@ -68,7 +68,15 @@ const TARGETS = {
   dribble: {
     maxBallDist: { max: 1.6 },
     touchesPerSec: { min: 1.2, max: 3.2 },
-    aheadFraction: { min: 0.85 },
+    // Upper bound as well as lower. A ball that is ahead on literally 100% of
+    // frames never swings wide on a turn, which is not close control — it is a
+    // ball welded to the player's facing.
+    aheadFraction: { min: 0.85, max: 0.99 },
+    // The pocket has to breathe. Without this, the cheapest way to pass
+    // maxBallDist is to glue the ball to the feet, which scores perfectly and
+    // looks obviously fake. A touch should push the ball out and the player
+    // should have to run it down.
+    pocketSwing: { min: 0.35 },
   },
   passing: {
     completion: { min: 0.72 },
@@ -559,9 +567,17 @@ function runDribble(seed) {
     }
   }
 
+  // How much the pocket BREATHES. `maxBallDist` alone can be satisfied two ways:
+  // by genuine close control, or by welding the ball to the player's feet — and
+  // the weld scores better. A real dribble oscillates: the touch pushes the ball
+  // out, the player runs it down, the next touch pushes it out again. So measure
+  // the swing, and require it to be non-trivial.
+  const minDist = dists.length ? Math.min(...dists) : 0;
   return {
     maxBallDist: r3(maxDist),
+    minBallDist: r3(minDist),
     meanBallDist: r3(mean(dists)),
+    pocketSwing: r3(maxDist - minDist),
     touchesPerSec: r3(touches / Math.max(1e-6, seconds)),
     aheadFraction: r3(frames ? ahead / frames : 0),
     _meta: { runs: DRIBBLE_RUNS, seconds: r3(seconds), touches, frames, runsWhereBallEscaped: lostRuns },
