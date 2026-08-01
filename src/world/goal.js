@@ -158,13 +158,12 @@ function buildLattice() {
   if (LATTICE) return LATTICE;
 
   // --- row profile + arc length so the cord texture keeps a constant scale
-  const rowV = new Float32Array(NY);
   const rowDep = new Float32Array(NY);
   const rowY = new Float32Array(NY);
   const rowArc = new Float32Array(NY);
   for (let j = 0; j < NY; j++) {
     const v = j / (NY - 1);
-    rowV[j] = v; rowDep[j] = depAt(v); rowY[j] = hgtAt(v);
+    rowDep[j] = depAt(v); rowY[j] = hgtAt(v);
     if (j > 0) {
       rowArc[j] = rowArc[j - 1] + Math.hypot(rowDep[j] - rowDep[j - 1], rowY[j] - rowY[j - 1]);
     }
@@ -402,7 +401,7 @@ function buildLattice() {
   LATTICE = {
     N, rest, pin: pinA, cA, cB, cR, solve,
     vNode: Int32Array.from(vNode), index: Uint32Array.from(index),
-    pos, uv, col, ties, rowDep, rowY,
+    pos, uv, col, ties,
   };
   return LATTICE;
 }
