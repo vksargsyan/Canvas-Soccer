@@ -94,21 +94,25 @@ export const LOCO = {
   controlRadius: 1.60,      // ball inside this of a player becomes his...
   controlSettle: 0.16,      // ...once he has held it this long
   controlRelSpeed: 16,      // ...and it is not flying past his shins
-  controlKeep: 2.90,        // and he KEEPS it out to here: a dribble touch puts
+  controlKeep: 4.20,        // and he KEEPS it out to here: a dribble touch puts
                             // the ball a stride clear by design, and a man who
                             // has to win it back on every stride is not carrying
-  stealMargin: 0.45,        // an opponent must be this much nearer the ball...
-  stealTime: 0.28,          // ...for this long, before it becomes his
   // --- the challenge ---
-  contestRadius: 1.45,      // he has to be this tight to be working
-  contestBase: 1.35,        // per second, even matchup, challenger in front
-  contestShieldMin: 0.38,   // multiplier when fully shielded (challenger behind)
-  contestDecay: 0.30,       // per second once he backs off
-  pokeCredit: 0.09,         // progress earned by a rejected poke
-  lungeCredit: 0.18,        // progress earned by a rejected lunge
-  lungeFallBelow: 0.55,     // lunge this early and you end up on the floor
-  lungeFallTime: 0.95,
-  winKnock: 3.4,            // m/s the ball comes off him when it is finally won
+  contestRadius: 1.49,      // he has to be this tight to be working
+  contestBase: 4.00,        // per second, even matchup, challenger in front
+  contestShieldMin: 0.50,   // multiplier when fully shielded (challenger behind)
+  contestDecay: 0.22,       // per second once he backs off
+  pokeCredit: 0.14,         // progress earned by a rejected poke, and only if
+  lungeCredit: 0.30,        // ...he was tight enough for it to have been a
+                            // challenge at all — a lunge from two metres is a
+                            // miss, not a contribution
+  creditCeiling: 0.62,      // and diving in can never win it on its own: past
+                            // this you have to get your body in and hold it there
+  minChallenge: 0.55,       // seconds of contact a challenge takes at minimum,
+                            // however strong you are. Never a snatch on contact.
+  lungeFallBelow: 0.25,     // lunge this early and you end up on the floor
+  lungeFallTime: 0.70,
+  winKnock: 4.5,            // m/s the ball comes off him when it is finally won
   // The hold-off sits INSIDE the contest range on purpose: a man being held off
   // must be close enough to be working, or the carrier would simply orbit him at
   // arm's length and could never be tackled at all.
@@ -276,14 +280,13 @@ function adopt(a, L) {
   Object.defineProperty(v, 'x', {
     configurable: true,
     enumerable: true,
-    // a man on the floor is not running: the integrator owns him outright
-    get() { if (a.down) return L.rx; evaluate(a, L); return L.cx; },
+    get() { evaluate(a, L); return L.cx; },
     set(val) { L.rx = val; L.dirty = true; },
   });
   Object.defineProperty(v, 'z', {
     configurable: true,
     enumerable: true,
-    get() { if (a.down) return L.rz; evaluate(a, L); return L.cz; },
+    get() { evaluate(a, L); return L.cz; },
     set(val) { L.rz = val; L.dirty = true; },
   });
 }
@@ -451,24 +454,17 @@ export function stepBodies(players, dt) {
 function commit(a, dt) {
   const L = locoState(a);
 
-  if (a.down) {
-    // the integrator owns a man on the floor; keep our state alongside his
-    L.vx = L.rx; L.vz = L.rz;
-    L.sp0 = Math.hypot(L.vx, L.vz);
-    if (L.sp0 > 1e-5) { L.d0x = L.vx / L.sp0; L.d0z = L.vz / L.sp0; }
-    L.cx = L.vx; L.cz = L.vz; L.dirty = false;
-    L.lean *= 0.8;
-    tickStamina(a, L, 0, dt);
-    return;
-  }
-
+  // A man on the floor obeys the envelope too: whoever is damping him is making
+  // a request like everybody else, so he slides to a stop instead of stopping in
+  // one frame — and a knockdown that gets cancelled (see resolveBallContest)
+  // leaves no discontinuity behind it.
   evaluate(a, L);
   const nvx = L.cx, nvz = L.cz;
   const sp = Math.hypot(nvx, nvz);
   const dirX = sp > 1e-5 ? nvx / sp : L.d0x;
   const dirZ = sp > 1e-5 ? nvz / sp : L.d0z;
 
-  if (dt > 0) {
+  if (dt > 0 && !a.down) {
     // lean into whatever lateral acceleration this frame produced
     const lat = ((nvx - L.vx) / dt) * -dirZ + ((nvz - L.vz) / dt) * dirX;
     const k = 1 - Math.exp(-LOCO.leanDecay * dt);
@@ -502,7 +498,7 @@ function commit(a, dt) {
   a.pos.x = clamp(a.pos.x, -HALF_W - 2.5, HALF_W + 2.5);
   a.pos.z = clamp(a.pos.z, -HALF_D - 2.0, HALF_D + 2.0);
 
-  tickStamina(a, L, sp, dt);
+  tickStamina(a, L, a.down ? 0 : sp, dt);
 }
 
 function tickStamina(a, L, sp, dt) {
@@ -524,7 +520,7 @@ function ballStateFor(body) {
   let S = BALL_STATE.get(body);
   if (!S) {
     S = {
-      owner: null, ownTime: 0, ownerDown: false, rivalT: 0,
+      owner: null, ownTime: 0, ownerDown: false,
       kickId: body.kickId | 0,
       vx: 0, vy: 0, vz: 0, sx: 0, sy: 0, sz: 0,
     };
@@ -543,17 +539,28 @@ export function shieldOwner(body) {
     ? S.owner : null;
 }
 
+/** Possession snapshot for the HUD and for tools: { owner, ownTime }. */
+export function possession(body) {
+  const b = body && (body.pos ? body : body.__ball);
+  const S = b && BALL_STATE.get(b);
+  return S ? { owner: S.owner, ownTime: S.ownTime } : { owner: null, ownTime: 0 };
+}
+
 /** 0..1 progress of this player's challenge for the ball. */
 export function contestOf(q) { return (q && q.__contest) || 0; }
 
 /** Has he earned the right to take it off the man in front of him? */
 export function canDispossess(q) { return contestOf(q) >= 1; }
 
-function addContest(q, v) { q.__contest = clamp((q.__contest || 0) + v, 0, 1.2); }
+function addContest(q, v, ceiling = 1.2) {
+  const at = q.__contest || 0;
+  if (at >= ceiling) return;
+  q.__contest = clamp(at + v, 0, ceiling);
+}
 
 function clearContests(list) {
   if (!list) return;
-  for (const p of list) if (p.__contest) p.__contest = 0;
+  for (const p of list) { if (p.__contest) p.__contest = 0; p.__contestT = 0; }
 }
 
 /** Register the ball with a player list so stepBodies can run the hold-off. */
@@ -571,7 +578,6 @@ export function resetBallPossession(body) {
   clearContests(body.players);
   S.owner = null;
   S.ownTime = 0;
-  S.rivalT = 0;
   S.kickId = body.kickId;
 }
 
@@ -609,7 +615,11 @@ export function resolveBallContest(body, players, dt) {
       body.lastTouch = owner;
       body.lastTouchTeam = owner.team;
 
-      addContest(kicker, lunge ? LOCO.lungeCredit : LOCO.pokeCredit);
+      const reach = Math.hypot(kicker.pos.x - owner.pos.x, kicker.pos.z - owner.pos.z);
+      if (reach <= LOCO.contestRadius) {
+        addContest(kicker, lunge ? LOCO.lungeCredit : LOCO.pokeCredit,
+          LOCO.creditCeiling);
+      }
       locoState(owner).shielding = 1;
 
       if (owner.down) {
@@ -626,31 +636,44 @@ export function resolveBallContest(body, players, dt) {
   }
 
   // --- 2. who is in control ------------------------------------------------
-  let best = null, bd = LOCO.controlRadius;
+  // Possession is anchored on the LAST TOUCH, not on who happens to be nearest.
+  // A carrier pushes the ball a stride ahead of himself on every touch, so a
+  // defender coming the other way is repeatedly the nearest man to it without
+  // ever having got near TAKING it. Nearest-wins made possession strobe, and
+  // every strobe wiped the challenges in progress. The man who last played it
+  // keeps it until somebody else plays it or wins the contest below.
+  let best = null;
   if (list && body.pos.y <= 1.1) {
-    for (const p of list) {
-      if (p.down) continue;
-      const d = Math.hypot(body.pos.x - p.pos.x, body.pos.z - p.pos.z);
-      if (d >= bd) continue;
-      const rel = Math.hypot(body.vel.x - p.vel.x, body.vel.z - p.vel.z);
-      if (rel > LOCO.controlRelSpeed) continue;
-      bd = d; best = p;
+    const lt = body.lastTouch;
+    if (lt && !lt.down && lt.pos) {
+      const d = Math.hypot(body.pos.x - lt.pos.x, body.pos.z - lt.pos.z);
+      const rel = Math.hypot(body.vel.x - lt.vel.x, body.vel.z - lt.vel.z);
+      // He has to have had it under control once to keep it out to controlKeep,
+      // and he has to still be the nearest man to it — that is the difference
+      // between a heavy touch he will run onto and a pass that has left him.
+      let nearest = true;
+      if (lt === S.owner) {
+        for (const p of list) {
+          if (p === lt || p.down) continue;
+          if (Math.hypot(body.pos.x - p.pos.x, body.pos.z - p.pos.z) < d) {
+            nearest = false; break;
+          }
+        }
+      }
+      const keep = (lt === S.owner && nearest) ? LOCO.controlKeep : LOCO.controlRadius;
+      if (d <= keep && rel <= LOCO.controlRelSpeed * 1.5) best = lt;
     }
-  }
-
-  const prev = S.owner;
-  if (prev && !prev.down && prev !== best) {
-    const dPrev = Math.hypot(body.pos.x - prev.pos.x, body.pos.z - prev.pos.z);
-    const relPrev = Math.hypot(body.vel.x - prev.vel.x, body.vel.z - prev.vel.z);
-    const dBest = best
-      ? Math.hypot(body.pos.x - best.pos.x, body.pos.z - best.pos.z) : Infinity;
-    // Standing momentarily nearer to a ball that is not yours does not take it
-    // off anybody. You have to be clearly nearer, and stay there.
-    if (dBest < dPrev - LOCO.stealMargin) S.rivalT += dt; else S.rivalT = 0;
-    if (dPrev <= LOCO.controlKeep && relPrev <= LOCO.controlRelSpeed * 1.5
-        && S.rivalT < LOCO.stealTime) best = prev;
-  } else {
-    S.rivalT = 0;
+    if (!best) {
+      let bd = LOCO.controlRadius;
+      for (const p of list) {
+        if (p.down) continue;
+        const d = Math.hypot(body.pos.x - p.pos.x, body.pos.z - p.pos.z);
+        if (d >= bd) continue;
+        const rel = Math.hypot(body.vel.x - p.vel.x, body.vel.z - p.vel.z);
+        if (rel > LOCO.controlRelSpeed) continue;
+        bd = d; best = p;
+      }
+    }
   }
 
   if (best && best === S.owner) S.ownTime += dt;
@@ -680,6 +703,7 @@ export function resolveBallContest(body, players, dt) {
       const d = Math.hypot(dx, dz);
       if (d > LOCO.contestRadius || d < 1e-4) {
         q.__contest = Math.max(0, (q.__contest || 0) - LOCO.contestDecay * dt);
+        q.__contestT = Math.max(0, (q.__contestT || 0) - dt * 0.12);
         continue;
       }
 
@@ -697,12 +721,13 @@ export function resolveBallContest(body, players, dt) {
         * (1 + 0.5 * locoState(owner).shielding));
 
       addContest(q, LOCO.contestBase * str * mom * shield * set * dt);
+      q.__contestT = (q.__contestT || 0) + dt;
       locoState(owner).shielding = Math.min(1, locoState(owner).shielding + dt * 4);
 
       // Won. He got his body in and the ball comes off the carrier, out toward
       // the side he came from and live for both of them. This is the only way a
       // shielded ball changes hands, and it took as long as the contest took.
-      if (contestOf(q) >= 1) {
+      if (contestOf(q) >= 1 && (q.__contestT || 0) >= LOCO.minChallenge) {
         const nx = dx / d, nz = dz / d;
         const pace = LOCO.winKnock + clamp(closing, 0, 7) * 0.35;
         body.vel.x = nx * pace + q.vel.x * 0.35;
@@ -716,9 +741,12 @@ export function resolveBallContest(body, players, dt) {
         owner.hasBall = false;
         locoState(owner).shielding = 0;
         clearContests(list);
-        S.owner = null;
-        S.ownTime = 0;
-        S.rivalT = 0;
+        // He owns it from this instant. Without that the man he just beat is
+        // still standing over the ball and his own collider would reclaim the
+        // last touch on the very next line, so the challenge he lost would look
+        // like it never happened.
+        S.owner = q;
+        S.ownTime = LOCO.controlSettle;
         break;
       }
     }
