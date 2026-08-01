@@ -124,6 +124,19 @@ const SWING_MAX = 0.55;           // m of lateral swing on the hardest turn
 // the ball already wide of his line, at pace, may break GAP_CEILING — out to
 // LOOSE_CEILING, which is loose enough that sim/ai.js drops him as the carrier
 // and the ball is genuinely there to be won.
+// A MISCUE. Not every touch comes off the laces: at pace, one in a dozen or so
+// is taken with the wrong part of the boot, and it goes ACROSS him rather than
+// in front of him — far enough off his line to be outside his own shoulder, and
+// soft, because a stubbed contact does not fly. He runs past it and has to check
+// back for it. This is the only thing in the model that can put the ball behind
+// the man carrying it, and without it the ball sat inside 23 degrees of his
+// facing on every frame of every run: a pocket that never breathes sideways,
+// which is what `aheadFraction` reading exactly 1.000 was reporting.
+const SCUFF_P = 0.26;             // scaled by pace and by how raw he is
+const SCUFF_MIN = 0.30;           // rad across himself, at the least
+const SCUFF_SPAN = 0.35;          // ...and up to this much more
+const SCUFF_PACE = 0.35;          // share of the pace he meant to put on it
+
 const LOOSE_OFF_ON = 0.42;        // rad off his line before a touch can be heavy
 const LOOSE_OFF_SPAN = 0.85;      // rad over that at which it is as loose as it gets
 const LOOSE_CEILING = 2.30;       // m a heavy touch may put it — loose enough to lose
@@ -350,11 +363,20 @@ export function createBallControl(ctx) {
       * fast * clamp(1.25 - skill, 0, 1) * 1.9;
     const heavy = loose > 0 && rng.float() < loose;
 
-    const ang = rng.gauss() * 0.06 * err + (heavy ? rng.gauss() * 0.16 : 0);
+    // ...and the miscue, which is a different failure from a heavy touch: heavy
+    // is the right idea hit too hard, this is the wrong part of the boot. It is
+    // gated on pace and competence, so a good player at a jog never produces one.
+    const scuffed = rng.float() < SCUFF_P * fast * clamp(1.35 - skill, 0, 1);
+    const scuff = scuffed
+      ? (rng.float() < 0.5 ? -1 : 1) * (SCUFF_MIN + rng.float() * SCUFF_SPAN)
+      : 0;
+
+    const ang = rng.gauss() * 0.06 * err + (heavy ? rng.gauss() * 0.16 : 0) + scuff;
     const ca = Math.cos(ang), sa = Math.sin(ang);
     const dx = sol.dx * ca - sol.dz * sa;
     const dz = sol.dx * sa + sol.dz * ca;
     let u = sol.u * (1 + rng.gauss() * 0.055 * err);
+    if (scuffed) u *= SCUFF_PACE;        // stubbed, not struck: it does not fly
     if (heavy) u += (0.5 + rng.float()) * (1 + loose);
     const ceil = heavy ? LOOSE_CEILING : GAP_CEILING;
     u = clamp(u, 0.2, s + Math.sqrt(2 * ROLL_DECEL * Math.max(0.02, ceil - gap)));
