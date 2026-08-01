@@ -1027,7 +1027,10 @@ function buildBeard(density = 1) {
   // (eyeTh = 81 deg) at every azimuth, or the beard climbs the cheek and turns
   // back into the brown mask the reference never has.
   const top = (az) => (95 + 17 * Math.max(0, cw(az)) ** 1.35) * D2R;
-  const bot = (az) => (117 + (13 + 15 * density) * Math.max(0, cw(az))) * D2R;
+  // The band's lower edge must stop on the mandible. Wrapped further under the
+  // jaw its cards crossed the neck mesh, and alphaTest fringing along that
+  // intersection showed as a scatter of black speckle at the collar.
+  const bot = (az) => (113 + (11 + 13 * density) * Math.max(0, cw(az))) * D2R;
 
   parts.push(hairShell({
     inner: (az) => (inArc(az) ? top(az) : bot(az)),
@@ -1080,7 +1083,7 @@ function buildBeard(density = 1) {
     if (d < 0.14) continue;
     // smooth length envelope + a small, bounded jitter
     const env = d * (0.80 + 0.20 * Math.sin(az * 5.3 + 1.1));
-    parts.push(hairCard(az, bot(az) - 0.055, {
+    parts.push(hairCard(az, bot(az) - 0.075, {
       w: 0.15,
       len: (0.038 + 0.048 * density) * env,
       lift: 0.030 + 0.018 * d,

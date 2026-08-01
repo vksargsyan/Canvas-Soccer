@@ -29,7 +29,11 @@
 // On top of that every character carries a contact-occlusion decal, MULTIPLIED
 // into the frame rather than alpha-blended, so the grass keeps its own grain
 // through the shadow. Cast shadow says where the light is; the decal says the
-// sole is touching. You need both or the players hover.
+// sole is touching. You need both or the players hover — and so does the ball,
+// which owns its own conforming decal (see entities/ball.js). A cast shadow on
+// its own is not enough for anything resting on the deck: with the key on the
+// camera's side of the pitch it lands mostly BEHIND the caster, and a shape as
+// low and round as a ball then hides its own shadow almost completely.
 
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -643,7 +647,10 @@ export function createEngine(canvas) {
     m.userData.__csShadow = 1;
     const mat = m.material;
     if (!mat || mat.isMeshBasicMaterial || mat.isShaderMaterial || mat.transparent) {
-      // decals, rings, fake shadows: never a caster
+      // decals, rings, contact-occlusion quads: never a caster. Note this only
+      // ever clears castShadow — the OPAQUE mesh the decal sits under (the ball,
+      // a boot) is enrolled below on its own merits, so an entity keeps its real
+      // shadow-map shadow whatever its decal is made of.
       m.castShadow = false;
       return;
     }
@@ -672,11 +679,19 @@ export function createEngine(canvas) {
   // zero. It also means the owner's per-frame `material.opacity` write (the
   // fade-out as a player leaves the ground) still scales the whole effect, since
   // MeshBasicMaterial folds opacity into the alpha it emits.
+  //
+  // That blend + "profile in alpha, RGB at zero" pair is a CONTRACT, not a local
+  // trick: an owner that already implements it (entities/ball.js writes it
+  // straight out of its own shader) marks its material `userData.csContact =
+  // 'own'` and is left strictly alone here. Retargeting such a material would
+  // swap the map and colour out from under a shader that never reads them, and
+  // any uniforms the owner keeps writing per frame would land on a material the
+  // renderer is no longer using.
   function tameContactBlob(m) {
     if (m.userData.__csContact) return;
     m.userData.__csContact = 1;
     const mat = m.material;
-    if (!mat || !mat.map) return;
+    if (!mat || !mat.map || mat.userData.csContact === 'own') return;
     mat.map = contactTexture();
     mat.color.setRGB(0, 0, 0);
     // The owner drives opacity in 0..0.58 (0.58 grounded, fading to 0 as the

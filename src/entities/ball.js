@@ -14,7 +14,10 @@ import { BALL_R } from '../core/constants.js';
 // contact shadow with it instead of silently drifting out of sync. The fallback
 // below only exists so the module still works if nothing passes one in.
 const SUN_FALLBACK = { x: -34, y: -62, z: -24 };
-// how far the projected ellipse leans away from the ball, per unit of height
+// How far the ellipse leans away from the ball, per metre the ball's UNDERSIDE
+// is off the deck. Keyed to the underside and not to the centre on purpose —
+// see the contact-shadow block below for why that one substitution is the whole
+// difference between a grounded ball and a floating one.
 const SUN_LEAN = 0.78;
 
 const TRAIL = 20;                 // ribbon samples
@@ -67,14 +70,43 @@ export function createBall(opts = {}) {
   squash.add(mesh);
 
   // ---- contact shadow -----------------------------------------------------
+  // Two separate things ground a ball, and core/engine.js spells both out in its
+  // header: the shadow map says where the light is, a contact-occlusion term says
+  // the ball is TOUCHING. The sphere above is a real shadow-map caster
+  // (mesh.castShadow) and covers the first. This quad is the second.
+  //
+  // It is deliberately NOT a projection of the sphere, and that is the fix for
+  // the "floating ball". The key sits at ~51 degrees swung to +X/+Z and the
+  // camera lives on the same side of the pitch, so a true projection for a ball
+  // at rest lands ~0.15 m to the sun-away side — 0.6 of a ball radius — while
+  // the ellipse itself was drawn narrower than the ball. A sphere sitting on the
+  // deck then hides its own shadow almost entirely: all that reached the frame
+  // was a crescent a few pixels wide hugging the silhouette, which is why every
+  // gameplay camera read as "clean grass all round the base". Occlusion belongs
+  // UNDER the contact point, concentric with it and comfortably wider than the
+  // silhouette, so a ring of shade shows all the way round from any angle. The
+  // lean is therefore driven by the height of the ball's UNDERSIDE, which is
+  // exactly zero at rest and only grows once the ball is genuinely airborne.
+  //
   // The falloff is evaluated in the fragment shader rather than sampled from a
   // texture: it stays perfectly smooth at any on-screen size, costs no texture
   // memory, and there is no mip chain to go soft on a ball this small.
+  //
+  // The blend is the other half. Alpha-blending charcoal over grass REPLACES the
+  // grass — the blade texture stops dead inside the blob and the eye reads a
+  // sticker lying on the pitch. Occlusion is a MULTIPLY: it scales the light
+  // already there and everything underneath keeps its own grain.
+  //
+  //     src * ZERO + dst * (1 - srcAlpha)   ==   dst * (1 - occlusion)
+  //
+  // That is the same contract engine.js applies to the characters' decals, which
+  // is why RGB here is zero and the entire profile lives in alpha. `csContact`
+  // marks the material as already conforming so the engine's enrolment walk
+  // never tries to re-target it.
   const shadowMat = new THREE.ShaderMaterial({
     uniforms: {
-      uColor: { value: new THREE.Color(0x0c1a07) },
-      uOpacity: { value: 0.8 },
-      uCore: { value: 0.5 },
+      uOpacity: { value: 0.66 },
+      uCore: { value: 0.62 },
     },
     vertexShader: /* glsl */`
       varying vec2 vUv;
@@ -83,23 +115,33 @@ export function createBall(opts = {}) {
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: /* glsl */`
-      uniform vec3 uColor;
       uniform float uOpacity;
       uniform float uCore;
       varying vec2 vUv;
       void main() {
         vec2 p = vUv * 2.0 - 1.0;
         float d = length(p);
-        // solid umbra out to uCore, then a soft penumbra to the rim. On the deck
-        // the umbra is wide and dark; the higher the ball, the more it is all
-        // penumbra — which is what "tightens as it nears the ground" means.
-        float a = (1.0 - smoothstep(uCore, 1.0, d)) * uOpacity;
+        // Solid umbra out to uCore, then a soft penumbra to the rim, plus a
+        // little extra density in the very middle so the darkest point is the
+        // contact patch rather than the whole core being one flat plate. On the
+        // deck the umbra is wide and dark; the higher the ball, the more of it
+        // is penumbra — which is what "tightens as it nears the ground" means.
+        float a = 1.0 - smoothstep(uCore, 1.0, d);
+        a *= uOpacity * (0.84 + 0.16 * (1.0 - smoothstep(0.0, uCore, d)));
         if (a <= 0.004) discard;
-        gl_FragColor = vec4(uColor, a);
+        // RGB is multiplied by ZERO by the blend below; the occlusion is alpha.
+        gl_FragColor = vec4(0.0, 0.0, 0.0, a);
       }`,
     transparent: true,
     depthWrite: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.ZeroFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
   });
+  shadowMat.userData.csContact = 'own';
   const shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), shadowMat);
   shadow.rotation.set(-Math.PI / 2, 0, -SUN_AZ);
   shadow.renderOrder = 3;
@@ -223,12 +265,18 @@ export function createBall(opts = {}) {
     }
 
     // --- contact shadow -----------------------------------------------------
+    // `h` is the gap between the ball's underside and the deck, so it is exactly
+    // zero when the ball is at rest. Leaning by `h` rather than by `pos.y` keeps
+    // the ellipse concentric with the contact patch on the ground — where the
+    // ball cannot hide it — and still swings it out along the sun as soon as the
+    // ball is genuinely in the air, where the real shadow-map shadow has moved
+    // out from under the sphere too.
     const h = Math.max(0, body.pos.y - BALL_R);
     const k = 1 / (1 + h * 1.25);
     shadow.position.set(
-      body.pos.x + body.pos.y * SUN_DX,
+      body.pos.x + h * SUN_DX,
       0.013,
-      body.pos.z + body.pos.y * SUN_DZ,
+      body.pos.z + h * SUN_DZ,
     );
     // Once the ball is inside a goal it is lit through the net, and the ellipse
     // would otherwise land on the pitch *beyond* the goal line where no shadow
@@ -242,13 +290,19 @@ export function createBall(opts = {}) {
         occl = Math.min(occl, Math.max(0, -past / 0.5));
       }
     }
-    // tight and dark on the deck, wide and faint the higher the ball climbs;
-    // stretched slightly along the sun azimuth, as a real low-sun shadow is
-    const s = BALL_R * (2.85 + 5.0 * (1 - k));
-    shadow.scale.set(s * 1.22, s, 1);
+    // Tight and dark on the deck, wide and faint the higher the ball climbs.
+    // `r` is the OUTER radius in metres; the quad is a unit plane whose UVs run
+    // the shader's d from 0 at the centre to 1 at the edge, so the scale is 2r.
+    // At rest that is 2.2 ball radii — the umbra alone (uCore of it) already
+    // clears the sphere's silhouette, which is what makes a ring of shade show
+    // all the way round instead of a crescent. On the deck the ellipse is round,
+    // because contact occlusion has no direction; the sun-azimuth stretch fades
+    // in with height, as the term turns back into a projected shadow.
+    const r = BALL_R * (2.20 + 2.40 * (1 - k));
+    shadow.scale.set(2 * r * (1 + 0.22 * (1 - k)), 2 * r, 1);
     shadow.visible = occl > 0.01;
-    shadowMat.uniforms.uOpacity.value = (0.80 * k * k + 0.05) * occl;
-    shadowMat.uniforms.uCore.value = 0.14 + 0.38 * k;
+    shadowMat.uniforms.uOpacity.value = (0.62 * k * k + 0.05) * occl;
+    shadowMat.uniforms.uCore.value = 0.20 + 0.42 * k;
 
     // --- trail --------------------------------------------------------------
     for (let i = history.length - 1; i > 0; i--) history[i].copy(history[i - 1]);
