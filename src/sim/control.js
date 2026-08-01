@@ -45,8 +45,11 @@
 //    Speed loosens control three ways: a longer pocket, a bigger touch error,
 //    and turn swing. A carried ball keeps its old line for a beat when the man
 //    changes direction, so the touch lands on the OUTSIDE of the turn, scaled by
-//    turn rate * speed. Turning hard at a sprint therefore swings the ball wide
-//    and can genuinely cost possession, while the same turn at a walk does not.
+//    turn rate * speed. And a touch taken with the ball already wide of his new
+//    line, at pace, is the one allowed to break the ceiling and run genuinely
+//    loose — so turning hard at a sprint can cost possession, while the same
+//    turn at a walk cannot. Measured: a 150 deg turn at a sprint swings the
+//    pocket from 0.98 m to 1.29 m and occasionally puts it out of reach.
 //
 // 2. THE FIRST TOUCH (kill it, do not bounce it)
 //    sim/physics.js resolves a ball against a player as a restitution collision
@@ -115,6 +118,15 @@ const ROLL_DECEL = 2.62;
 const LEAD = 1.00;                // how much of the player's own travel to lead by
 const SWING_K = 0.030;            // turn swing, per (rad/s * m/s)
 const SWING_MAX = 0.55;           // m of lateral swing on the hardest turn
+
+// Turning hard at pace must be able to cost you the ball, or a carry is a
+// guarantee and there is no reason to ever slow down. Only a touch taken with
+// the ball already wide of his line, at pace, may break GAP_CEILING — out to
+// LOOSE_CEILING, which is loose enough that sim/ai.js drops him as the carrier
+// and the ball is genuinely there to be won.
+const LOOSE_OFF_ON = 0.42;        // rad off his line before a touch can be heavy
+const LOOSE_OFF_SPAN = 0.85;      // rad over that at which it is as loose as it gets
+const LOOSE_CEILING = 2.30;       // m a heavy touch may put it — loose enough to lose
 
 // --- receiving --------------------------------------------------------------
 const TRAP_R = 1.15;              // reach at which a player can take a ball down
@@ -269,7 +281,8 @@ export function createBallControl(ctx) {
     const hz_ = clamp(TOUCH_HZ_BASE + TOUCH_HZ_PER_MS * s, TOUCH_HZ_MIN, TOUCH_HZ_MAX);
     st.phase += hz_ * dt;
 
-    const gap = gapTo(a);
+    const gapx = body.pos.x - a.pos.x, gapz = body.pos.z - a.pos.z;
+    const gap = Math.hypot(gapx, gapz);
     const since = t - st.lastTouchT;
 
     let want = false;
@@ -323,14 +336,28 @@ export function createBallControl(ctx) {
     const err = (1.2 - skill) * (0.6 + 0.9 * clamp(s / SPRINT_SPEED, 0, 1))
       * (sprint ? 1.7 : 1.0)
       * (1 + Math.min(1.4, Math.abs(st.turn) * 0.55));
-    const ang = rng.gauss() * 0.06 * err;
+    // ---- can this touch get away from him? ----
+    // The load is not the turn itself but its consequence: how far OFF his new
+    // line the ball has ended up. A carried ball keeps running the old way while
+    // he comes round, so after a real turn it is out at an angle and the touch
+    // is a reach across the body. Dead ahead is free; wide of the line at pace is
+    // where a touch is allowed to break the pocket ceiling and run loose. A man
+    // at a walk can spin on the ball all day — there is no momentum in it — so
+    // pace gates the whole term.
+    const off = Math.acos(clamp((gapx * hx + gapz * hz) / Math.max(0.05, gap), -1, 1));
+    const fast = clamp((s - RUN_SPEED * 0.7) / (SPRINT_SPEED - RUN_SPEED * 0.7), 0, 1);
+    const loose = clamp((off - LOOSE_OFF_ON) / LOOSE_OFF_SPAN, 0, 1)
+      * fast * clamp(1.25 - skill, 0, 1) * 1.9;
+    const heavy = loose > 0 && rng.float() < loose;
+
+    const ang = rng.gauss() * 0.06 * err + (heavy ? rng.gauss() * 0.16 : 0);
     const ca = Math.cos(ang), sa = Math.sin(ang);
     const dx = sol.dx * ca - sol.dz * sa;
     const dz = sol.dx * sa + sol.dz * ca;
-    // the pace error is one-sided-ish: an over-hit touch is the one that hurts
     let u = sol.u * (1 + rng.gauss() * 0.055 * err);
-    // ...but never past the ceiling the solve just established
-    u = clamp(u, 0.2, s + Math.sqrt(2 * ROLL_DECEL * Math.max(0.02, GAP_CEILING - gap)));
+    if (heavy) u += (0.5 + rng.float()) * (1 + loose);
+    const ceil = heavy ? LOOSE_CEILING : GAP_CEILING;
+    u = clamp(u, 0.2, s + Math.sqrt(2 * ROLL_DECEL * Math.max(0.02, ceil - gap)));
 
     strikeBall(a, st, dx, dz, u, 0);
     if (a.anim && a.anim.play) a.anim.play('dribble', { force: true });
