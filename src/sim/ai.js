@@ -132,7 +132,7 @@ const CUT_SPAN = 0.80;            // s of margin over which a lane goes bad
 // in open play the carrier is better off keeping the ball and looking again next
 // frame. Scoring a shut lane low is not enough on its own: when EVERY option is
 // shut the least-bad one still wins the comparison and still gets played.
-const CUT_VETO = 0.90;
+const CUT_VETO = 0.75;
 
 // How far ahead of himself a receiver can be trusted. Straight-line
 // extrapolation is only honest for about a stride: a man running to a support
@@ -945,15 +945,28 @@ export function createAI(ctx) {
   function doClear(a) {
     stats.clears++;
     const dir = TEAMS[a.team].dir;
-    // hoof it upfield and toward the nearer touchline, away from our own goal
-    const wide = (Math.sign(a.pos.z) || rng.sign()) * 9;
+    // Upfield and away from the middle — but at a POINT ON THE PITCH, and hit
+    // hard enough to reach it rather than at a fixed hoof. The old aim was an
+    // offset from wherever he happened to be standing (22 m up, 9 m wide of
+    // him) struck at 28 m/s, so a man anywhere near a touchline cleared it
+    // straight into the crowd and handed the throw back. Clearances and
+    // defensive headers were between them a fifth of every ball that went out.
+    const side = Math.sign(a.pos.z) || rng.sign();
+    const tx = clamp(a.pos.x + dir * 20, -HALF_W + 6, HALF_W - 6);
+    const tz = clamp(a.pos.z + side * 7, -HALF_D + 5.5, HALF_D - 5.5);
     strike(a, 'kick', rng.sign(), () => {
-      _v.set(dir * 22, 0, wide - a.pos.z);
-      body.kick(_v, 28, 6.2, 0);
+      _v.set(tx - a.pos.x, 0, tz - a.pos.z);
+      const d = _v.length() || 1;
+      // up and away: the lift buys the hang time, and the pace is solved to
+      // land it around two thirds of the way out and let it run on
+      const lift = clamp(d * 0.26, 3.0, 6.2);
+      const flight = (2 * lift) / LOFT_G;
+      const power = clamp((d * 0.62) / Math.max(0.3, flight), 9, 24);
+      body.kick(_v, power, lift, 0);
       body.lastTouch = a; body.lastTouchTeam = a.team;
       if (events.onShot) events.onShot(a, 22);
     });
-    face(a, a.pos.x + dir * 6, wide);
+    face(a, tx, tz);
   }
 
   /**
@@ -1058,8 +1071,14 @@ export function createAI(ctx) {
         body.kick(_v, 20, 1.4, 0);
         if (events.onShot) events.onShot(a, 20);
       } else {
-        _v.set(dir * 14, 0, (Math.sign(a.pos.z) || 1) * 6);
-        body.kick(_v, 17, 4.0, 0);
+        // A defensive header goes up the pitch and wide of the middle, at a
+        // point inside the touchline — same lesson as doClear: heading it 6 m
+        // further "wide" from a man who is already wide is heading it out.
+        const hx = clamp(a.pos.x + dir * 12, -HALF_W + 6, HALF_W - 6);
+        const hz = clamp(a.pos.z + (Math.sign(a.pos.z) || 1) * 5, -HALF_D + 5.5, HALF_D - 5.5);
+        _v.set(hx - a.pos.x, 0, hz - a.pos.z);
+        const hd = _v.length() || 1;
+        body.kick(_v, clamp(hd * 1.15, 8, 16), 3.4, 0);
         if (events.onPass) events.onPass(a, a);
       }
       body.lastTouch = a; body.lastTouchTeam = a.team;
