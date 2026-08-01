@@ -125,6 +125,7 @@ const TRAP_SETTLE = 0.34;         // s the good touch has to put it in the pocke
 const TRAP_KEEP = 0.16;           // share of arrival pace a scruffy touch leaves on
 const TRAP_COOLDOWN = 0.35;       // s before the same man may re-take the ball
 const GATHER_MIN_SPEED = 2.5;     // m/s he must be running to gather a dead ball
+const SELF_RECOVER = 0.55;        // s before the last toucher may reclaim his own ball
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -446,9 +447,14 @@ export function createBallControl(ctx) {
     if ((a.hold || 0) > 0) return false;
     const st = stateOf(a);
     if (t - st.lastTouchT < TRAP_COOLDOWN) return false;
-    // never re-take the ball he has just played or is already carrying
-    if (body.lastTouch === a) return false;
+    // A ball he has just played is not his to receive. But the man who last
+    // touched it must still be able to RECOVER it: if a heavy touch or a shove
+    // has put it beyond sim/ai.js's carrier radius, the carry servo has stopped
+    // being called for him, and without this he can only chase it. One stride
+    // (longer than the touch interval at any running speed) separates "I am
+    // dribbling" from "that got away from me".
     if (t - st.kickedAt < 0.5) return false;
+    if (body.lastTouch === a && t - st.lastTouchT < SELF_RECOVER) return false;
 
     const dx = body.pos.x - a.pos.x, dz = body.pos.z - a.pos.z;
     const gap = Math.hypot(dx, dz);
