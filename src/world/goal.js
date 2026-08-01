@@ -130,7 +130,7 @@ function goalAoTex() {
       const deep = Math.pow(u, 0.55);
       const mouth = Math.min(1, u / 0.10);
       const rear = Math.min(1, (1 - u) / 0.07);   // no hard rectangle at the back
-      const a = 0.44 * deep * edge * mouth * rear;
+      const a = 0.52 * deep * edge * mouth * rear;
       const k = (j * S + i) * 4;
       data[k] = 12; data[k + 1] = 22; data[k + 2] = 14;
       data[k + 3] = Math.round(a * 255);
@@ -524,12 +524,15 @@ export function createGoal(side = 1) {
 
   const frameGeo = track(mergeGeometries(parts, false));
   parts.forEach((g) => g.dispose());
-  // Not pure white: a 1.0 albedo under the key clips to flat white through ACES
-  // and the posts lose their round, which is exactly how a goal ends up reading
-  // as "a plain white box". Pulled down a shade and roughened so the cylinder
-  // gradient survives, with no metal to throw a hot line down the middle.
+  // The goal cameras all sit in FRONT of the goal and the key is behind it, so
+  // the faces you actually look at are the shadow side — carried by a blue hemi
+  // and a blue rim. A neutral albedo there comes out slate blue, which is half
+  // of what "blue-tinted" meant. So: a faintly warm near-white to cancel the
+  // cool fill, no metalness (which only subtracts diffuse without an env map),
+  // and enough roughness that the cylinder keeps its gradient instead of
+  // clipping to a flat white box.
   const frameMat = track(new THREE.MeshStandardMaterial({
-    color: 0xe9edf1, roughness: 0.47, metalness: 0.0,
+    color: 0xfdfbf4, roughness: 0.42, metalness: 0.0,
   }));
   const frame = new THREE.Mesh(frameGeo, frameMat);
   frame.castShadow = true;
