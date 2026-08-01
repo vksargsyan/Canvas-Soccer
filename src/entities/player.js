@@ -1248,15 +1248,18 @@ function buildHand(s, keeper) {
   const K = keeper ? 1.22 : 1.0;
   const y0 = -0.196;                                   // wrist plane
 
-  // wrist: pinched waist. The forearm lathe necks down to meet it, so the pair
-  // reads as a joint rather than as a tube that swallows a blob.
-  const wrist = new THREE.CylinderGeometry(0.084 * K, 0.070 * K, 0.052, 14, 1);
-  wrist.translate(0, y0 + 0.020, 0);
-  parts.push(wrist);
-  // cuff: a ring flaring back out over the wrist. This is the hard step in the
-  // silhouette that the panel was missing.
-  const cuff = new THREE.CylinderGeometry(0.078 * K, 0.099 * K, 0.030, 14, 1);
-  cuff.translate(0, y0 - 0.008, 0.002 * K);
+  // Cuff: a smooth bulge over the end of the forearm, and it has to be smooth.
+  // Two cone versions came before this one and both rendered as a hard black
+  // bracelet, because a cone's outer rim is a crease: at the silhouette its
+  // normal turns sideways-and-down in one step, gets no key light, and draws a
+  // near-black line exactly where the widest part of the shape is. A lens has
+  // no crease anywhere, so the same volume shades as a gradient.
+  //
+  // The wrist itself needs no geometry: the forearm lathe necks down to 0.046
+  // at its tip, and that pinch under this bulge is the joint.
+  const cuff = blobGeo(0.100 * K, 14);
+  cuff.scale(1.00, 0.42, 0.92);
+  cuff.translate(0, y0 - 0.016, 0.002 * K);
   parts.push(cuff);
 
   // palm: a paddle, not a ball -- broad across, tall, thin front to back.
@@ -1706,14 +1709,36 @@ export function createPlayer(cfg = {}) {
     {
       const uv = foreGeo.getAttribute('uv');
       for (let i = 0; i < uv.count; i++) {
-        uv.setY(i, (isKeeper ? 0.16 + uv.getY(i) * 0.66 : 0.06 + uv.getY(i) * 0.42));
+        // The bottom tenth of the arm strip carries a baked wrist AO that
+        // reaches 30 % black, on top of a skin gradient that is already 42 %
+        // darkened there. Sampling a bare forearm and a whole hand out of that
+        // band is why the wrist rendered as a hard black bracelet: the cuff's
+        // flared wall faces down, catches little key light, and lands on the
+        // darkest texels in the strip. Both now start above the band.
+        uv.setY(i, (isKeeper ? 0.16 + uv.getY(i) * 0.66 : 0.13 + uv.getY(i) * 0.35));
       }
       uv.needsUpdate = true;
     }
+    // Olecranon. Two lathes meeting end to end give a joint you can only read
+    // as a change of taper, and when the arm hangs near-straight that reads as
+    // nothing at all — 'straight featureless tubes with no elbow'. This is the
+    // point of the elbow: a small mass on the BACK of the joint, which is the
+    // side the camera sees whenever the arm swings forward, and the one bump
+    // that tells you where an arm folds.
+    const olec = blobGeo(0.082, 10);
+    olec.scale(0.86, 0.78, 0.92);
+    olec.translate(0, 0.004, -0.044);
+    ensureUv(olec);
+    {
+      const uv = olec.getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, 0.5, isKeeper ? 0.62 : 0.40);
+      uv.needsUpdate = true;
+    }
+
     const hand = buildHand(s, isKeeper);
-    cylUV(hand, isKeeper ? 0.055 : 0.045);
-    const foreMerged = mergeGeometries([foreGeo, hand], false);
-    foreGeo.dispose(); hand.dispose();
+    cylUV(hand, isKeeper ? 0.10 : 0.19);
+    const foreMerged = mergeGeometries([foreGeo, olec, hand], false);
+    foreGeo.dispose(); olec.dispose(); hand.dispose();
     foreMerged.computeVertexNormals();
     addMesh(fore, foreMerged, armMat, true);
   }
