@@ -406,9 +406,9 @@ export function headTexture(o = {}) {
         const rg2 = g.createLinearGradient(x0, 0, x1, 0);
         const rim = mixHex(lighten(base, 0.72), 0xcfe0f2, 0.34);
         rg2.addColorStop(0.000, rgba(rim, 0));
-        rg2.addColorStop(0.640, rgba(rim, 0));
-        rg2.addColorStop(0.760, rgba(rim, 0.42));
-        rg2.addColorStop(0.880, rgba(rim, 0));
+        rg2.addColorStop(0.672, rgba(rim, 0));
+        rg2.addColorStop(0.770, rgba(rim, 0.30));
+        rg2.addColorStop(0.868, rgba(rim, 0));
         rg2.addColorStop(1.000, rgba(rim, 0));
         g.fillStyle = rg2;
         g.fillRect(Math.min(x0, x1), 0, 0.5 * W, H);
