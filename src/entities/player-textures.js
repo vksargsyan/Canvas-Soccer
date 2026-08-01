@@ -163,19 +163,21 @@ export function warpV(v) {
 // ---------------------------------------------------------------------------
 
 export const FACE_ANCHORS = {
-  eyeAz: 0.312, eyeTh: 1.412,
+  // Eyes set wider: at 0.31 the pair occupied only ~30 % of the head width and
+  // left two blank cheeks either side. The reference sits them nearer 36 %.
+  eyeAz: 0.352, eyeTh: 1.382,
   // eye socket: half-angles of the carved dish, and its depth in skull radii
   socketH: 0.360, socketUp: 0.105, socketDn: 0.155, socketD: 0.070,
   // eyeball, in head radii (tuned so the rim ellipse lands on the ball)
-  eyeR: 0.17400, eyeC: 0.81429,
+  eyeR: 0.17400, eyeC: 0.79600,
   // Rim of the eye opening, in radians off the eye axis. An adult eye is a
   // narrow almond — roughly 2 : 1 — not the near-circle a cartoon default gives.
   // The upper lid sits low enough to clip the top of the iris, which is what
   // stops the eye reading as a startled googly ball.
-  rimH: 0.130, rimUp: 0.0505, rimDn: 0.0755,
-  browTh: 1.236,
-  noseTh: 1.596,
-  mouthTh: 1.830,
+  rimH: 0.128, rimUp: 0.0490, rimDn: 0.0680,
+  browTh: 1.204,
+  noseTh: 1.566,
+  mouthTh: 1.778,
   earAz: 1.520, earTh: 1.505,
 };
 
@@ -193,13 +195,16 @@ const RIM_H = FACE_ANCHORS.rimH, RIM_UP = FACE_ANCHORS.rimUp, RIM_DN = FACE_ANCH
  *   arch how much the peak rises above the ends
  *   ang  outer-end lift
  */
+// `ang` is deliberately small and signed the other way from the first cut: a
+// brow whose outer end drops hard reads as permanently worried, and every
+// player on the pitch wearing the same worried face is worse than no variation.
 export const BROW_SHAPES = [
-  { w: 0.176, th: 0.0490, arch: 0.34, ang: 0.10 },
-  { w: 0.190, th: 0.0600, arch: 0.16, ang: 0.17 },
-  { w: 0.166, th: 0.0420, arch: 0.48, ang: 0.03 },
-  { w: 0.198, th: 0.0670, arch: 0.10, ang: 0.22 },
-  { w: 0.180, th: 0.0530, arch: 0.36, ang: 0.13 },
-  { w: 0.170, th: 0.0450, arch: 0.24, ang: 0.01 },
+  { w: 0.180, th: 0.0500, arch: 0.30, ang: -0.05 },
+  { w: 0.194, th: 0.0610, arch: 0.14, ang: -0.09 },
+  { w: 0.170, th: 0.0430, arch: 0.42, ang: 0.02 },
+  { w: 0.202, th: 0.0680, arch: 0.09, ang: -0.12 },
+  { w: 0.184, th: 0.0540, arch: 0.32, ang: -0.07 },
+  { w: 0.174, th: 0.0460, arch: 0.22, ang: 0.04 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -307,6 +312,31 @@ export function headTexture(o = {}) {
     // neck sits in the head's shadow
     g.fillStyle = rgba(deep, 0.55); g.fillRect(0, PY(2.62), W, H - PY(2.62));
 
+    // Buccal hollow: a soft shadow UNDER and inboard of the cheekbone. Without
+    // it the skin reads as one flat tone across the whole lower face, which was
+    // the "skin is flat with no shading variation" note.
+    for (const s of [-1, 1]) {
+      const hx = cx + s * 0.36 * AX, hy = eyeY + 0.62 * AY;
+      g.save();
+      g.globalAlpha = 0.32;
+      g.filter = 'blur(14px)';
+      const hh = g.createRadialGradient(hx, hy, 3, hx, hy, 0.30 * AX);
+      hh.addColorStop(0, rgba(shadow, 1));
+      hh.addColorStop(1, rgba(shadow, 0));
+      g.fillStyle = hh;
+      g.fillRect(hx - 0.34 * AX, hy - 0.34 * AY, 0.68 * AX, 0.68 * AY);
+      g.filter = 'none';
+      g.restore();
+    }
+    // shadow the whole outer third of the face, so it turns away from the key
+    for (const s of [-1, 1]) {
+      const og2 = g.createLinearGradient(cx + s * 0.30 * AX, 0, cx + s * 0.98 * AX, 0);
+      og2.addColorStop(0, rgba(shadow, 0));
+      og2.addColorStop(1, rgba(shadow, 0.34));
+      g.fillStyle = og2;
+      g.fillRect(cx + (s < 0 ? -1.0 : 0.30) * AX, PY(0.70), 0.70 * AX, PY(2.60) - PY(0.70));
+    }
+
     // cheekbone highlight + warmth
     for (const s of [-1, 1]) {
       const bx = cx + s * 0.46 * AX, by = eyeY + 0.30 * AY;
@@ -385,7 +415,7 @@ export function headTexture(o = {}) {
       // deepest right at the opening, so the eyeball sits in shade at the rim
       g.save();
       g.filter = 'blur(6px)';
-      g.fillStyle = rgba(deep, 0.55);
+      g.fillStyle = rgba(deep, 0.40);
       g.beginPath(); g.ellipse(0, -0.10 * ru, rh * 1.02, (ru + rd) * 0.62, 0, 0, TAU); g.fill();
       g.filter = 'none';
       g.restore();
@@ -579,14 +609,20 @@ export function headTexture(o = {}) {
     g.fillStyle = tg2;
     g.fillRect(cx - noseW * 1.0, noseY - 0.14 * AY, noseW * 2.0, 0.20 * AY);
     g.restore();
-    // nostrils: small, dark, tucked UNDER the tip and angled outward
-    g.fillStyle = rgba(deep, 0.80);
+    // Nostrils: narrow slits, low, angled outward. Round dots on the front of
+    // the tip is exactly the geometry of a pig snout — from a level camera a
+    // real nostril is barely more than a dark comma under the wing.
+    g.save();
+    g.filter = 'blur(2px)';
+    g.fillStyle = rgba(deep, 0.72);
     for (const s of [-1, 1]) {
       g.beginPath();
-      g.ellipse(cx + s * noseW * 0.72, noseY + 0.108 * AY,
-        noseW * 0.21, 0.017 * AY, s * 0.52, 0, TAU);
+      g.ellipse(cx + s * noseW * 0.66, noseY + 0.132 * AY,
+        noseW * 0.15, 0.0105 * AY, s * 0.60, 0, TAU);
       g.fill();
     }
+    g.filter = 'none';
+    g.restore();
     // nostril wing crease
     g.strokeStyle = rgba(shadow, 0.42);
     g.lineWidth = Math.max(2, 0.010 * AY);
@@ -598,10 +634,10 @@ export function headTexture(o = {}) {
     }
 
     // ---- mouth ------------------------------------------------------------
-    const mW = (0.215 + (variant % 4) * 0.012) * AX * (1 + E.open * 0.18);
+    const mW = (0.236 + (variant % 4) * 0.013) * AX * (1 + E.open * 0.18);
     const open = E.open * 0.115 * AY;
     const curve = E.curve;
-    const lip = mixHex(base, 0x9b3a34, 0.44);
+    const lip = mixHex(base, 0x8e2c28, 0.60);
     // philtrum
     g.strokeStyle = rgba(shadow, 0.32);
     g.lineWidth = Math.max(2, 0.013 * AY);
@@ -695,8 +731,8 @@ export function headTexture(o = {}) {
     g.closePath(); g.fill();
     // mouth line (closed mouths only)
     if (open <= 1) {
-      g.strokeStyle = rgba(darken(lip, 0.70), 0.92);
-      g.lineWidth = Math.max(3, 0.024 * AY);
+      g.strokeStyle = rgba(darken(lip, 0.76), 0.96);
+      g.lineWidth = Math.max(3.5, 0.030 * AY);
       g.lineCap = 'round';
       g.beginPath();
       g.moveTo(cx - mW * 0.97, mY - curve * 0.020 * AY);
@@ -735,7 +771,7 @@ export function headTexture(o = {}) {
       for (const off of [-W, 0, W]) {
         const ex = base0 + off;
         if (ex < -0.2 * W || ex > 1.2 * W) continue;
-        const ew = 0.150 * AX, eh = 0.300 * AY;
+        const ew = 0.128 * AX, eh = 0.252 * AY;
         g.save();
         g.translate(ex, earY);
         // ear plate shading
@@ -883,8 +919,11 @@ export function eyeTexture(o = {}) {
     // leaves a huge field of sclera and the eye reads as a cartoon googly.
     // 30 deg (dx = sin 30 = 0.5, patch fraction = dx / EYE_PROJ_S) fills the
     // opening the way the reference does, with the lid clipping its top.
-    const IR = R * (0.5 / EYE_PROJ_S);
-    const cxp = R, cyp = R + R * 0.055;
+    const IR = R * (0.559 / EYE_PROJ_S);          // sin 34 deg
+    // Sit the iris slightly ABOVE the patch centre so the upper lid clips its
+    // top. Riding low left a band of sclera above the iris, which is the exact
+    // geometry of a startled cartoon eye.
+    const cxp = R, cyp = R - R * 0.048;
 
     // limbal ring
     g.fillStyle = css(darken(iris, 0.72));
@@ -1467,7 +1506,7 @@ export function shirtTexture(o = {}) {
     sponsor(g, FRONT, H * 0.430, W * 0.150, 'CANVAS', numFill);
     // The number had been scaled so large it wrapped past the side seams and
     // read as a decal smeared round the ribs. Chest numbers are small.
-    squadNumber(g, number, FRONT, H * 0.680, H * 0.230, numFill, numEdge);
+    squadNumber(g, number, FRONT, H * 0.665, H * 0.255, numFill, numEdge);
 
     // back: name arc over a big number
     g.save();
@@ -1505,7 +1544,10 @@ export function armTexture(o = {}) {
   return memo(key, () => {
     const W = 384, H = 384;
     const { c, g } = canvas2d(W, H);
-    const cuff = long ? 0.14 : 0.46;      // fraction of the strip that is bare
+    // Fraction of the strip that is bare skin. A short sleeve reaches most of
+    // the way to the elbow — at 0.46 the shirt stopped at the deltoid and the
+    // whole arm read as bare.
+    const cuff = long ? 0.14 : 0.34;
     const cy = H * (1 - cuff);
 
     // bare skin below the cuff

@@ -49,7 +49,7 @@ const TORSO_H = 0.47;
 const HEAD_BONE_Y = 0.50;       // relative to the torso bone
 const HEAD_CENTER = 0.352;      // relative to the head bone
 // egg, not beachball: taller than it is wide, flattened front-to-back
-const HEAD_SX = 0.945, HEAD_SY = 1.055, HEAD_SZ = 0.955;
+const HEAD_SX = 0.912, HEAD_SY = 1.075, HEAD_SZ = 0.955;
 const JAW_TAPER = 0.288;
 
 // eye dish (a smooth, low-frequency depression the skull mesh can resolve)
@@ -238,9 +238,14 @@ function eyeDish(nx, ny, nz) {
 
 function skullR(nx, ny, nz) {
   let m = 1.0;
-  const jaw = smooth(-0.08, -0.95, ny);
+  const jaw = smooth(0.06, -0.92, ny);
   m *= 1 - JAW_TAPER * jaw;                                              // jaw taper
   const ax = Math.abs(nx);
+  // Lateral pinch below the cheekbone, applied all the way round rather than
+  // only across the front. Without it the head stays widest at mouth height and
+  // reads as a puffy ball; every reference head is widest at the temples and
+  // narrows continuously into the chin.
+  m -= 0.062 * bump((ny + 0.42) / 0.32) * bump((ax - 0.74) / 0.40);
   m -= 0.058 * bump((ny - 0.34) / 0.52) * bump((ax - 0.84) / 0.32);      // temples
   m += 0.074 * bump((ny + 0.10) / 0.26) * bump((ax - 0.52) / 0.40)
     * smooth(-0.10, 0.72, nz);                                           // cheekbones
@@ -435,15 +440,17 @@ function buildNose(w = 1) {
   // side planes stay steep enough to hold shadow while the crest stays lit.
   add(new THREE.SphereGeometry(R * 0.098, 10, 8), 0.80 * w, 2.30, 1.06, 0, R * 0.090, R * 0.900);
   add(new THREE.SphereGeometry(R * 0.126, 10, 8), 0.86 * w, 1.55, 1.10, 0, -R * 0.010, R * 0.952);
-  // ball of the nose: the mass that reads at gameplay distance
-  add(new THREE.SphereGeometry(R * 0.168, 14, 11), 1.00 * w, 0.94, 1.16, 0, -R * 0.112, R * 0.975);
+  // Ball of the nose. Narrow across and long front-to-back: a wide round bulb
+  // with the nostrils on its face is a snout, and that is what the first pass
+  // produced. Depth carries the read, not width.
+  add(new THREE.SphereGeometry(R * 0.152, 14, 11), 0.84 * w, 0.92, 1.30, 0, -R * 0.118, R * 0.968);
   // septum / underside, so the tip has a shadow line beneath it
-  add(new THREE.SphereGeometry(R * 0.070, 8, 6), 0.90 * w, 0.72, 0.86, 0, -R * 0.196, R * 0.945);
+  add(new THREE.SphereGeometry(R * 0.066, 8, 6), 0.82 * w, 0.68, 0.86, 0, -R * 0.200, R * 0.940);
   // nostril wings — buried most of the way into the muzzle so they read as a
   // flare on the base of the nose, not as two spheres flanking it
   for (const s of [-1, 1]) {
-    add(new THREE.SphereGeometry(R * 0.098, 9, 7), 0.88, 0.72, 0.74,
-      s * R * 0.128 * w, -R * 0.166, R * 0.862);
+    add(new THREE.SphereGeometry(R * 0.092, 9, 7), 0.84, 0.68, 0.72,
+      s * R * 0.118 * w, -R * 0.172, R * 0.856);
   }
   return finishFacePart(parts);
 }
@@ -509,25 +516,26 @@ function buildEars() {
   const R = HEAD_R;
   for (const s of [-1, 1]) {
     // outer plate — thin, tilted back, standing proud of the skull
-    const plate = new THREE.SphereGeometry(R * 0.300, 12, 12);
-    plate.scale(0.30, 1.00, 0.66);
-    plate.rotateY(-s * 0.28);
-    plate.translate(s * R * 0.985, R * 0.010, -R * 0.060);
+    // Kept small and tucked in: an oversized plate set wide reads as an elf ear.
+    const plate = new THREE.SphereGeometry(R * 0.262, 12, 12);
+    plate.scale(0.30, 1.00, 0.68);
+    plate.rotateY(-s * 0.24);
+    plate.translate(s * R * 0.955, R * 0.000, -R * 0.062);
     parts.push(plate);
     // helix rim — one clean closed loop around the plate. The old build stacked
     // a partial torus, an antihelix torus and a tragus blob at this scale, and
     // the overlapping shells resolved into crumpled noise, not an ear.
-    const helix = new THREE.TorusGeometry(R * 0.215, R * 0.058, 7, 20);
+    const helix = new THREE.TorusGeometry(R * 0.186, R * 0.052, 7, 20);
     helix.rotateY(Math.PI / 2);
-    helix.scale(0.34, 1.05, 0.74);
-    helix.rotateX(0.10);
-    helix.rotateZ(-s * 0.12);
-    helix.translate(s * R * 1.000, R * 0.010, -R * 0.058);
+    helix.scale(0.34, 1.04, 0.76);
+    helix.rotateX(0.08);
+    helix.rotateZ(-s * 0.10);
+    helix.translate(s * R * 0.972, R * 0.002, -R * 0.060);
     parts.push(helix);
     // lobe
-    const lobe = new THREE.SphereGeometry(R * 0.118, 9, 8);
-    lobe.scale(0.40, 0.92, 0.72);
-    lobe.translate(s * R * 0.975, -R * 0.222, -R * 0.052);
+    const lobe = new THREE.SphereGeometry(R * 0.104, 9, 8);
+    lobe.scale(0.40, 0.90, 0.72);
+    lobe.translate(s * R * 0.948, -R * 0.196, -R * 0.054);
     parts.push(lobe);
   }
   return finishFacePart(parts);
@@ -1361,8 +1369,12 @@ export function createPlayer(cfg = {}) {
   // ---- hair + beard -------------------------------------------------------
   const hairParts = [];
   if (hairInfo.geo) hairParts.push(shadeHair(hairInfo.geo, hairColor));
-  if (beard === 2) hairParts.push(shadeHair(buildBeard(1), mixHex(hairColor, 0x24160e, 0.30)));
-  else if (beard === 1) hairParts.push(shadeHair(buildBeard(0.30), mixHex(hairColor, 0x24160e, 0.44)));
+  // Beards are mixed toward a warm brown and floored above pure black: at the
+  // darkest hair colours an unmixed beard collapses into one silhouette with no
+  // internal value range, which is what made it read as a painted mask.
+  const beardCol = lighten(mixHex(hairColor, 0x5a3a24, 0.34), 0.10);
+  if (beard === 2) hairParts.push(shadeHair(buildBeard(1), beardCol));
+  else if (beard === 1) hairParts.push(shadeHair(buildBeard(0.30), lighten(beardCol, 0.08)));
   if (hairParts.length) {
     let merged;
     if (hairParts.length === 1) merged = hairParts[0];

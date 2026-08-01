@@ -88,6 +88,14 @@ if (MODE === 'lineup') {
   camera.fov = 16;
   camera.position.set(2.2, 1.62, 7.0);
   camera.lookAt(2.2, 1.52, 0);
+} else if (MODE === 'portrait') {
+  camera.fov = 7.2;
+  camera.position.set(-0.62, 1.56, 12.0);
+  camera.lookAt(-0.62, 1.50, 0);
+} else if (MODE === 'portrait2') {
+  camera.fov = 7.2;
+  camera.position.set(1.92, 1.56, 12.0);
+  camera.lookAt(1.92, 1.50, 0);
 } else if (MODE === 'hands') {
   camera.fov = 15;
   camera.position.set(0, 1.05, 7.5);
