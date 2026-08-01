@@ -679,14 +679,6 @@ export function createAI(ctx) {
       // A tight window is drilled, an open one is rolled — the same call a real
       // passer makes when he sees the gap closing.
       arrive = clamp(ARRIVE_MIN + risk * 3.0, ARRIVE_MIN, ARRIVE_MAX);
-      // Weight it so that if he misses it, it stays on the pitch. A pass that
-      // arrives at 8 m/s still has eleven metres of roll left in it, and drilling
-      // that at a man standing three metres off the touchline is a throw-in
-      // however good the pass was.
-      if (D > 1e-3) {
-        const room = roomAhead(tx, tz, (tx - ox) / D, (tz - oz) / D);
-        arrive = Math.min(arrive, Math.max(2.6, speedForRange(room - 0.8)));
-      }
       u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
       // ...but never so soft that it dies before it gets there
       u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
@@ -718,8 +710,6 @@ export function createAI(ctx) {
         tx = clamp(tx + rx * away * push, -HALF_W + 1.4, HALF_W - 1.4);
         tz = clamp(tz + rz * away * push, -HALF_D + 1.4, HALF_D - 1.4);
         D = Math.hypot(tx - ox, tz - oz);
-        const room2 = roomAhead(tx, tz, (tx - ox) / D, (tz - oz) / D);
-        arrive = Math.min(arrive, Math.max(2.6, speedForRange(room2 - 0.8)));
         u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
         u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
         risk = laneRisk(a, mate, ox, oz, tx, tz, u, delay, false);
