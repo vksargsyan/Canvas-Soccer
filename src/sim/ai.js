@@ -120,6 +120,11 @@ const CUT_SPEED = 9.6;
 const CUT_ACCEL = 9.0;
 const CUT_REACT = 0.20;
 const CUT_SPAN = 0.80;            // s of margin over which a lane goes bad
+// Above this much lane risk the corridor is not a pass at all, it is a gift, and
+// in open play the carrier is better off keeping the ball and looking again next
+// frame. Scoring a shut lane low is not enough on its own: when EVERY option is
+// shut the least-bad one still wins the comparison and still gets played.
+const CUT_VETO = 0.90;
 
 // How far ahead of himself a receiver can be trusted. Straight-line
 // extrapolation is only honest for about a stride: a man running to a support
@@ -775,6 +780,9 @@ export function createAI(ctx) {
       const plan = planPassTo(a, m, ox, oz);
       const d = plan.dist;
       if (d < minD || d > maxD) continue;
+      // Declining is an option. A caller that MUST produce a ball — a set piece,
+      // a keeper's distribution — passes a negative floor and is exempt.
+      if (plan.risk > CUT_VETO && floor >= 0) continue;
 
       // --- lane: can anybody get in front of it? ---
       const laneQ = clamp(1 - plan.risk, 0, 1);
