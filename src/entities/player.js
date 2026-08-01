@@ -1399,8 +1399,11 @@ const BOOT_STATIONS = [
 // the rand hangs 6 mm proud of the upper all the way round — that overhanging
 // bright line is what draws the sole in the reference art, far more than the
 // tread ever does
+// The end stations are already pinched to a sliver; widening them by the same
+// amount as the rest pushed the rand's toe tip past its own neighbour and bit a
+// notch out of the toe. They get a third of the offset.
 const RAND_STATIONS = BOOT_STATIONS.map(([z, hw, , ], i, A) => [
-  z * 1.012, hw + (i === 0 || i === A.length - 1 ? 0.010 : 0.0065),
+  z, hw + (i === 0 || i === A.length - 1 ? 0.002 : 0.0065),
   RAND_Y, SOLE_Y,
 ]);
 
@@ -1437,9 +1440,14 @@ function buildBoot(main, accent, sole) {
   // ankle collar: the opening the sock drops into. Tilted forward, sat on the
   // top edge of the quarter so there is a real lip rather than a sock that
   // vanishes into the boot.
-  const collar = new THREE.TorusGeometry(0.084, 0.019, 6, 18);
-  collar.rotateX(Math.PI / 2 - 0.16);
-  collar.translate(0, 0.062, -0.030);
+  // At 0.019 minor radius sitting at y = 0.062 this cleared the quarter (which
+  // tops out at 0.056) by more than its own thickness, so on a dark boot -- where
+  // the accent is near-white -- a pale slab stood up round the ankle and was the
+  // loudest thing on the foot in profile. It is piping, not a bumper: thin, and
+  // low enough that the quarter still owns the top edge.
+  const collar = new THREE.TorusGeometry(0.082, 0.011, 6, 18);
+  collar.rotateX(Math.PI / 2 - 0.12);
+  collar.translate(0, 0.049, -0.028);
   parts.push(tint(collar, accent));
 
   // studs — under the ball and the heel, inside the rand footprint so nothing
@@ -1468,15 +1476,20 @@ function buildBoot(main, accent, sole) {
     }
   }
 
-  // tongue + three laces on the instep
-  const tongue = new THREE.BoxGeometry(0.062, 0.014, 0.086);
-  tongue.rotateX(-0.26);
-  tongue.translate(0, 0.058, 0.016);
+  // Tongue + three laces on the instep. The tongue sat at y = 0.058 against a
+  // quarter that tops out at 0.056, so it cleared the ankle line entirely.
+  // The rotation was also the wrong way round: rotateX(-0.22) lifts the FRONT
+  // of the tongue, so on a white boot a pale wedge stood up over the toe and
+  // read in profile as a duck bill. The instep falls away toward the toe, so
+  // the tongue has to fall with it.
+  const tongue = new THREE.BoxGeometry(0.058, 0.013, 0.082);
+  tongue.rotateX(0.26);
+  tongue.translate(0, 0.036, 0.020);
   parts.push(tint(tongue, accent));
   for (let i = 0; i < 3; i++) {
-    const lace = new THREE.BoxGeometry(0.056 - i * 0.006, 0.008, 0.010);
-    lace.rotateX(-0.26);
-    lace.translate(0, 0.062 - i * 0.010, -0.014 + i * 0.030);
+    const lace = new THREE.BoxGeometry(0.052 - i * 0.007, 0.008, 0.009);
+    lace.rotateX(0.26);
+    lace.translate(0, 0.054 - i * 0.008, -0.006 + i * 0.028);
     parts.push(tint(lace, sole));
   }
 
