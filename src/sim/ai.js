@@ -106,8 +106,8 @@ const ROLL_W = Math.sqrt(ROLL_C * ROLL_K);
 
 // How fast a pass should be doing when it reaches him. Under the floor it dies
 // short and is a gift to a defender; over the ceiling it cannot be controlled.
-const ARRIVE_MIN = 4.4;
-const ARRIVE_MAX = 8.0;
+const ARRIVE_MIN = 5.4;
+const ARRIVE_MAX = 9.2;
 const PASS_U_MAX = 26;
 
 // Interception model. A defender gets something on anything that comes inside
@@ -118,7 +118,7 @@ const CUT_R = 1.35;
 const CUT_SPEED = 9.6;
 const CUT_ACCEL = 9.0;
 const CUT_REACT = 0.20;
-const CUT_SPAN = 0.60;            // s of margin over which a lane goes bad
+const CUT_SPAN = 0.80;            // s of margin over which a lane goes bad
 
 // Lofting. sim/physics.js lets a ball above BAND_HEAD_Y (1.90 m) sail over a
 // player untouched, so a chip really does beat a man instead of merely looking
@@ -150,8 +150,8 @@ function runTime(d, v = CUT_SPEED, acc = CUT_ACCEL) {
 /** preferred pass range: flat through the useful band, punished at both ends */
 function rangePref(d) {
   if (d < 5.5) return clamp((d - 2.0) / 3.5, 0, 1) * 0.8;
-  if (d <= 15) return 1;
-  return clamp(1 - (d - 15) / 13, 0, 1);
+  if (d <= 13) return 1;
+  return clamp(1 - (d - 13) / 13, 0, 1);
 }
 
 export function createAI(ctx) {
@@ -571,7 +571,7 @@ export function createAI(ctx) {
       const tMan = CUT_REACT + runTime(Math.max(0, off - reach));
       const r = clamp(1 - (tMan - tBall) / CUT_SPAN, 0, 1);
       // a team-mate wandering into it is a nuisance, not a turnover
-      risk += r * (mine ? 0.3 : 1);
+      risk += r * (mine ? 0.75 : 1);
     }
     return clamp(risk, 0, 1.5);
   }
@@ -593,7 +593,7 @@ export function createAI(ctx) {
       D = Math.hypot(tx - ox, tz - oz);
       // A tight window is drilled, an open one is rolled — the same call a real
       // passer makes when he sees the gap closing.
-      arrive = clamp(ARRIVE_MIN + risk * 4.5, ARRIVE_MIN, ARRIVE_MAX);
+      arrive = clamp(ARRIVE_MIN + risk * 5.0, ARRIVE_MIN, ARRIVE_MAX);
       u = Math.min(rollLaunch(D, arrive), PASS_U_MAX);
       // ...but never so soft that it dies before it gets there
       u = Math.max(u, Math.min(PASS_U_MAX, rollLaunch(D + 1.2, 1.2)));
@@ -607,12 +607,12 @@ export function createAI(ctx) {
     // ---- over the top? ----
     // Only when the deck is genuinely shut, and only when the air is clearly
     // better: a chip is harder to weight and arrives bouncing.
-    if (risk > 0.60 && D > 6.5) {
+    if (risk > 0.50 && D > 6.5) {
       const ft = clamp(D / 9.5, 0.85, 1.7);
       const lift = LOFT_G * ft * 0.5;
       const uh = Math.min(PASS_U_MAX, ((D - 2.0) / ft) * 1.07);
       const lr = laneRisk(a, mate, ox, oz, tx, tz, uh, delay, true);
-      if (lr + 0.35 < risk) {
+      if (lr + 0.25 < risk) {
         plan.u = uh; plan.lift = lift; plan.loft = true;
         plan.t = ft + delay; plan.risk = lr; plan.arrive = uh;
       }
@@ -666,12 +666,15 @@ export function createAI(ctx) {
       // --- is he running into space, and the right way? ---
       const ahead = (m.vel.x * TEAMS[t].dir) * 0.5 + Math.max(0, openThen - openNow) * 0.7;
       const runQ = clamp(ahead / 4.5, 0, 1);
+      // --- how long is it in the air/on the deck for? every extra tenth is
+      //     another tenth for a defender to arrive ---
+      const timeQ = clamp(1 - (plan.t - 0.45) / 1.25, 0, 1);
       // --- is it roughly where the player is pointing? ---
       const lx = (plan.x - ox) / (d || 1), lz = (plan.z - oz) / (d || 1);
       const coneQ = clamp((lx * fx + lz * fz + 0.25) / 1.25, 0, 1);
 
-      const q = (0.28 - coneW * 0.35) * openQ + 0.22 * rangeQ + 0.22 * progQ
-        + coneW * coneQ + 0.14 * runQ;
+      const q = (0.26 - coneW * 0.35) * openQ + 0.18 * rangeQ + 0.18 * progQ
+        + coneW * coneQ + 0.12 * runQ + 0.12 * timeQ;
       // The lane MULTIPLIES everything. A beautiful ball into a covered corridor
       // is a turnover, and no amount of progress buys it back.
       let sc = 10 * q * (0.10 + 0.90 * laneQ);
