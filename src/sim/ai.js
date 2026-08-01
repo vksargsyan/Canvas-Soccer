@@ -194,6 +194,11 @@ export function createAI(ctx) {
       think: 0,              // marking-assignment cooldown
       marks: new Map(),      // defender agent -> opponent agent
       runner: 0,             // round-robin index for off-ball run evaluation
+      // A pass in flight has an INTENDED receiver. Until it arrives he is the
+      // man who goes for it and nobody else does — that is the difference
+      // between a team playing a pass and five players chasing a ball.
+      expect: null,          // agent the ball has been played to
+      expectT: 0,            // s of that expectation left to run
     };
   }
 
@@ -340,6 +345,8 @@ export function createAI(ctx) {
         let c = Math.hypot(_v.x - a.pos.x, _v.z - a.pos.z);
         if (a === s.chaser) c -= 2.6;
         if (a === carrier) c -= 6.0;
+        // the man it was played to goes and gets it; his team-mates hold shape
+        if (a === s.expect && s.expectT > 0) c -= 14.0;
         if (c < bd) { sd = bd; second = best; bd = c; best = a; } else if (c < sd) { sd = c; second = a; }
       }
       s.chaser = best;
@@ -770,6 +777,13 @@ export function createAI(ctx) {
       }
       body.kick(_v, power, lift, 0);
       body.lastTouch = a; body.lastTouchTeam = a.team;
+      // Announce who it is for. Until it gets there he is the only man of ours
+      // going for it — the rest keep their shape instead of converging on it.
+      if (mate && mate !== a) {
+        const s = side[a.team];
+        s.expect = mate;
+        s.expectT = (plan ? plan.t : 1.0) + 0.6;
+      }
       if (events.onPass) events.onPass(a, mate || a);
     });
     face(a, p.x, p.z);
@@ -1347,6 +1361,19 @@ export function createAI(ctx) {
       return;
     }
 
+    // A pass expectation dies when the ball is under control again, or when it
+    // has had long enough to arrive and plainly has not.
+    for (let t = 0; t < 2; t++) {
+      const s = side[t];
+      if (s.expectT > 0) {
+        s.expectT -= dt;
+        if (s.expectT <= 0 || !s.expect || s.expect.down
+            || (carrier && (carrier === s.expect || carrier.team !== t))) {
+          s.expect = null; s.expectT = 0;
+        }
+      }
+    }
+
     if (holder && !(holder.hold > 0)) holder = null;
     // Receptions run BEFORE possession is resolved and before sim/physics.js
     // touches the ball: a pass killed here drops into the taker's pocket, so he
@@ -1384,6 +1411,8 @@ export function createAI(ctx) {
     for (let t = 0; t < 2; t++) {
       const s = side[t];
       s.chaser = s.cover = null;
+      s.expect = null;
+      s.expectT = 0;
       s.marks.clear();
       s.think = 0;
       s.hasBall = false;
