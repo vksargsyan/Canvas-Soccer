@@ -385,7 +385,7 @@ export function createBallControl(ctx) {
    * decision — the ball runs wide of his new heading and he has to come back
    * across for it, or lose it.
    */
-  function strikeBall(a, st, dx, dz, u, lift = 0, skid = 1, keep = 0) {
+  function strikeBall(a, st, dx, dz, u, lift = 0, skid = 1, keep = 0, carry = false) {
     _v.set(dx, 0, dz);
     if (_v.lengthSq() < 1e-8) _v.set(a.faceX || 0, 0, a.faceZ || 1);
     _v.y = 0;
@@ -393,6 +393,28 @@ export function createBallControl(ctx) {
     if (keep > 0) keptMomentum(_v.x, _v.z, keep, _w);
     body.kick(_v, u, lift, 0);
     if (keep > 0) { body.vel.x += _w.x; body.vel.z += _w.z; }
+    // A DRIBBLE TOUCH MAY NEVER OUTRUN THE MAN WHO PLAYED IT.
+    //
+    // This is the whole difference between carrying a ball and kicking it away.
+    // Measured while holding one direction: the pocket tightened correctly from
+    // 1.39 m to 0.54 m, then a single touch sent the ball off at 7.09 m/s while
+    // the player ran at 5.44 — and since he can never catch what is faster than
+    // him, the ball simply left, ending 15-24 m away with possession held on
+    // only 8% of frames. paceCap bounds the touch against a gap ceiling but
+    // returns Infinity when no pace satisfies it, so nothing bounded this.
+    //
+    // Real close control pushes the ball just ahead and runs onto it, so the
+    // ceiling is the carrier's own pace. Shots, passes and clearances are NOT
+    // carries and are deliberately exempt.
+    if (carry) {
+      const ps = Math.hypot(a.vel.x, a.vel.z);
+      const bs = Math.hypot(body.vel.x, body.vel.z);
+      const cap = Math.max(1.6, ps * 1.06);
+      if (bs > cap) {
+        const s = cap / bs;
+        body.vel.x *= s; body.vel.z *= s;
+      }
+    }
     if (skid < 1 && lift <= 0.01) {
       // bleed the rolling spin only; sidespin is nobody's business here
       body.spin.x *= skid;
@@ -673,7 +695,7 @@ export function createBallControl(ctx) {
     keptMomentum(dx, dz, keep, _w);
     u = Math.min(u, paceCap(dx, dz, _w.x - a.vel.x, _w.z - a.vel.z, gap, ceil));
 
-    strikeBall(a, st, dx, dz, u, 0, TOUCH_SKID, keep);
+    strikeBall(a, st, dx, dz, u, 0, TOUCH_SKID, keep, true);
     st.carrying = !heavy;
     st.scuffed = scuff;
     if (a.anim && a.anim.play) a.anim.play('dribble', { force: true });
@@ -745,7 +767,7 @@ export function createBallControl(ctx) {
       u = Math.min(u, paceCap(dx, dz, -a.vel.x, -a.vel.z,
         Math.min(gap, GAP_CEILING - 0.05), GAP_CEILING));
       u = Math.max(u, 0.2);
-      strikeBall(a, st, dx, dz, u, 0, TOUCH_SKID);
+      strikeBall(a, st, dx, dz, u, 0, TOUCH_SKID, 0, true);
       st.carrying = true;
       if (a.anim && a.anim.play) a.anim.play('dribble', { force: true });
     } else {
