@@ -929,6 +929,19 @@ export function boot({ canvas, hudRoot, splash } = {}) {
     if (scen.flags.ai) ai.update(dt);
     if (scen.flags.ai || scen.flags.match) driveUser(dt);
 
+    // Bound the controllers' requests BEFORE integrating them. ai.update() and
+    // driveUser() write agent.vel as a request; stepBodies() (via
+    // separatePlayers) puts it through the locomotion envelope — bounded
+    // acceleration, speed-dependent turn limiting, stamina — and writes the
+    // committed velocity back onto agent.vel.
+    //
+    // This used to run AFTER the integration below, which made the envelope
+    // useless: the raw request was integrated, and the bounded value it wrote
+    // back was overwritten by the next frame's controller before anything read
+    // it. Players moved on whatever the AI's lerp produced, up to 2.8 m in a
+    // single frame — the sliding.
+    if (scen.flags.ai) separatePlayers(agents, dt);
+
     // integrate agents
     for (const a of agents) {
       if (a.down) {
@@ -941,7 +954,6 @@ export function boot({ canvas, hudRoot, splash } = {}) {
       a.pos.x = clamp(a.pos.x, -HALF_W - 2.5, HALF_W + 2.5);
       a.pos.z = clamp(a.pos.z, -HALF_D - 2.0, HALF_D + 2.0);
     }
-    if (scen.flags.ai) separatePlayers(agents, dt);
 
     if (scen.flags.physics) {
       body.step(dt, world);
