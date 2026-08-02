@@ -1,0 +1,1981 @@
+// Chibi player rig — geometry build + kit/skin/hair variation.
+//
+//   createPlayer(cfg) -> { group, rig, config, setSelected(b), syncShadow(),
+//                          setExpression(k), dispose() }
+//     cfg: { team, number, skin, hair, hairColor, isKeeper, faceVariant, beard,
+//            kitStyle, bootColor, build, girth, headScale }
+//
+// Proportions (total height 2.0 world units, bobblehead chibi):
+//   sole 0.00 -> ankle 0.06 -> knee 0.34 -> hip 0.64 -> shoulder 1.07
+//   head centre 1.492, chin 1.05, crown 2.01 -> head is 0.96 tall == 48 %.
+//
+// The rig exposes named bones (plain Object3D): root, hips, torso, head,
+// armL/R, forearmL/R, thighL/R, shinL/R, footL/R. animation.js drives only these.
+//
+// Surfacing lives in ./player-textures.js. Limbs are bodies of revolution
+// (LatheGeometry) so kit textures get a clean u-around / v-along mapping:
+// u = 0.25 is the chest, u = 0.75 the back, v = 1 the top of the part.
+//
+// HEAD. The skull is an analytic form (skullR) with a jaw, chin, cheekbones,
+// temples, a brow ridge and two carved eye dishes. Each dish holds a real
+// eyeball sphere and a real eyelid shell whose inner rim lands exactly on the
+// ball, so the eyes are geometry, not a decal. Ears, nose and hands are modelled.
+//
+// Cost: 16 meshes per player, ~13k triangles. Materials, textures and the
+// fabric normal map are cached and shared.
+
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { contactBlob } from '../core/assets.js';
+import { TEAMS } from '../core/constants.js';
+import {
+  headTexture, eyeTexture, hairAtlas, shirtTexture, armTexture, shortsTexture,
+  sockTexture, fabricNormal, warpU, warpV, mixHex, darken, lighten, contrastOn,
+  SKIN_TONES, HAIR_COLORS, HAIR_STYLES, EYE_COLORS, BOOT_COLORS,
+  FACE_ANCHORS, EYE_PROJ_S, BROW_SHAPES, KIT_RECIPES,
+} from './player-textures.js';
+
+export { SKIN_TONES, HAIR_COLORS, HAIR_STYLES };
+
+const TAU = Math.PI * 2;
+const D2R = Math.PI / 180;
+const FA = FACE_ANCHORS;
+
+export const HEAD_R = 0.49;
+const HIP_Y = 0.64;
+const THIGH_L = 0.30;
+const SHIN_L = 0.28;
+const TORSO_H = 0.47;
+const HEAD_BONE_Y = 0.50;       // relative to the torso bone
+const HEAD_CENTER = 0.352;      // relative to the head bone
+// egg, not beachball: taller than it is wide, flattened front-to-back
+const HEAD_SX = 0.912, HEAD_SY = 1.058, HEAD_SZ = 0.955;
+const JAW_TAPER = 0.288;
+
+// eye dish (a smooth, low-frequency depression the skull mesh can resolve)
+const DISH_H = 0.300, DISH_UP = 0.185, DISH_DN = 0.235, DISH_D = 0.110;
+// eyeball, in world units
+const EYE_R = FA.eyeR * HEAD_R;
+const EYE_C = FA.eyeC * HEAD_R;
+
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+const bump = (x) => { const a = 1 - x * x; return a > 0 ? a * a : 0; };
+
+// ---------------------------------------------------------------------------
+// shared material cache
+// ---------------------------------------------------------------------------
+
+const matCache = new Map();
+function sharedMat(key, make) {
+  let m = matCache.get(key);
+  if (!m) { m = make(); matCache.set(key, m); }
+  return m;
+}
+
+function fabricMat(key, map, { rough = 0.86, repeat = [4, 3], normalScale = 0.55 } = {}) {
+  return sharedMat(key, () => {
+    const nrm = fabricNormal().clone();
+    nrm.needsUpdate = true;
+    nrm.wrapS = nrm.wrapT = THREE.RepeatWrapping;
+    nrm.repeat.set(repeat[0], repeat[1]);
+    return new THREE.MeshStandardMaterial({
+      map, normalMap: nrm, normalScale: new THREE.Vector2(normalScale, normalScale),
+      roughness: rough, metalness: 0.0,
+    });
+  });
+}
+
+const skinMat = (skin) => sharedMat('skin:' + skin, () => new THREE.MeshStandardMaterial({
+  color: skin, roughness: 0.78, metalness: 0.0,
+}));
+
+// one material for every head of hair — colour lives in vertex colours, and the
+// atlas carries both the opaque strand streaks and the alpha strand cards.
+// Hair is matte. At roughness 0.52 with a little metalness the dark colours
+// picked up a hard specular and read as black vinyl rather than hair.
+const hairMat = () => sharedMat('hair', () => new THREE.MeshStandardMaterial({
+  color: 0xffffff, vertexColors: true, map: hairAtlas(),
+  alphaTest: 0.42, side: THREE.DoubleSide,
+  roughness: 0.82, metalness: 0.0,
+}));
+
+const bootMat = () => sharedMat('boot', () => new THREE.MeshStandardMaterial({
+  // 0.33 was patent-leather: on the rounded toe it collapsed the whole cap into
+  // one blown specular dot, which is what made the toe read as a bulb. Match
+  // boots are satin synthetic, not lacquer.
+  color: 0xffffff, vertexColors: true, roughness: 0.52, metalness: 0.03,
+}));
+
+const eyeMat = (col) => sharedMat('eye:' + col, () => new THREE.MeshStandardMaterial({
+  map: eyeTexture({ color: col }), roughness: 0.16, metalness: 0.0,
+}));
+
+// ---------------------------------------------------------------------------
+// geometry helpers
+// ---------------------------------------------------------------------------
+
+function tint(geo, hexColor) {
+  const c = new THREE.Color(hexColor).convertSRGBToLinear();
+  const n = geo.getAttribute('position').count;
+  const arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
+  return geo;
+}
+
+/** default UV lands in the opaque half of the hair atlas */
+function ensureUv(geo, u = 0.25, v = 0.5) {
+  if (!geo.getAttribute('uv')) {
+    const n = geo.getAttribute('position').count;
+    const a = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) { a[i * 2] = u; a[i * 2 + 1] = v; }
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(a, 2));
+  }
+  return geo;
+}
+
+function setUv(geo, u, v) {
+  const n = geo.getAttribute('position').count;
+  const a = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) { a[i * 2] = u; a[i * 2 + 1] = v; }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(a, 2));
+  return geo;
+}
+
+/**
+ * Sample a key list into `n` evenly spaced lathe points so the generated
+ * uv.y (= index / (n-1)) is a clean 0..1 ramp along the part.
+ * keys: [[t, radius, y], ...] with t ascending 0 -> 1.
+ */
+function profile(keys, n = 14) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    let k = 0;
+    while (k < keys.length - 2 && keys[k + 1][0] < t) k++;
+    const a = keys[k], b = keys[k + 1];
+    const raw = clamp((t - a[0]) / ((b[0] - a[0]) || 1), 0, 1);
+    const f = raw * raw * (3 - 2 * raw);
+    pts.push(new THREE.Vector2(a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f));
+  }
+  return pts;
+}
+
+/** lathe with u = 0.25 at +Z (chest / front), u = 0.75 at -Z (back) */
+function lathe(keys, segs = 18, n = 14) {
+  return new THREE.LatheGeometry(profile(keys, n), segs, -Math.PI / 2, TAU);
+}
+
+/** spherical projection UV for parts that never cross the -Z seam */
+function projectUV(geo, cy = 0) {
+  const pos = geo.getAttribute('position');
+  const n = pos.count;
+  const uv = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const x = pos.getX(i), y = pos.getY(i) - cy, z = pos.getZ(i);
+    const r = Math.hypot(x, y, z) || 1e-6;
+    uv[i * 2] = warpU(0.25 + Math.atan2(x, z) / TAU);
+    uv[i * 2 + 1] = warpV(1 - Math.acos(clamp(y / r, -1, 1)) / Math.PI);
+  }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return geo;
+}
+
+/** cylindrical UV around Y, for merged limb detail (hands, cuffs) */
+function cylUV(geo, v) {
+  const pos = geo.getAttribute('position');
+  const n = pos.count;
+  const uv = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    uv[i * 2] = 0.25 + Math.atan2(pos.getX(i), pos.getZ(i)) / TAU;
+    uv[i * 2 + 1] = v;
+  }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return geo;
+}
+
+const blobGeo = (r, seg = 8) => new THREE.SphereGeometry(r, seg, Math.max(6, seg - 2));
+
+// ---------------------------------------------------------------------------
+// skull shape — one analytic function drives the head mesh, the eye dishes AND
+// every hair shell, so hair hugs the actual skull instead of an ideal sphere.
+// ---------------------------------------------------------------------------
+
+/** unit direction for (azimuth from +Z toward +X, polar from the crown) */
+function dirOf(az, th) {
+  const st = Math.sin(th);
+  return [st * Math.sin(az), Math.cos(th), st * Math.cos(az)];
+}
+
+/** local frame of each eye: axis e, in-plane right r, in-plane up u */
+const EYE_FRAME = [-1, 1].map((s) => {
+  const e = dirOf(s * FA.eyeAz, FA.eyeTh);
+  let rx = e[2], rz = -e[0];
+  const rl = Math.hypot(rx, rz) || 1;
+  rx /= rl; rz /= rl;
+  const r = [rx, 0, rz];
+  const u = [
+    e[1] * r[2] - e[2] * r[1],
+    e[2] * r[0] - e[0] * r[2],
+    e[0] * r[1] - e[1] * r[0],
+  ];
+  const ul = Math.hypot(u[0], u[1], u[2]) || 1;
+  return { s, e, r, u: [u[0] / ul, u[1] / ul, u[2] / ul] };
+});
+
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/** how deep the eye dish cuts at direction n, in skull radii */
+function eyeDish(nx, ny, nz) {
+  const n = [nx, ny, nz];
+  let d = 0;
+  for (const f of EYE_FRAME) {
+    if (dot3(n, f.e) < 0.55) continue;
+    const dh = dot3(n, f.r);
+    const dv = dot3(n, f.u);
+    const av = dv > 0 ? DISH_UP : DISH_DN;
+    const e2 = (dh / DISH_H) * (dh / DISH_H) + (dv / av) * (dv / av);
+    if (e2 < 1) { const k = 1 - e2; d += DISH_D * k * Math.sqrt(k); }
+  }
+  return d;
+}
+
+function skullR(nx, ny, nz) {
+  let m = 1.0;
+  const jaw = smooth(0.06, -0.92, ny);
+  m *= 1 - JAW_TAPER * jaw;                                              // jaw taper
+  const ax = Math.abs(nx);
+  // Lateral pinch below the cheekbone, applied all the way round rather than
+  // only across the front. Without it the head stays widest at mouth height and
+  // reads as a puffy ball; every reference head is widest at the temples and
+  // narrows continuously into the chin.
+  m -= 0.062 * bump((ny + 0.42) / 0.32) * bump((ax - 0.74) / 0.40);
+  m -= 0.058 * bump((ny - 0.34) / 0.52) * bump((ax - 0.84) / 0.32);      // temples
+  m += 0.074 * bump((ny + 0.10) / 0.26) * bump((ax - 0.52) / 0.40)
+    * smooth(-0.10, 0.72, nz);                                           // cheekbones
+  // Buccal hollow under the cheekbone. This is the single term that separates
+  // a sculpted head from a puffy one: without a dip beneath the zygomatic the
+  // whole lower face reads as one continuous balloon.
+  m -= 0.046 * bump((ny + 0.40) / 0.26) * bump((ax - 0.46) / 0.32)
+    * smooth(0.05, 0.78, nz);
+  m += 0.056 * bump((ny + 0.56) / 0.28) * bump((ax - 0.44) / 0.36)
+    * smooth(-0.60, 0.30, nz);                                           // jaw corners
+  m += 0.062 * bump((ny - 0.40) / 0.22) * bump(nx / 0.62)
+    * smooth(0.22, 0.88, nz);                                            // brow ridge
+  m += 0.086 * bump((ny + 0.62) / 0.30) * bump(nx / 0.44)
+    * smooth(0.05, 0.60, nz);                                            // chin
+  m -= 0.032 * bump((ny + 0.44) / 0.18) * bump(nx / 0.34)
+    * smooth(0.35, 0.90, nz);                                            // mento-labial crease
+  m += 0.030 * bump((ny + 0.14) / 0.40) * bump(nx / 0.38)
+    * smooth(0.58, 0.96, nz);                                            // muzzle mass
+  m += 0.038 * clamp(-nz, 0, 1) * bump((ny - 0.06) / 1.10);              // occiput
+  m -= 0.034 * bump((ny - 0.62) / 0.46) * clamp(nz, 0, 1);               // flatter forehead
+  m -= eyeDish(nx, ny, nz);                                              // eye sockets
+  return m;
+}
+
+/** world offset of the skull surface at (azimuth from +Z, polar from crown) */
+function skullPoint(az, th, lift = 0) {
+  const [nx, ny, nz] = dirOf(az, th);
+  const m = HEAD_R * (skullR(nx, ny, nz) + lift);
+  return [nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ];
+}
+
+/** same point in the ROUND frame — for parts that go through finishFacePart(),
+ *  which applies the HEAD_S* squash itself after UV projection */
+function skullPointRound(az, th, lift = 0) {
+  const [nx, ny, nz] = dirOf(az, th);
+  const m = HEAD_R * (skullR(nx, ny, nz) + lift);
+  return [nx * m, ny * m, nz * m];
+}
+
+function buildHead() {
+  const g = new THREE.SphereGeometry(HEAD_R, 38, 28);
+  const pos = g.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const r = Math.hypot(x, y, z) || 1e-6;
+    const nx = x / r, ny = y / r, nz = z / r;
+    const m = skullR(nx, ny, nz) * HEAD_R;
+    pos.setXYZ(i, nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ);
+  }
+  // warp the sphere's own (seam-correct) UVs into face-dense texture space
+  const uv = g.getAttribute('uv');
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, warpU(uv.getX(i)), warpV(uv.getY(i)));
+  uv.needsUpdate = true;
+  g.computeVertexNormals();
+  g.translate(0, HEAD_CENTER, 0);
+  return g;
+}
+
+/** UV-project in the round frame, then squash with the skull — keeps paint aligned */
+function finishFacePart(parts) {
+  const m = parts.length === 1 ? parts[0] : mergeGeometries(parts, false);
+  if (parts.length > 1) parts.forEach((p) => p.dispose());
+  projectUV(m, 0);
+  m.scale(HEAD_SX, HEAD_SY, HEAD_SZ);
+  m.computeVertexNormals();
+  m.translate(0, HEAD_CENTER, 0);
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// EYES — the dish, the ball and the lid.
+// ---------------------------------------------------------------------------
+
+/** where a ray along `n` leaves the eyeball of frame `f` (0 if it misses) */
+function ballHit(n, f) {
+  const cd = EYE_C * dot3(n, f.e);
+  const disc = EYE_R * EYE_R - EYE_C * EYE_C + cd * cd;
+  return disc <= 0 ? 0 : cd + Math.sqrt(disc);
+}
+
+/** direction on the rim ellipse at parameter phi, scaled outward by k */
+function rimDir(f, phi, k) {
+  const ch = Math.cos(phi), sh = Math.sin(phi);
+  const ah = FA.rimH * k;
+  const av = (sh > 0 ? FA.rimUp : FA.rimDn) * k;
+  const x = f.e[0] + f.r[0] * ah * ch + f.u[0] * av * sh;
+  const y = f.e[1] + f.r[1] * ah * ch + f.u[1] * av * sh;
+  const z = f.e[2] + f.r[2] * ah * ch + f.u[2] * av * sh;
+  const l = Math.hypot(x, y, z) || 1;
+  return [x / l, y / l, z / l];
+}
+
+/**
+ * Eyelid: a ring that starts exactly on the eyeball at the eye rim and fans out
+ * until it is tucked under the skull at the edge of the dish. Because its inner
+ * edge lies on the ball there is no gap, no decal and no floating outline — the
+ * lash line is a real crease between two surfaces.
+ */
+function buildLids() {
+  const parts = [];
+  const NU = 26, NV = 4;
+  const K_OUT = 2.16;                     // rim ellipse -> dish edge
+  for (const f of EYE_FRAME) {
+    const pos = [], idx = [];
+    for (let i = 0; i <= NU; i++) {
+      const phi = (i / NU) * TAU;
+      // the two ends are fixed per phi: the inner edge lies ON the eyeball, the
+      // outer edge is tucked just under the skull at the edge of the dish.
+      const nIn = rimDir(f, phi, 1);
+      const nOut = rimDir(f, phi, K_OUT);
+      const rIn = ballHit(nIn, f) + 0.0022;
+      const rOut = HEAD_R * skullR(nOut[0], nOut[1], nOut[2]) * 0.996;
+      for (let j = 0; j <= NV; j++) {
+        const t = j / NV;
+        const n = rimDir(f, phi, 1 + (K_OUT - 1) * t);
+        // ease from the ball out to the skull, with a little lid volume on top
+        const e = t * t * (3 - 2 * t);
+        const bulge = 0.009 * Math.sin(Math.PI * Math.pow(t, 0.75))
+          * (Math.sin(phi) > 0 ? 1 : 0.45);
+        const r = rIn + (rOut - rIn) * e + bulge * (1 - e * e);
+        pos.push(n[0] * r * HEAD_SX, n[1] * r * HEAD_SY, n[2] * r * HEAD_SZ);
+      }
+    }
+    const rows = NV + 1;
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const a = i * rows + j, b = a + rows;
+        idx.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    parts.push(g);
+  }
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  projectUV(m, 0);
+  m.computeVertexNormals();
+  m.translate(0, HEAD_CENTER, 0);
+  return m;
+}
+
+/** the two eyeballs, UV-projected down each eye's look axis */
+function buildEyeballs() {
+  const parts = [];
+  for (const f of EYE_FRAME) {
+    const g = new THREE.SphereGeometry(EYE_R, 18, 12);
+    // planar patch UV about +Z before the sphere is oriented
+    const pos = g.getAttribute('position');
+    const uv = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      const dx = pos.getX(i) / EYE_R, dy = pos.getY(i) / EYE_R;
+      uv[i * 2] = clamp(0.5 + (0.5 * dx) / EYE_PROJ_S, 0.001, 0.999);
+      uv[i * 2 + 1] = clamp(0.5 + (0.5 * dy) / EYE_PROJ_S, 0.001, 0.999);
+    }
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+
+    // aim the look axis slightly inward of the socket axis so the pair converges
+    const look = dirOf(f.s * FA.eyeAz * 0.70, FA.eyeTh + 0.012);
+    const q = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1), new THREE.Vector3(look[0], look[1], look[2]));
+    g.applyQuaternion(q);
+    g.translate(f.e[0] * EYE_C, f.e[1] * EYE_C, f.e[2] * EYE_C);
+    parts.push(g);
+  }
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  m.scale(HEAD_SX, HEAD_SY, HEAD_SZ);
+  m.computeVertexNormals();
+  m.translate(0, HEAD_CENTER, 0);
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// NOSE / EARS / NECK
+// ---------------------------------------------------------------------------
+
+/**
+ * NOSE. The reference noses are not blobs — they have a root between the brows,
+ * a bridge that runs down and catches a hard specular, a distinct ball, and
+ * wings that flare. The whole assembly has to break the skull silhouette by
+ * ~15 % of the head radius or the profile reads as a face decal on an egg.
+ */
+function buildNose(w = 1) {
+  const parts = [];
+  const R = HEAD_R;
+  const add = (g, sx, sy, sz, x, y, z) => { g.scale(sx, sy, sz); g.translate(x, y, z); parts.push(g); };
+  // root: the pinch between the brows, narrow and set back
+  add(new THREE.SphereGeometry(R * 0.082, 10, 8), 0.78 * w, 1.85, 0.96, 0, R * 0.225, R * 0.850);
+  // bridge — a long ridge running down to the ball. Narrow across, so the two
+  // side planes stay steep enough to hold shadow while the crest stays lit.
+  add(new THREE.SphereGeometry(R * 0.098, 10, 8), 0.80 * w, 2.30, 1.06, 0, R * 0.090, R * 0.900);
+  add(new THREE.SphereGeometry(R * 0.126, 10, 8), 0.86 * w, 1.55, 1.10, 0, -R * 0.010, R * 0.952);
+  // Ball of the nose. Narrow across and long front-to-back: a wide round bulb
+  // with the nostrils on its face is a snout, and that is what the first pass
+  // produced. Depth carries the read, not width.
+  add(new THREE.SphereGeometry(R * 0.152, 14, 11), 0.84 * w, 0.92, 1.30, 0, -R * 0.118, R * 0.968);
+  // septum / underside, so the tip has a shadow line beneath it
+  add(new THREE.SphereGeometry(R * 0.066, 8, 6), 0.82 * w, 0.68, 0.86, 0, -R * 0.200, R * 0.940);
+  // nostril wings — buried most of the way into the muzzle so they read as a
+  // flare on the base of the nose, not as two spheres flanking it
+  for (const s of [-1, 1]) {
+    add(new THREE.SphereGeometry(R * 0.092, 9, 7), 0.84, 0.68, 0.72,
+      s * R * 0.118 * w, -R * 0.172, R * 0.856);
+  }
+  return finishFacePart(parts);
+}
+
+/**
+ * BROW RIDGE — skin, not hair.
+ *
+ * The reference brows are not dark shapes stuck onto a sphere: they are a
+ * raised bony ridge with brow hair growing on it. So this is part of the HEAD
+ * mesh, carries the skin material and takes the head texture, which paints the
+ * hair on top. That way the ridge catches its own highlight along the crest and
+ * throws its own shadow into the socket beneath — form first, colour second.
+ *
+ * Built as a closed lens (a full loop of section rings that pinch to a point at
+ * both ends) so there is no open border to catch light.
+ */
+function buildBrowGeo(variant) {
+  const bs = BROW_SHAPES[variant % BROW_SHAPES.length];
+  const parts = [];
+  const NU = 13, NV = 5;
+  for (const s of [-1, 1]) {
+    const pos = [], idx = [];
+    for (let i = 0; i <= NU; i++) {
+      const t = i / NU;                                   // 0 inner -> 1 outer
+      const az = s * (FA.eyeAz + (t - 0.52) * 2 * bs.w);
+      // arch: the peak sits about a third of the way out from the inner end
+      const arch = Math.sin(Math.pow(t, 0.80) * Math.PI) ** 0.65;
+      const thC = FA.browTh - bs.arch * bs.th * arch * 1.5
+        + bs.ang * (t - 0.5) * bs.th * 2.2;
+      // pointed at both ends, fullest just inside the peak
+      const taper = Math.sin(Math.PI * clamp(t, 0, 1)) ** 0.42;
+      const half = bs.th * (0.06 + 0.94 * taper);
+      const rise = 0.052 * taper;
+      for (let j = 0; j <= NV; j++) {
+        const a = (j / NV) * TAU;                        // around the section
+        const th = thC + half * Math.cos(a);
+        // sunk under the skull below, standing proud above: the ridge crest
+        // is the top of the section, which is what catches the key light
+        const lift = rise * (0.42 + 0.58 * Math.sin(a + Math.PI / 2)) - 0.020;
+        const p = skullPointRound(az, th, lift);
+        pos.push(p[0], p[1], p[2]);
+      }
+    }
+    const rows = NV + 1;
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const a = i * rows + j, b = a + rows;
+        if (s < 0) idx.push(a, a + 1, b, a + 1, b + 1, b);
+        else idx.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    parts.push(g);
+  }
+  return parts;
+}
+
+
+function buildEars() {
+  const parts = [];
+  const R = HEAD_R;
+  for (const s of [-1, 1]) {
+    // outer plate — thin, tilted back, standing proud of the skull
+    // Kept small and tucked in: an oversized plate set wide reads as an elf ear.
+    const plate = new THREE.SphereGeometry(R * 0.262, 12, 12);
+    plate.scale(0.30, 1.00, 0.68);
+    plate.rotateY(-s * 0.24);
+    plate.translate(s * R * 0.955, R * 0.000, -R * 0.062);
+    parts.push(plate);
+    // helix rim — one clean closed loop around the plate. The old build stacked
+    // a partial torus, an antihelix torus and a tragus blob at this scale, and
+    // the overlapping shells resolved into crumpled noise, not an ear.
+    const helix = new THREE.TorusGeometry(R * 0.186, R * 0.052, 7, 20);
+    helix.rotateY(Math.PI / 2);
+    helix.scale(0.34, 1.04, 0.76);
+    helix.rotateX(0.08);
+    helix.rotateZ(-s * 0.10);
+    helix.translate(s * R * 0.972, R * 0.002, -R * 0.060);
+    parts.push(helix);
+    // lobe
+    const lobe = new THREE.SphereGeometry(R * 0.104, 9, 8);
+    lobe.scale(0.40, 0.90, 0.72);
+    lobe.translate(s * R * 0.948, -R * 0.196, -R * 0.054);
+    parts.push(lobe);
+  }
+  return finishFacePart(parts);
+}
+
+/** neck: its own cylindrical UVs sample the dark band under the chin */
+function buildNeck() {
+  const g = new THREE.CylinderGeometry(0.158, 0.198, 0.36, 16, 1, true, -Math.PI / 2, TAU);
+  g.translate(0, -0.052, 0);
+  const uv = g.getAttribute('uv');
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, warpU(uv.getX(i)), warpV(0.020 + uv.getY(i) * 0.130));
+  }
+  uv.needsUpdate = true;
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// HAIR
+// ---------------------------------------------------------------------------
+
+const H_OPAQUE_U0 = 0.030, H_OPAQUE_U1 = 0.470;
+const H_CARD_U0 = 0.525, H_CARD_U1 = 0.975;
+
+/**
+ * A shell wrapped onto skullR().
+ * @param inner (az) -> polar angle of the top edge, radians from the crown
+ * @param outer (az) -> polar angle of the bottom edge (hairline / nape)
+ * @param puff  (az, t) -> extra thickness in head radii
+ */
+function hairShell({ inner, outer, puff, nu = 34, nv = 9, shadeBias = 0, streak = 5 }) {
+  const pos = [], nor = [], uvs = [], shade = [], idx = [];
+  const rows = nv + 1;
+  for (let i = 0; i <= nu; i++) {
+    const az = (i / nu) * TAU;
+    const sa = Math.sin(az), ca = Math.cos(az);
+    const t0 = inner(az), t1 = outer(az);
+    for (let j = 0; j <= nv; j++) {
+      const t = j / nv;
+      const th = t0 + (t1 - t0) * t;
+      const st = Math.sin(th), ct = Math.cos(th);
+      const nx = st * sa, ny = ct, nz = st * ca;
+      // The rim must never graze the scalp or the two surfaces z-fight into a
+      // dashed fringe: scale the radius down hard at the very end so the edge
+      // is buried in the painted scalp underneath.
+      const rim = smooth(0.86, 1.0, t);
+      const m = HEAD_R * (skullR(nx, ny, nz) + puff(az, t)) * (1 - 0.22 * rim);
+      pos.push(nx * m * HEAD_SX, ny * m * HEAD_SY, nz * m * HEAD_SZ);
+      nor.push(nx, ny, nz);
+      // strand streaks run down the shell
+      const su = ((i * streak) / nu) % 1;
+      uvs.push(H_OPAQUE_U0 + su * (H_OPAQUE_U1 - H_OPAQUE_U0), 1 - t);
+      const bias = typeof shadeBias === 'function' ? shadeBias(az, t) : shadeBias;
+      shade.push(0.46 * t + 0.10 * Math.sin(az * 11 + t * 2.6)
+        + 0.06 * Math.sin(az * 27 + 1.7) + 0.16 + bias);
+    }
+  }
+  for (let i = 0; i < nu; i++) {
+    for (let j = 0; j < nv; j++) {
+      const a = i * rows + j, b = a + rows;
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(idx);
+  g.userData.shade = shade;
+  return g;
+}
+
+/**
+ * An alpha strand card tangent to the skull at (az, th). This is what turns a
+ * solid shell into hair: a soft, feathered silhouette with visible strands.
+ */
+function hairCard(az, th, o = {}) {
+  const w = o.w ?? 0.24, len = o.len ?? 0.24, lift = o.lift ?? 0.03;
+  // How much of the atlas's strand band this card samples. A card that spans
+  // the whole band packs every strand in the texture into its own width, and
+  // once a strand is a couple of pixels wide the alphaTest cutout has nothing
+  // to resolve and the card renders as salt-and-pepper speckle — which is what
+  // every fringe in the build was doing. Sampling a narrow window magnifies
+  // the strands instead, so each card carries three or four fat ones with
+  // edges the sampler can actually filter.
+  const uw = o.uw ?? 1, u0 = o.u0 ?? 0;
+  const sweep = o.sweep ?? 0, curl = o.curl ?? 0.30, bow = o.bow ?? 0.05;
+  const nu = 3, nv = 4;
+  const h = 0.02;
+  const P = skullPoint(az, th, lift);
+  const pa = skullPoint(az + h, th, lift), pb = skullPoint(az - h, th, lift);
+  const pc = skullPoint(az, th + h, lift), pd = skullPoint(az, th - h, lift);
+  const norm = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+  const S = norm([pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]]);
+  const D = norm([pc[0] - pd[0], pc[1] - pd[1], pc[2] - pd[2]]);
+  let N = norm([
+    S[1] * D[2] - S[2] * D[1],
+    S[2] * D[0] - S[0] * D[2],
+    S[0] * D[1] - S[1] * D[0],
+  ]);
+  if (dot3(N, P) < 0) N = [-N[0], -N[1], -N[2]];
+
+  const pos = [], uvs = [], shade = [], idx = [];
+  for (let i = 0; i <= nu; i++) {
+    const a = (i / nu - 0.5) * w;
+    for (let j = 0; j <= nv; j++) {
+      const t = j / nv;
+      const b = t * len;
+      const out = bow * (1 - 4 * (a / w) * (a / w)) + curl * len * t * t;
+      const sw = sweep * len * t * t;
+      pos.push(
+        P[0] + S[0] * (a + sw) + D[0] * b + N[0] * out,
+        P[1] + S[1] * (a + sw) + D[1] * b + N[1] * out,
+        P[2] + S[2] * (a + sw) + D[2] * b + N[2] * out,
+      );
+      uvs.push(H_CARD_U0 + (u0 + (i / nu) * uw) * (H_CARD_U1 - H_CARD_U0), 1 - t);
+      // 0.52 -> 0.16 put the tips at the light end of the ramp, which on a
+      // blond or grey head is near-white: every fringe turned into a glowing
+      // band across the brow. Tips still lift, but only by a third as much.
+      shade.push(0.58 - 0.14 * t);
+    }
+  }
+  const rows = nv + 1;
+  for (let i = 0; i < nu; i++) {
+    for (let j = 0; j < nv; j++) {
+      const a = i * rows + j, b2 = a + rows;
+      idx.push(a, a + 1, b2, a + 1, b2 + 1, b2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  g.userData.shade = shade;
+  return g;
+}
+
+/** merge hair parts, carrying the per-vertex shade ramp across */
+function mergeShaded(parts) {
+  const shades = [];
+  for (const p of parts) {
+    const n = p.getAttribute('position').count;
+    const s = p.userData.shade;
+    for (let i = 0; i < n; i++) shades.push(s ? s[i] : 0.38);
+    p.userData.shade = null;
+  }
+  if (parts.length === 1) { parts[0].userData.shade = shades; return parts[0]; }
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  m.userData.shade = shades;
+  return m;
+}
+
+/** turn the stored shade ramp into vertex colours around `color` */
+function shadeHair(geo, color) {
+  const shade = geo.userData.shade;
+  const n = geo.getAttribute('position').count;
+  const arr = new Float32Array(n * 3);
+  const light = new THREE.Color(lighten(color, 0.30)).convertSRGBToLinear();
+  const dark = new THREE.Color(darken(color, 0.58)).convertSRGBToLinear();
+  for (let i = 0; i < n; i++) {
+    const t = clamp(shade ? shade[i] : 0.45, 0, 1);
+    arr[i * 3] = light.r + (dark.r - light.r) * t;
+    arr[i * 3 + 1] = light.g + (dark.g - light.g) * t;
+    arr[i * 3 + 2] = light.b + (dark.b - light.b) * t;
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
+  geo.userData.shade = null;
+  return geo;
+}
+
+/** drop a lump onto the skull at (azimuth, polar) */
+function onSkull(geo, az, th, lift = 0) {
+  const p = skullPoint(az, th, lift);
+  geo.translate(p[0], p[1], p[2]);
+  return ensureUv(geo);
+}
+
+/** hairline: `f` degrees from the crown at the face, `b` at the nape */
+// Hairline drop, in degrees of polar arc from the crown.
+//
+// Measured against the reference lineup: their hairline sits about 30 % of the
+// way from crown to chin, ours sat at 22 %. Eight degrees of head-arc is the
+// whole difference between a normal forehead and a domed one, and a domed
+// forehead is a large part of why the heads read as Mii rather than as the
+// semi-realistic caricature the reference draws. Every style's hairline and
+// every shell's lower edge share this offset so paint and geometry agree.
+const HLD = 8.5 * D2R;
+const line = (f, b) => (az) => (f + (b - f) * (1 - Math.cos(az)) / 2) * D2R + HLD;
+
+// EARS. The hairline runs 86 degrees of polar arc at the side of the head; the
+// top of the ear helix sits at about 72. So the shell's lower edge crossed the
+// ear, and because the head texture paints scalp colour down to the same line,
+// the ear came out the same brown as the cap and vanished into it — 'hair that
+// swallows the ears', exactly.
+//
+// The geometric edge now lifts 15 degrees over each ear and the painted scalp
+// underneath fills the gap. That is not a compromise, it is how hair actually
+// behaves: it thins to nothing over the ear rather than ending in a wall, and
+// the paint-to-geometry offset reads as that taper.
+const earArc = (az) => Math.exp(-((Math.cos(az) / 0.52) ** 2));
+/** narrow gaussian ridge centred on azimuth `at`, for parting grooves */
+const partArc = (az, at) => {
+  let d = (az - at) % TAU;
+  if (d > Math.PI) d -= TAU;
+  if (d < -Math.PI) d += TAU;
+  return Math.exp(-((d / 0.30) ** 2));
+};
+const EAR_LIFT = 11 * D2R;
+/** the geometric lower edge of a shell: the painted hairline, minus the ears */
+const rim = (f, b) => {
+  const L = line(f, b);
+  return (az) => L(az) - EAR_LIFT * earArc(az);
+};
+// deterministic scatter for curl / dread placement
+const h1 = (i) => (Math.sin(i * 12.9898) * 43758.5453) % 1;
+const hs = (i) => Math.abs(h1(i));
+// smooth pseudo-noise for organic shell displacement
+const n3 = (a, b, c) => 0.5 + 0.5 * (
+  Math.sin(a * 3.1 + b * 1.7 + c) * 0.55
+  + Math.sin(a * 7.3 - b * 4.1 + c * 2.3) * 0.30
+  + Math.sin(a * 13.7 + b * 9.3 - c * 1.4) * 0.15);
+
+/**
+ * @returns { geo, hairline: {front, back}, fringe }
+ * `hairline` is handed to the face texture, which paints the scalp and a
+ * feathered fringe underneath — that is what removes the shell seam.
+ */
+function buildHairGeo(style, seed = 0) {
+  const parts = [];
+  const front = (az) => Math.cos(az);          // +1 face, -1 nape
+  const jitter = (hs(seed * 7 + 3) - 0.5);
+  const partSide = hs(seed * 5 + 1) > 0.5 ? 1 : -1;
+  let hl = { front: 51 * D2R + HLD, back: 104 * D2R + HLD };
+  let fringe = 0.5;
+
+  const fringeCards = (n, spread, opts) => {
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      const az = (t - 0.5) * 2 * spread + jitter * 0.12;
+      parts.push(hairCard(az, hl.front + 0.03, {
+        w: 0.30 + 0.16 * hs(i * 3 + seed),
+        len: (opts.len ?? 0.20) * (0.72 + 0.56 * hs(i * 5 + seed * 2)),
+        // 0.055 stood the card proud of the scalp, so its cutout edge was read
+        // against forehead skin instead of against hair. Laid down flatter it
+        // reads as the hairline it is.
+        lift: 0.038,
+        sweep: partSide * (0.22 + 0.30 * hs(i * 7 + seed)),
+        curl: opts.curl ?? 0.18,
+        bow: 0.05,
+        uw: 0.42, u0: 0.55 * hs(i * 23 + seed * 7),
+      }));
+    }
+  };
+  const napeCards = (n, len = 0.16) => {
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      const az = Math.PI + (t - 0.5) * 2.1;
+      parts.push(hairCard(az, hl.back - 0.06, {
+        w: 0.30, len: len * (0.7 + 0.6 * hs(i * 11 + seed)),
+        lift: 0.04, sweep: (hs(i * 13 + seed) - 0.5) * 0.4, curl: 0.18, bow: 0.04,
+        uw: 0.45, u0: 0.52 * hs(i * 31 + seed * 3),
+      }));
+    }
+  };
+  const flyaways = (n, len = 0.15) => {
+    for (let i = 0; i < n; i++) {
+      const az = hs(i * 17 + seed * 3) * TAU;
+      const th = (14 + 26 * hs(i * 19 + seed)) * D2R;
+      parts.push(hairCard(az, th, {
+        w: 0.22, len: len * (0.6 + 0.8 * hs(i * 23 + seed)),
+        lift: 0.05, sweep: (hs(i * 29 + seed) - 0.5) * 0.9, curl: -0.55, bow: 0.03,
+        uw: 0.40, u0: 0.57 * hs(i * 37 + seed),
+      }));
+    }
+  };
+  /**
+   * Feather the whole lower edge, not just the fringe. A shell alone gives a
+   * mathematically smooth arc against the crowd, and a smooth arc on a head is
+   * a swim cap — that single silhouette is what the panel kept calling a
+   * skullcap. These cards are cheap (24 triangles each) and they are the only
+   * thing between an opaque dome and something that reads as hair.
+   *
+   * Lengths are scaled per card so the edge is ragged rather than fringed at a
+   * uniform depth, and the cards over the ears are cut short so nothing hangs
+   * back down over the arc the shell just cleared.
+   */
+  const rimCards = (n, outer, o = {}) => {
+    // Skip the frontal arc: fringeCards already own it, and two sets of cards
+    // stacked over the same forehead stopped being a feathered hairline and
+    // became a black sawtooth painted across the brow.
+    const A0 = 1.02, span = TAU - 2 * A0;
+    for (let i = 0; i < n; i++) {
+      const az = A0 + ((i + 0.3 + 0.4 * hs(i * 41 + seed)) / n) * span;
+      const ear = earArc(az);
+      // Wide and overlapping, not narrow and separate. An alpha-tested card
+      // 0.15 across is three pixels of cutout at gameplay distance and it
+      // aliases into a black speck; at 0.30 with its neighbours overlapping the
+      // set resolves as one soft mass with a ragged edge, which is the point.
+      // and vacate the ear arc: the shell's edge was just lifted clear of the
+      // ear, so a card hanging back down over it would undo that and stipple
+      // against the helix into the bargain
+      if (ear > 0.45) continue;
+      parts.push(hairCard(az, outer(az) - 0.050, {
+        w: 0.25 + 0.13 * hs(i * 7 + seed),
+        len: (o.len ?? 0.105) * (0.6 + 0.8 * hs(i * 11 + seed * 3)) * (1 - 0.9 * ear),
+        lift: 0.036,
+        sweep: (hs(i * 13 + seed) - 0.5) * (o.sweep ?? 0.6),
+        curl: o.curl ?? 0.14,
+        bow: 0.05,
+        uw: 0.44, u0: 0.53 * hs(i * 19 + seed * 5),
+      }));
+    }
+  };
+
+  switch (style) {
+    case 'bald':
+      return { geo: null, hairline: null, fringe: 0 };
+
+    case 'buzz':
+      hl = { front: (49 + jitter * 4) * D2R + HLD, back: 104 * D2R + HLD };
+      fringe = 0.16;
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(49 + jitter * 4, 104),
+        puff: () => 0.042, streak: 9,
+      }));
+      fringeCards(5, 0.75, { len: 0.06, curl: 0.1 });
+      rimCards(14, rim(49 + jitter * 4, 104), { len: 0.055, curl: 0.10, sweep: 0.5 });
+      flyaways(4, 0.055);
+      break;
+
+    case 'fade':
+      hl = { front: (46 + jitter * 4) * D2R + HLD, back: 110 * D2R + HLD };
+      fringe = 0.22;
+      // A fade is a VALUE haircut, not a shape: solid on top, skin showing
+      // through at the taper. Biasing the whole shell by a constant, as this
+      // did, just made another dark cap. The bias now runs the other way down
+      // the shell, so the sides go pale and the style is recognisable from the
+      // far touchline — which is the whole reason it is in the roster.
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(46 + jitter * 4, 110),
+        puff: (az, t) => 0.075 * (1 - smooth(0.24, 0.86, t)) + 0.032,
+        shadeBias: (az, t) => -0.62 * smooth(0.42, 1.0, t), streak: 7, nv: 11,
+      }));
+      fringeCards(6, 0.8, { len: 0.09, curl: 0.12 });
+      rimCards(13, rim(46 + jitter * 4, 110), { len: 0.05, curl: 0.08, sweep: 0.45 });
+      flyaways(4, 0.07);
+      break;
+
+    case 'crop':
+      hl = { front: (53 + jitter * 5) * D2R + HLD, back: 104 * D2R + HLD };
+      fringe = 0.55;
+      parts.push(hairShell({
+        inner: () => 0,
+        outer: (az) => rim(53, 104)(az) + 3.5 * Math.sin(az * 6 + seed) * D2R,
+        // a side part: a real groove in the volume, so this stops being 'the
+        // brown cap with a fringe' and becomes a haircut with a direction
+        puff: (az, t) => 0.105 * (1 - smooth(0.55, 1.0, t)) + 0.036
+          + 0.030 * (n3(Math.cos(az) * 2, Math.sin(az) * 2, t * 3) - 0.5)
+          - 0.075 * partArc(az, partSide * 0.62) * (1 - smooth(0.20, 0.78, t)),
+        streak: 6, nu: 40,
+      }));
+      fringeCards(9, 1.05, { len: 0.17, curl: 0.20 });
+      napeCards(4, 0.11);
+      rimCards(15, rim(53, 104), { len: 0.115, curl: 0.20 });
+      flyaways(3, 0.12);
+      break;
+
+    case 'quiff':
+      hl = { front: (48 + jitter * 4) * D2R + HLD, back: 104 * D2R + HLD };
+      fringe = 0.7;
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(48, 104), nv: 12,
+        puff: (az, t) => 0.080 * (1 - smooth(0.62, 1.0, t)) + 0.034
+          + 0.20 * clamp((front(az) + 0.18) / 1.18, 0, 1) ** 1.1
+            * Math.sin(clamp(t / 0.55, 0, 1) * Math.PI) ** 0.8,
+        streak: 5,
+      }));
+      // the swept-up front is built from cards so it has real strand edges
+      for (let i = 0; i < 9; i++) {
+        const t = (i + 0.5) / 9;
+        const az = (t - 0.5) * 1.9;
+        parts.push(hairCard(az, 0.34, {
+          w: 0.22, len: 0.30 + 0.10 * hs(i * 3 + seed), lift: 0.16,
+          sweep: partSide * 0.35, curl: -0.85, bow: 0.06,
+        }));
+      }
+      napeCards(4, 0.10);
+      rimCards(13, rim(48, 104), { len: 0.10, curl: 0.16 });
+      break;
+
+    case 'curls':
+      hl = { front: (52 + jitter * 5) * D2R + HLD, back: 100 * D2R + HLD };
+      fringe = 0.85;
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(52, 100), nu: 40, nv: 11,
+        puff: (az, t) => 0.155 * (1 - smooth(0.74, 1.0, t)) + 0.036
+          + 0.075 * (n3(Math.cos(az) * 3.2, Math.sin(az) * 3.2, t * 4.4) - 0.5)
+            * (1 - smooth(0.62, 1.0, t)),
+        streak: 4,
+      }));
+      // irregular clumps, never a bead necklace: overlapping, varied, sunk in
+      for (let i = 0; i < 22; i++) {
+        const az = hs(i * 3 + 1 + seed) * TAU;
+        const rim = line(52, 100)(az) / D2R;
+        const th = (10 + hs(i * 7 + 5 + seed) * (rim - 18)) * D2R;
+        const b = blobGeo(HEAD_R * (0.105 + 0.075 * hs(i * 11 + 3 + seed)), 7);
+        b.scale(1 + 0.5 * hs(i * 13 + seed), 0.72 + 0.5 * hs(i * 17 + seed), 1);
+        b.rotateY(hs(i * 19 + seed) * TAU);
+        parts.push(onSkull(b, az, th, 0.055));
+      }
+      for (let i = 0; i < 16; i++) {
+        const az = hs(i * 23 + seed * 5) * TAU;
+        const rim = line(52, 100)(az);
+        const th = 0.25 + hs(i * 29 + seed) * (rim - 0.3);
+        parts.push(hairCard(az, th, {
+          w: 0.20, len: 0.13 + 0.07 * hs(i * 31 + seed), lift: 0.12,
+          sweep: (hs(i * 37 + seed) - 0.5) * 1.2, curl: -0.4, bow: 0.05,
+        }));
+      }
+      fringeCards(7, 1.0, { len: 0.15, curl: 0.3 });
+      break;
+
+    case 'afro':
+      hl = { front: (56 + jitter * 4) * D2R + HLD, back: 104 * D2R + HLD };
+      fringe = 0.9;
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(56, 104), nu: 44, nv: 12,
+        puff: (az, t) => (0.36 + 0.10 * (n3(Math.cos(az) * 2.6, Math.sin(az) * 2.6, t * 3.1) - 0.5) * 2
+          + 0.05 * Math.sin(az * 9 + seed)) * (1 - smooth(0.60, 1.0, t)) + 0.038,
+        streak: 3,
+      }));
+      // fuzz the whole silhouette with cards instead of stacking spheres
+      for (let i = 0; i < 34; i++) {
+        const az = hs(i * 5 + 9 + seed) * TAU;
+        const rim = line(56, 104)(az);
+        const u = hs(i * 13 + 2 + seed);
+        const th = 0.16 + u * (rim - 0.22);
+        // The shell's puff collapses toward its lower edge, so a card carrying
+        // a constant lift out there floats free of it. Fade the lift on the
+        // same curve the shell uses and the fuzz stays attached.
+        const hold = 1 - smooth(0.58, 1.0, u);
+        parts.push(hairCard(az, th, {
+          w: 0.26, len: (0.16 + 0.10 * hs(i * 3 + 7 + seed)) * (0.45 + 0.55 * hold),
+          lift: 0.045 + (0.26 + 0.09 * hs(i * 17 + 1 + seed)) * hold,
+          sweep: (hs(i * 7 + seed) - 0.5) * 1.4, curl: -0.5, bow: 0.06,
+        }));
+      }
+      break;
+
+    case 'dreads':
+      hl = { front: (53 + jitter * 4) * D2R + HLD, back: 100 * D2R + HLD };
+      fringe = 0.6;
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(53, 100),
+        puff: (az, t) => 0.085 * (1 - smooth(0.74, 1.0, t)) + 0.038, streak: 5,
+      }));
+      rimCards(12, rim(53, 100), { len: 0.09, curl: 0.14 });
+      for (let i = 0; i < 18; i++) {
+        const az = 1.9 + (i / 17) * (TAU - 3.8);
+        const len = 0.24 + 0.20 * hs(i * 5 + 2 + seed);
+        const strand = new THREE.CylinderGeometry(HEAD_R * 0.072, HEAD_R * 0.050, len, 6, 1);
+        strand.translate(0, -len * 0.46, 0);
+        strand.rotateZ(Math.sin(az) * 0.20);
+        parts.push(onSkull(strand, az, (76 + 20 * hs(i * 9 + 4 + seed)) * D2R, 0.055));
+        parts.push(hairCard(az, (74 + 22 * hs(i * 11 + seed)) * D2R, {
+          w: 0.12, len: len * 0.9, lift: 0.09,
+          sweep: (hs(i * 3 + seed) - 0.5) * 0.5, curl: 0.10, bow: 0.02,
+        }));
+      }
+      break;
+
+    case 'bun': {
+      hl = { front: (54 + jitter * 5) * D2R + HLD, back: 114 * D2R + HLD };
+      fringe = 0.35;
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(54, 114), nv: 11,
+        puff: (az, t) => 0.062 * (1 - smooth(0.60, 1.0, t)) + 0.036, streak: 8,
+      }));
+      rimCards(13, rim(54, 114), { len: 0.10, curl: 0.22, sweep: 0.6 });
+      flyaways(5, 0.09);
+      const knot = blobGeo(HEAD_R * 0.33, 14);
+      knot.scale(1, 0.86, 1);
+      parts.push(onSkull(knot, Math.PI, 40 * D2R, 0.26));
+      const band = new THREE.TorusGeometry(HEAD_R * 0.22, HEAD_R * 0.046, 6, 14);
+      band.rotateX(Math.PI * 0.46);
+      parts.push(onSkull(band, Math.PI, 52 * D2R, 0.12));
+      // strands sweeping back into the knot + loose wisps at the nape
+      for (let i = 0; i < 10; i++) {
+        const az = (i / 9 - 0.5) * 2.4 + Math.PI;
+        parts.push(hairCard(az, 0.9, {
+          w: 0.18, len: 0.22, lift: 0.05,
+          sweep: (hs(i * 3 + seed) - 0.5) * 0.6, curl: 0.15, bow: 0.03,
+        }));
+      }
+      fringeCards(5, 0.8, { len: 0.10, curl: 0.15 });
+      break;
+    }
+
+    case 'long':
+      hl = { front: (50 + jitter * 4) * D2R + HLD, back: 150 * D2R + HLD };
+      fringe = 0.95;
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(50, 150), nv: 15,
+        puff: (az, t) => 0.062 * (1 - smooth(0.92, 1.0, t)) + 0.038
+          + 0.15 * Math.max(0, -front(az)) * smooth(0.26, 1.0, t)
+          + 0.035 * (n3(Math.cos(az) * 3, Math.sin(az) * 3, t * 2) - 0.5),
+        streak: 4,
+      }));
+      for (let i = 0; i < 14; i++) {
+        const az = Math.PI + (i / 13 - 0.5) * 4.0;
+        parts.push(hairCard(az, 2.05, {
+          w: 0.22, len: 0.26 + 0.12 * hs(i * 5 + seed), lift: 0.05,
+          sweep: (hs(i * 7 + seed) - 0.5) * 0.5, curl: 0.20, bow: 0.03,
+        }));
+      }
+      fringeCards(8, 1.1, { len: 0.22, curl: 0.24 });
+      break;
+
+    case 'mohawk': {
+      hl = { front: (56 + jitter * 4) * D2R + HLD, back: 104 * D2R + HLD };
+      fringe = 0.25;
+      // shaved sides: thin and dark, but still hair
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(56, 104),
+        puff: () => 0.042, shadeBias: (az, t) => 0.34 - 0.50 * smooth(0.45, 1.0, t),
+        streak: 11,
+      }));
+      rimCards(12, rim(56, 104), { len: 0.045, curl: 0.06, sweep: 0.35 });
+      // crest: a ridge of cards standing up along the centre line
+      for (let i = 0; i <= 12; i++) {
+        const s = i / 12;
+        const ang = (s - 0.42) / 0.58;
+        const az = ang < 0 ? 0 : Math.PI;
+        const th = Math.abs(ang) * (ang < 0 ? 46 : 62) * D2R;
+        const h = Math.sin(s ** 0.8 * Math.PI) ** 0.55;
+        const blade = blobGeo(HEAD_R * 0.150, 9);
+        blade.scale(0.72, 0.50 + h * 1.35, 1.25);
+        parts.push(onSkull(blade, az, th, h * 0.24));
+        parts.push(hairCard(az, th, {
+          w: 0.10, len: 0.10 + h * 0.26, lift: 0.05 + h * 0.20,
+          sweep: 0, curl: -0.25, bow: 0.02,
+        }));
+      }
+      break;
+    }
+
+    default:
+      hl = { front: 51 * D2R + HLD, back: 102 * D2R + HLD };
+      parts.push(hairShell({
+        inner: () => 0, outer: rim(51, 102),
+        puff: (az, t) => 0.065 * (1 - smooth(0.60, 1.0, t)) + 0.036,
+      }));
+      fringeCards(7, 0.95, { len: 0.15, curl: 0.2 });
+      rimCards(14, rim(51, 102), { len: 0.115, curl: 0.18 });
+  }
+  return { geo: mergeShaded(parts.map((p) => ensureUv(p))), hairline: hl, fringe };
+}
+
+/**
+ * Beard shell. Azimuths outside the front arc collapse onto a ring buried
+ * inside the skull (puff < 0), so no sheet stretches across the head.
+ */
+/**
+ * BEARD. The old version wrapped one shell across the whole lower face, which
+ * is exactly why it read as a solid brown helmet strap. A real beard is a
+ * *band that follows the jaw*: it starts high and thin at the sideburn, thickens
+ * along the mandible, is fullest under the chin, and its upper edge dissolves
+ * into stubble rather than ending on a hard line.
+ *
+ * So this builds:
+ *   - a jaw band whose top edge tracks the mandible and whose thickness ramps
+ *     from nearly nothing at the sideburn to full under the chin,
+ *   - a separate moustache with a philtrum gap,
+ *   - a soul patch,
+ *   - and ~50 alpha strand cards feathering BOTH edges, so the silhouette is
+ *     hair and the transition into skin is a gradient, not a border.
+ */
+function buildBeard(density = 1) {
+  const parts = [];
+  const cw = (az) => Math.cos(az);                 // +1 chin, -1 nape
+  const inArc = (az) => cw(az) > -0.22;
+  // how much beard there is at this azimuth: none at the back, thin at the
+  // sideburn, full at the chin
+  const dens = (az) => clamp((cw(az) + 0.18) / 1.10, 0, 1) ** 0.80;
+  // Upper edge follows the mandible. It must stay WELL below the eye line
+  // (eyeTh = 81 deg) at every azimuth, or the beard climbs the cheek and turns
+  // back into the brown mask the reference never has.
+  const top = (az) => (95 + 17 * Math.max(0, cw(az)) ** 1.35) * D2R;
+  // The band's lower edge must stop on the mandible. Wrapped further under the
+  // jaw its cards crossed the neck mesh, and alphaTest fringing along that
+  // intersection showed as a scatter of black speckle at the collar.
+  // 113 + 24 deg at the chin put the edge at 137 deg, which on this skull is
+  // already past the jaw and out over the collar. The beard then hung in front
+  // of the jersey, and since the shell is alphaTest'd only the texels that
+  // happened to clear 0.42 survived — a chain of isolated dark dots tracing the
+  // beard's outline across the chest. Stopping at 128 keeps the band on the
+  // mandible, where a beard actually sits.
+  const bot = (az) => (113 + (7 + 8 * density) * Math.max(0, cw(az))) * D2R;
+
+  parts.push(hairShell({
+    inner: (az) => (inArc(az) ? top(az) : bot(az)),
+    outer: bot,
+    nu: 40, nv: 10, streak: 7,
+    puff: (az, t) => {
+      if (!inArc(az)) return -0.14;
+      const d = dens(az);
+      // thin and hugging at the top edge, full and standing off at the jaw
+      const body = (0.010 + 0.062 * density * d) * Math.sin(Math.min(1, t * 1.04) * Math.PI) ** 0.7;
+      // bury the top edge under the skin so the boundary is a gradient of
+      // painted stubble, never a drawn border
+      return body + 0.026 - 0.060 * (1 - smooth(0.0, 0.30, t));
+    },
+  }));
+
+  // Moustache: two wings with a philtrum gap between them. Its lower edge used
+  // to reach 101 deg and the mouth anchor is at 101.9 deg, so the shell landed
+  // squarely on the upper lip and every bearded player had no visible mouth at
+  // all. 96.5 deg clears the vermilion border with room to spare — a moustache
+  // rests ABOVE the lip in every reference head, never on it.
+  for (const s of [-1, 1]) {
+    parts.push(hairShell({
+      inner: () => 86 * D2R,
+      outer: (az) => {
+        const w = s * Math.sin(az);
+        return (w > 0.035 && w < 0.30 && Math.cos(az) > 0.80) ? 96.5 * D2R : 86 * D2R;
+      },
+      nu: 16, nv: 3, streak: 4,
+      puff: (az, t) => {
+        const w = s * Math.sin(az);
+        if (!(w > 0.035 && w < 0.30 && Math.cos(az) > 0.80)) return -0.12;
+        return 0.050 * density * Math.sin(t * Math.PI) ** 0.6 + 0.028;
+      },
+    }));
+  }
+  // soul patch under the lower lip
+  parts.push(hairShell({
+    inner: () => 111 * D2R,
+    outer: (az) => (Math.abs(Math.sin(az)) < 0.10 && Math.cos(az) > 0.90 ? 121 * D2R : 111 * D2R),
+    nu: 14, nv: 3, streak: 4,
+    puff: (az, t) => (Math.abs(Math.sin(az)) < 0.10 && Math.cos(az) > 0.90
+      ? 0.044 * density * Math.sin(t * Math.PI) ** 0.6 + 0.028 : -0.10),
+  }));
+
+  // Strand cards break the outer silhouette along the jaw so the edge is hair
+  // rather than a drawn contour. They are laid DENSE and SHORT and their length
+  // varies smoothly with azimuth: scattered long cards on a regular azimuth
+  // grid read as a zigzag saw-tooth, which is worse than no cards at all.
+  const NC = 26;
+  for (let i = 0; i < NC; i++) {
+    const az = (i / (NC - 1) - 0.5) * 2.55;
+    const d = dens(az);
+    if (d < 0.14) continue;
+    // smooth length envelope + a small, bounded jitter
+    const env = d * (0.80 + 0.20 * Math.sin(az * 5.3 + 1.1));
+    // The cards must STRADDLE the jaw edge, not hang off it. Anchored at
+    // bot-0.075 and grown 0.086 further down, the tips landed ~12 deg past the
+    // mandible, i.e. on the neck — and where an alphaTest'd strand card
+    // interpenetrates the neck mesh the cutout edge stipples, which is the
+    // scatter of black dots that kept reappearing on the collar. Anchoring
+    // higher and running shorter puts the tips a fraction of a degree past
+    // bot(): still enough to break the contour into hair, never enough to
+    // reach the neck.
+    parts.push(hairCard(az, bot(az) - 0.130, {
+      w: 0.15,
+      len: (0.030 + 0.030 * density) * env,
+      lift: 0.030 + 0.018 * d,
+      sweep: Math.sin(az * 3.7) * 0.22, curl: 0.16, bow: 0.022,
+    }));
+  }
+  return mergeShaded(parts);
+}
+
+// ---------------------------------------------------------------------------
+// HANDS — a real palm with fingers, a thumb and a wrist. Merged into the
+// forearm mesh so they cost no extra draw call; UV'd into the bare-skin (or
+// glove) band of the arm texture.
+// ---------------------------------------------------------------------------
+
+/**
+ * HAND. The previous build had a palm, four fingers and a thumb and still read
+ * as a marshmallow, for two reasons.
+ *
+ * First, the fingers were curled 42 degrees forward. The camera sits in front
+ * of the player, so all it ever saw was four foreshortened tips: a nub. Fingers
+ * only read if their LENGTH is across the view, so the curl is now 15 degrees
+ * and they hang.
+ *
+ * Second, they touched. Adjacent capsules at 0.030 radius on 0.052 centres
+ * share a surface, and two tangent cylinders shade as one cylinder — there is
+ * no groove to catch a shadow. They are now thinner than their spacing AND
+ * fanned, so the gaps open toward the tips and the outer silhouette is
+ * scalloped. A scalloped silhouette is the cue that survives to gameplay
+ * distance; the grooves are the bonus at closeup.
+ *
+ * The thumb is the one shape that says 'hand' on its own, so it is rooted at
+ * the inboard top corner and swung down-and-in, leaving a real V notch between
+ * it and the index finger. And the wrist is a genuine neck -- narrower than
+ * both the forearm above it and the hand below it -- with a cuff ring flaring
+ * over it, so there is a joint instead of a tube fading into a lump.
+ */
+function buildHand(s, keeper) {
+  const parts = [];
+  const K = keeper ? 1.22 : 1.0;
+  const y0 = -0.196;                                   // wrist plane
+
+  // Cuff: a smooth bulge over the end of the forearm, and it has to be smooth.
+  // Two cone versions came before this one and both rendered as a hard black
+  // bracelet, because a cone's outer rim is a crease: at the silhouette its
+  // normal turns sideways-and-down in one step, gets no key light, and draws a
+  // near-black line exactly where the widest part of the shape is. A lens has
+  // no crease anywhere, so the same volume shades as a gradient.
+  //
+  // The wrist itself needs no geometry: the forearm lathe necks down to 0.046
+  // at its tip, and that pinch under this bulge is the joint.
+  const cuff = blobGeo(0.100 * K, 14);
+  cuff.scale(1.00, 0.42, 0.92);
+  cuff.translate(0, y0 - 0.016, 0.002 * K);
+  parts.push(cuff);
+
+  // palm: a paddle, not a ball -- broad across, tall, thin front to back.
+  const palm = blobGeo(0.098 * K, 14);
+  palm.scale(1.04, 0.86, 0.50);
+  palm.translate(s * 0.004 * K, y0 - 0.078 * K, 0.006 * K);
+  parts.push(palm);
+  // hypothenar: the muscular heel under the little finger, outboard side only,
+  // which is what makes a hand asymmetric rather than a lozenge
+  const heel = blobGeo(0.058 * K, 9);
+  heel.scale(0.80, 1.10, 0.62);
+  heel.translate(s * 0.070 * K, y0 - 0.076 * K, 0.000);
+  parts.push(heel);
+
+  // knuckle ridge across the top of the finger roots
+  const kn = blobGeo(0.062 * K, 10);
+  kn.scale(1.50, 0.56, 0.72);
+  kn.translate(s * 0.002 * K, y0 - 0.126 * K, 0.010 * K);
+  parts.push(kn);
+
+  // four fingers, index (inboard) to little (outboard). Radius 0.023 on 0.052
+  // centres leaves a 6 mm groove at the root, and the fan opens it to nearly
+  // 20 mm at the tips.
+  const LEN = [0.086, 0.098, 0.092, 0.074];
+  for (let i = 0; i < 4; i++) {
+    const len = LEN[i] * K;
+    const r = (0.0245 - i * 0.0009) * K;
+    const f = new THREE.CapsuleGeometry(r, len, 3, 7);
+    f.translate(0, -len * 0.5, 0);
+    // hang, with only a hint of curl, so the length faces the camera
+    f.rotateX(-0.16 - i * 0.015);
+    // fan: tips splay outboard so the gaps between fingers open up
+    f.rotateZ(-s * (i - 1.35) * 0.115);
+    f.translate(s * (-0.070 + i * 0.0505) * K, y0 - 0.120 * K, 0.012 * K);
+    parts.push(f);
+  }
+
+  // thumb: rooted inboard and high, swinging down-in-forward. The gap it opens
+  // against the index finger is the single strongest hand cue in the silhouette.
+  const tl = 0.088 * K;
+  const th = new THREE.CapsuleGeometry(0.032 * K, tl, 3, 8);
+  th.translate(0, -tl * 0.5, 0);
+  th.rotateZ(-s * 0.62);
+  th.rotateX(-0.42);
+  th.translate(-s * 0.070 * K, y0 - 0.044 * K, 0.026 * K);
+  parts.push(th);
+  // thenar pad filling the web between thumb and palm
+  const pad = blobGeo(0.048 * K, 9);
+  pad.scale(0.86, 1.00, 0.72);
+  pad.translate(-s * 0.056 * K, y0 - 0.056 * K, 0.020 * K);
+  parts.push(pad);
+
+  const m = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// BOOT — vertex-coloured so every player shares one material.
+// The sole plane sits at y = -0.06 (the foot bone lives at y = 0.06).
+// ---------------------------------------------------------------------------
+
+/**
+ * Loft a closed shoe shell through a list of cross-sections.
+ *
+ * Each station is [z, halfWidth, topY, botY]. The section is a superellipse
+ * that is flat underneath and rounded over the top, which is the whole point:
+ * a boot is not a body of revolution and it is not a box either. Sweeping a
+ * section whose plan width and top height are both functions of z is the only
+ * way to get a real shoe silhouette — narrow heel, wide ball, tapered toe,
+ * high at the ankle, low over the toes — out of a few dozen numbers.
+ *
+ * The first and last stations pinch to a sliver so the ends close.
+ */
+function loftShoe(sts, na = 20, flatBottom = 0.30) {
+  const pos = [], idx = [];
+  const rows = na + 1;
+  for (let k = 0; k < sts.length; k++) {
+    const [z, hw, ty, by] = sts[k];
+    const yc = (ty + by) * 0.5, hh = (ty - by) * 0.5;
+    for (let i = 0; i <= na; i++) {
+      const a = (i / na) * TAU;
+      const cu = Math.cos(a), sv = Math.sin(a);
+      pos.push(
+        hw * Math.sign(cu) * Math.abs(cu) ** 0.66,
+        yc + hh * (sv >= 0 ? Math.abs(sv) ** 0.78 : -(Math.abs(sv) ** flatBottom)),
+        z,
+      );
+    }
+  }
+  for (let k = 0; k < sts.length - 1; k++) {
+    for (let i = 0; i < na; i++) {
+      const a = k * rows + i, b = a + rows;
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** point on the lofted upper's outer skin, for gluing detail onto the side */
+function shoeSide(sts, z, s, frac) {
+  // linear search + lerp between the two bracketing stations
+  let k = 0;
+  while (k < sts.length - 2 && sts[k + 1][0] < z) k++;
+  const a = sts[k], b = sts[k + 1];
+  const t = clamp((z - a[0]) / ((b[0] - a[0]) || 1), 0, 1);
+  const hw = a[1] + (b[1] - a[1]) * t;
+  const ty = a[2] + (b[2] - a[2]) * t;
+  const by = a[3] + (b[3] - a[3]) * t;
+  return [s * hw, by + (ty - by) * frac, z];
+}
+
+// The foot bone sits 0.060 above the pitch, so local y = -0.060 IS the grass.
+// The rand must not land on it: two coplanar surfaces z-fight, and what that
+// looks like at this scale is a bright sole chewed into dashes. The rand floats
+// 6 mm clear and the studs are what reach the turf, which is also how a real
+// boot stands.
+const SOLE_Y = -0.0535;
+const RAND_Y = -0.032;      // top of the bright sole rand
+// Heel at the back, ball of the foot forward of the ankle, toe pinched off.
+// Widest at z = +0.02 (the ball), tallest at z = -0.06 (the heel counter).
+const BOOT_STATIONS = [
+  [-0.138, 0.018, -0.014, -0.040],
+  [-0.118, 0.055, 0.026, -0.040],
+  [-0.086, 0.077, 0.052, -0.040],
+  [-0.040, 0.088, 0.056, -0.040],
+  [0.014, 0.092, 0.046, -0.040],
+  [0.070, 0.088, 0.030, -0.040],
+  [0.124, 0.077, 0.010, -0.040],
+  [0.170, 0.056, -0.014, -0.040],
+  [0.198, 0.016, -0.032, -0.040],
+];
+// the rand hangs 6 mm proud of the upper all the way round — that overhanging
+// bright line is what draws the sole in the reference art, far more than the
+// tread ever does
+// The end stations are already pinched to a sliver; widening them by the same
+// amount as the rest pushed the rand's toe tip past its own neighbour and bit a
+// notch out of the toe. They get a third of the offset.
+const RAND_STATIONS = BOOT_STATIONS.map(([z, hw, , ], i, A) => [
+  z, hw + (i === 0 || i === A.length - 1 ? 0.002 : 0.0065),
+  RAND_Y, SOLE_Y,
+]);
+
+/**
+ * BOOT. The old build was a box, a sphere stuck on each side and a sole plate
+ * 7 cm longer than the foot, which read at any distance as a black brick on a
+ * white ski. The reference boot is a low slipper: a smooth tapered upper that
+ * sits *below* the ankle bone, a thin bright rand tracing the whole outline, a
+ * rounded toe, three flashes on the quarter and a laced instep. Every one of
+ * those is a silhouette or a hard value break, which is why they survive being
+ * forty pixels tall.
+ */
+function buildBoot(main, accent, sole) {
+  const parts = [];
+
+  parts.push(tint(loftShoe(BOOT_STATIONS, 20, 0.30), main));
+  parts.push(tint(loftShoe(RAND_STATIONS, 20, 0.22), sole));
+
+  // toe cap: a second skin over the front third, lifted a hair so it catches
+  // its own highlight and breaks the upper into toe box + vamp
+  const capSts = BOOT_STATIONS.slice(4).map(([z, hw, ty, by], i) => {
+    const g = i === 0 ? 0 : 0.004;
+    return [z, hw + g, ty + g * 0.8, by];
+  });
+  parts.push(tint(loftShoe(capSts, 18, 0.30), main));
+
+  // heel counter — a wrap around the back of the quarter, not a ball on a stick
+  const cntSts = BOOT_STATIONS.slice(0, 4).map(([z, hw, ty, by], i) => [
+    z, hw + (i === 0 ? 0.0 : 0.005), ty + (i === 0 ? 0 : 0.004) - (i === 3 ? 0.020 : 0),
+    by + 0.010,
+  ]);
+  parts.push(tint(loftShoe(cntSts, 16, 0.34), accent));
+
+  // ankle collar: the opening the sock drops into. Tilted forward, sat on the
+  // top edge of the quarter so there is a real lip rather than a sock that
+  // vanishes into the boot.
+  // At 0.019 minor radius sitting at y = 0.062 this cleared the quarter (which
+  // tops out at 0.056) by more than its own thickness, so on a dark boot -- where
+  // the accent is near-white -- a pale slab stood up round the ankle and was the
+  // loudest thing on the foot in profile. It is piping, not a bumper: thin, and
+  // low enough that the quarter still owns the top edge.
+  const collar = new THREE.TorusGeometry(0.082, 0.011, 6, 18);
+  collar.rotateX(Math.PI / 2 - 0.12);
+  collar.translate(0, 0.049, -0.028);
+  parts.push(tint(collar, accent));
+
+  // studs — under the ball and the heel, inside the rand footprint so nothing
+  // pokes out past the silhouette
+  for (const [sx, sz, r] of [
+    [0.052, 0.128, 0.016], [-0.052, 0.128, 0.016],
+    [0.066, 0.026, 0.017], [-0.066, 0.026, 0.017],
+    [0.054, -0.078, 0.017], [-0.054, -0.078, 0.017],
+  ]) {
+    const stud = new THREE.CylinderGeometry(r, r * 0.72, 0.030, 6, 1);
+    stud.translate(sx, SOLE_Y - 0.013, sz);
+    parts.push(tint(stud, sole));
+  }
+
+  // three flashes across the quarter, laid onto the actual lofted surface so
+  // they follow its taper instead of floating off the side of a box
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const z = 0.006 + i * 0.042;
+      const [px, py] = shoeSide(BOOT_STATIONS, z, s, 0.46 - i * 0.05);
+      const fl = new THREE.BoxGeometry(0.012, 0.040, 0.016);
+      fl.rotateX(0.30);
+      fl.rotateZ(-s * 0.16);
+      fl.translate(px * 0.985, py, z);
+      parts.push(tint(fl, accent));
+    }
+  }
+
+  // Tongue + three laces on the instep. The tongue sat at y = 0.058 against a
+  // quarter that tops out at 0.056, so it cleared the ankle line entirely.
+  // The rotation was also the wrong way round: rotateX(-0.22) lifts the FRONT
+  // of the tongue, so on a white boot a pale wedge stood up over the toe and
+  // read in profile as a duck bill. The instep falls away toward the toe, so
+  // the tongue has to fall with it.
+  const tongue = new THREE.BoxGeometry(0.058, 0.013, 0.082);
+  tongue.rotateX(0.26);
+  tongue.translate(0, 0.036, 0.020);
+  parts.push(tint(tongue, accent));
+  for (let i = 0; i < 3; i++) {
+    const lace = new THREE.BoxGeometry(0.052 - i * 0.007, 0.008, 0.009);
+    lace.rotateX(0.26);
+    lace.translate(0, 0.054 - i * 0.008, -0.006 + i * 0.028);
+    parts.push(tint(lace, sole));
+  }
+
+  const m = mergeGeometries(parts.map((p) => ensureUv(p)), false);
+  parts.forEach((p) => p.dispose());
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+
+let uid = 0;
+
+const NAMES = ['SILVA', 'KANE', 'MBAPPE', 'HALLER', 'DIAZ', 'ROSSI', 'MULLER',
+  'OKAFOR', 'TANAKA', 'NOVAK', 'BRUNO', 'LEWIN'];
+
+export function createPlayer(cfg = {}) {
+  const team = TEAMS[cfg.team ?? 0];
+  const isKeeper = !!cfg.isKeeper;
+  const number = cfg.number ?? 9;
+  const skin = cfg.skin ?? SKIN_TONES[3];
+  const hairColor = cfg.hairColor ?? HAIR_COLORS[0];
+  const hairStyle = cfg.hair ?? HAIR_STYLES[0];
+  const faceVariant = cfg.faceVariant ?? 0;
+  const beard = cfg.beard ?? 0;             // 0 clean, 1 stubble, 2 full beard
+  const kitStyle = isKeeper ? 'keeper' : (cfg.kitStyle ?? 'plain');
+  // the club's construction recipe: body graphic, shoulder, collar, sleeve,
+  // crest silhouette and sock banding. This is what stops the two teams from
+  // being one template in two palettes.
+  const recipe = KIT_RECIPES[isKeeper ? 'keeper' : (cfg.team ?? 0) % 2] ?? KIT_RECIPES[0];
+  const build = cfg.build ?? 1.0;
+  const girth = cfg.girth ?? 1.0;
+  const headScale = cfg.headScale ?? 1.0;
+  const seed = (number * 7 + (cfg.team ?? 0) * 13 + faceVariant * 3) % 97;
+
+  const kitColor = isKeeper ? team.keeper : team.kit;
+  const kitAlt = isKeeper ? darken(team.keeper, 0.42) : (team.kitDark ?? darken(team.kit, 0.4));
+  const shortsColor = isKeeper ? team.keeperShorts : team.shorts;
+  const sockColor = isKeeper ? darken(team.keeper, 0.30) : team.socks;
+  const trimColor = isKeeper ? lighten(team.keeper, 0.72) : team.trim;
+  const sockTrim = isKeeper ? lighten(team.keeper, 0.6)
+    : (contrastOn(sockColor) === 0xffffff ? 0xffffff : darken(sockColor, 0.45));
+  const gloveColor = lighten(team.keeper, 0.78);
+
+  const group = new THREE.Group();
+  group.name = `player-${team.name}-${number}`;
+  group.userData.id = uid++;
+  group.scale.setScalar(build);
+
+  const root = new THREE.Object3D(); root.name = 'root';
+  group.add(root);
+  const hips = new THREE.Object3D(); hips.name = 'hips';
+  hips.position.y = HIP_Y;
+  root.add(hips);
+  const torso = new THREE.Object3D(); torso.name = 'torso';
+  hips.add(torso);
+  const head = new THREE.Object3D(); head.name = 'head';
+  head.position.y = HEAD_BONE_Y;
+  head.scale.setScalar(headScale);
+  torso.add(head);
+
+  const meshes = [];
+  const addMesh = (parent, geo, mat, cast = false) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.castShadow = cast;
+    m.receiveShadow = false;
+    parent.add(m);
+    meshes.push(m);
+    return m;
+  };
+
+  // ---- shorts (mid-thigh) -------------------------------------------------
+  const shortsGeo = lathe([
+    [0.00, 0.316, -0.212],
+    [0.14, 0.324, -0.175],
+    [0.44, 0.316, -0.100],
+    [0.76, 0.306, -0.022],
+    [1.00, 0.292, 0.048],
+  ], 22, 12);
+  shortsGeo.scale(girth, 1, 0.86 * girth);
+  if (isKeeper) shortsGeo.scale(1.04, 1.10, 1.04);
+  addMesh(hips, shortsGeo,
+    fabricMat(`shortsM:${shortsColor}:${trimColor}:${kitColor}:${isKeeper ? 1 : 0}`,
+      shortsTexture({ color: shortsColor, trim: trimColor, kit: kitColor, long: isKeeper }),
+      { rough: 0.88, repeat: [5, 2], normalScale: 0.5 }), true);
+
+  // plug the open bottom of the shorts lathe
+  const gusset = blobGeo(0.30, 12);
+  gusset.scale(girth, 0.50, 0.86 * girth);
+  gusset.translate(0, -0.175, 0);
+  addMesh(hips, ensureUv(gusset), skinMat(darken(skin, 0.22)));
+
+  // ---- torso --------------------------------------------------------------
+  const torsoParts = [];
+  const torsoGeo = lathe([
+    [0.00, 0.302, -0.030],
+    [0.10, 0.320, 0.030],
+    [0.32, 0.342, 0.170],
+    [0.56, 0.368, 0.315],
+    [0.76, 0.384, 0.428],
+    [0.88, 0.330, 0.502],
+    [0.95, 0.215, 0.546],
+    [1.00, 0.040, 0.566],
+  ], 30, 16);
+  torsoGeo.scale(girth, 1, 0.80 * girth);
+  torsoParts.push(torsoGeo);
+  // real collar: a ring around the neck, UV'd into the shirt's trim band
+  const collar = new THREE.TorusGeometry(0.176, 0.042, 8, 22);
+  collar.rotateX(Math.PI / 2);
+  collar.scale(1.06 * girth, 1, 0.92 * girth);
+  collar.translate(0, 0.520, 0);
+  torsoParts.push(cylUV(collar, 0.985));
+  const torsoMerged = mergeGeometries(torsoParts, false);
+  torsoParts.forEach((p) => p.dispose());
+  const torsoMesh = addMesh(torso, torsoMerged,
+    fabricMat(`shirtM:${kitColor}:${trimColor}:${kitAlt}:${number}:${kitStyle}:${team.id}`,
+      shirtTexture({
+        kit: kitColor, trim: trimColor, alt: kitAlt, number, style: kitStyle, recipe,
+        letter: (team.short || team.name || 'C')[0], name: NAMES[number % NAMES.length],
+      }),
+      { rough: 0.84, repeat: [6, 3], normalScale: 0.6 }), true);
+
+  // ---- head ---------------------------------------------------------------
+  const headParts = [
+    buildHead(),
+    buildNose(1 + (faceVariant % 3) * 0.08),
+    buildEars(),
+    buildLids(),
+    buildNeck(),
+    // the brow ridge is skin: form for the head texture to paint hair onto
+    finishFacePart(buildBrowGeo(faceVariant)),
+  ];
+  const headMerged = mergeGeometries(headParts, false);
+  headParts.forEach((p) => p.dispose());
+
+  const hairInfo = buildHairGeo(hairStyle, seed);
+  const scalp = hairInfo.hairline
+    ? { color: hairColor, front: hairInfo.hairline.front, back: hairInfo.hairline.back, fringe: hairInfo.fringe }
+    : null;
+  const faceOpts = { skin, variant: faceVariant, browColor: hairColor, stubble: beard, scalp };
+  const headMat = new THREE.MeshStandardMaterial({
+    map: headTexture({ ...faceOpts, expr: 'set' }),
+    roughness: 0.80, metalness: 0.0,
+  });
+  addMesh(head, headMerged, headMat, true);
+
+  // ---- eyeballs -----------------------------------------------------------
+  const eyeIdx = (faceVariant + (number % 3)) % EYE_COLORS.length;
+  const eyeMesh = addMesh(head, buildEyeballs(), eyeMat(EYE_COLORS[eyeIdx]));
+
+  // ---- hair + beard -------------------------------------------------------
+  const hairParts = [];
+  if (hairInfo.geo) hairParts.push(shadeHair(hairInfo.geo, hairColor));
+  // Beards are mixed toward a warm brown and floored above pure black: at the
+  // darkest hair colours an unmixed beard collapses into one silhouette with no
+  // internal value range, which is what made it read as a painted mask.
+  // BEARD COLOUR. shadeHair ramps a mesh from lighten(c,0.30) down to
+  // darken(c,0.58); on the old near-black mix that bottom end landed at 0x1f1914
+  // and the whole beard collapsed into an unlit silhouette — "a flat black bib
+  // that reads as dirt". A real beard is noticeably WARMER and LIGHTER than the
+  // hair above it (sun bleaches it, and it sits on a plane facing the sky), and
+  // it has to keep enough value left over at the dark end of the ramp for the
+  // form under the jaw to be readable.
+  const beardCol = lighten(mixHex(hairColor, 0x8f6440, 0.55), 0.08);
+  if (beard === 2) hairParts.push(shadeHair(buildBeard(1), beardCol));
+  else if (beard === 1) hairParts.push(shadeHair(buildBeard(0.30), lighten(beardCol, 0.08)));
+  if (hairParts.length) {
+    let merged;
+    if (hairParts.length === 1) merged = hairParts[0];
+    else { merged = mergeGeometries(hairParts, false); hairParts.forEach((p) => p.dispose()); }
+    merged.translate(0, HEAD_CENTER, 0);
+    addMesh(head, merged, hairMat(), true);
+  }
+
+  // ---- arms ---------------------------------------------------------------
+  const bones = {};
+  const armMat = fabricMat(
+    `armM:${kitColor}:${trimColor}:${skin}:${kitAlt}:${isKeeper ? 1 : 0}:${kitStyle}`,
+    armTexture({
+      kit: kitColor, trim: trimColor, skin, alt: kitAlt, recipe,
+      long: isKeeper, style: kitStyle, glove: isKeeper ? gloveColor : 0,
+    }),
+    { rough: 0.78, repeat: [3, 1], normalScale: 0.35 });
+
+  // the arm must clear the torso lathe (radius ~0.38 * girth at shoulder height)
+  // or it disappears into the shirt and the figure reads as armless.
+  const shoulderX = 0.344 + 0.066 * girth;
+  for (const s of [-1, 1]) {
+    const side = s < 0 ? 'L' : 'R';
+    const arm = new THREE.Object3D();
+    arm.name = 'arm' + side;
+    arm.position.set(s * shoulderX, TORSO_H - 0.075, 0);
+    torso.add(arm);
+    bones['arm' + side] = arm;
+
+    // shoulder -> elbow, strongly tapered: a deltoid, not a pipe
+    const upper = lathe([
+      [0.00, 0.040, -0.252],
+      [0.06, 0.104, -0.240],
+      [0.24, 0.113, -0.186],
+      [0.50, 0.128, -0.112],
+      [0.72, 0.148, -0.048],
+      [0.88, 0.168, 0.004],
+      [0.96, 0.164, 0.038],
+      [1.00, 0.060, 0.062],
+    ], 18, 14);
+    addMesh(arm, upper, armMat);
+
+    const fore = new THREE.Object3D();
+    fore.name = 'forearm' + side;
+    fore.position.y = -0.222;
+    arm.add(fore);
+    bones['forearm' + side] = fore;
+
+    // Elbow -> wrist. t = 0 is the wrist end. The old profile ran 0.086 at the
+    // wrist against a 0.093 hand, a 7 % step, which is no step at all: the
+    // forearm just swelled into the hand and the pair read as one sausage. A
+    // real forearm loses a third of its width over the last few centimetres,
+    // and that pinch is what lets the cuff above the hand register as a cuff.
+    const foreGeo = lathe([
+      [0.00, 0.046, -0.206],
+      [0.09, 0.068, -0.200],
+      [0.20, 0.078, -0.186],
+      [0.34, 0.094, -0.160],
+      [0.54, 0.110, -0.112],
+      [0.76, 0.126, -0.052],
+      [0.92, 0.136, -0.008],
+      [1.00, 0.070, 0.018],
+    ], 18, 14);
+    // the forearm samples only the bare-skin (or glove) band of the arm strip
+    {
+      const uv = foreGeo.getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) {
+        // The bottom tenth of the arm strip carries a baked wrist AO that
+        // reaches 30 % black, on top of a skin gradient that is already 42 %
+        // darkened there. Sampling a bare forearm and a whole hand out of that
+        // band is why the wrist rendered as a hard black bracelet: the cuff's
+        // flared wall faces down, catches little key light, and lands on the
+        // darkest texels in the strip. Both now start above the band.
+        uv.setY(i, (isKeeper ? 0.16 + uv.getY(i) * 0.66 : 0.13 + uv.getY(i) * 0.35));
+      }
+      uv.needsUpdate = true;
+    }
+    // Olecranon. Two lathes meeting end to end give a joint you can only read
+    // as a change of taper, and when the arm hangs near-straight that reads as
+    // nothing at all — 'straight featureless tubes with no elbow'. This is the
+    // point of the elbow: a small mass on the BACK of the joint, which is the
+    // side the camera sees whenever the arm swings forward, and the one bump
+    // that tells you where an arm folds.
+    const olec = blobGeo(0.082, 10);
+    olec.scale(0.86, 0.78, 0.92);
+    olec.translate(0, 0.004, -0.044);
+    ensureUv(olec);
+    {
+      const uv = olec.getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, 0.5, isKeeper ? 0.62 : 0.40);
+      uv.needsUpdate = true;
+    }
+
+    const hand = buildHand(s, isKeeper);
+    cylUV(hand, isKeeper ? 0.10 : 0.19);
+    const foreMerged = mergeGeometries([foreGeo, olec, hand], false);
+    foreGeo.dispose(); olec.dispose(); hand.dispose();
+    foreMerged.computeVertexNormals();
+    addMesh(fore, foreMerged, armMat, true);
+  }
+
+  // ---- legs ---------------------------------------------------------------
+  const sockMat = fabricMat(`sockM:${sockColor}:${sockTrim}:${recipe.sockBands}`,
+    sockTexture({ color: sockColor, trim: sockTrim, bands: recipe.sockBands }),
+    { rough: 0.9, repeat: [2, 1], normalScale: 0.5 });
+  const bootMain = cfg.bootColor ?? BOOT_COLORS[0];
+  const bright = contrastOn(bootMain) === 0xffffff;
+  // Pure white on a dark boot clips under the sun: the toe cap and heel counter
+  // lose all their shading and go to flat paper, which is half of why the toe
+  // read as a ball. A cool off-white keeps the same contrast against navy but
+  // still has somewhere to go when the light hits it.
+  const bootAccent = cfg.bootAccent ?? (bright ? 0xdae2ee : 0x1a1d24);
+  const bootSole = cfg.bootSole ?? (bright ? 0xc9d3e1 : 0x2b3038);
+  const bootGeo = buildBoot(bootMain, bootAccent, bootSole);
+  const thighMat = skinMat(skin);
+
+  for (const s of [-1, 1]) {
+    const side = s < 0 ? 'L' : 'R';
+    const thigh = new THREE.Object3D();
+    thigh.name = 'thigh' + side;
+    thigh.position.set(s * 0.148 * girth, -0.02, 0);
+    hips.add(thigh);
+    bones['thigh' + side] = thigh;
+
+    addMesh(thigh, lathe([
+      [0.00, 0.072, -0.300],
+      [0.10, 0.108, -0.284],
+      [0.34, 0.121, -0.216],
+      [0.64, 0.136, -0.120],
+      [0.88, 0.150, -0.034],
+      [1.00, 0.118, 0.018],
+    ], 14, 12), thighMat, true);
+
+    const shin = new THREE.Object3D();
+    shin.name = 'shin' + side;
+    shin.position.y = -THIGH_L;
+    thigh.add(shin);
+    bones['shin' + side] = shin;
+
+    addMesh(shin, lathe([
+      [0.00, 0.070, -0.286],
+      [0.10, 0.084, -0.268],
+      [0.30, 0.093, -0.214],
+      [0.60, 0.105, -0.128],
+      [0.86, 0.119, -0.042],
+      [1.00, 0.128, 0.012],
+    ], 14, 12), sockMat, true);
+
+    const foot = new THREE.Object3D();
+    foot.name = 'foot' + side;
+    foot.position.y = -SHIN_L;
+    shin.add(foot);
+    bones['foot' + side] = foot;
+
+    // The boot casts. Thighs and shins already did, but they sit 30–60 cm up,
+    // so their shadow lands away from the sole and leaves the foot itself
+    // hovering. The boot's own shadow is nearly coincident with the sole, which
+    // is the one place the eye checks to decide whether a figure is standing on
+    // the pitch or floating over it.
+    addMesh(foot, bootGeo.clone(), bootMat(), true);
+  }
+  bootGeo.dispose();
+
+  // ---- selection ring + contact shadow ------------------------------------
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.50, 0.68, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0x4dff72, transparent: true, opacity: 0.92,
+      depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.scale.set(1, 1, 0.62);
+  ring.position.y = 0.03;
+  ring.visible = false;
+  ring.renderOrder = 4;
+  group.add(ring);
+
+  // The sun's shadow map alone cannot ground a figure this small: at 512² over
+  // a 10 m box a boot is about ten texels across, so the one part of the
+  // shadow that matters — the hard dark wedge right where sole meets grass —
+  // is exactly the part the map cannot resolve. This ellipse supplies it. It is
+  // deliberately tighter than the old 1.35 m quad (a stance is ~0.55 m wide, so
+  // a metre of plane already overhangs it) and squashed along Z, because the
+  // gameplay camera looks down the pitch at a shallow angle and a circular
+  // decal read as a hoop lying flat rather than as shade.
+  const blob = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: contactBlob(0.72), transparent: true,
+      depthWrite: false, opacity: 0.9,
+    }),
+  );
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = 0.012;
+  blob.renderOrder = 3;
+  group.add(blob);
+
+  const rig = {
+    root, hips, torso, head,
+    armL: bones.armL, armR: bones.armR,
+    forearmL: bones.forearmL, forearmR: bones.forearmR,
+    thighL: bones.thighL, thighR: bones.thighR,
+    shinL: bones.shinL, shinR: bones.shinR,
+    footL: bones.footL, footR: bones.footR,
+    group,
+    torsoMesh,
+  };
+
+  const config = {
+    team: team.id, teamData: team, number, skin, hair: hairStyle, hairColor,
+    isKeeper, faceVariant, beard, kitStyle, build, girth, headScale,
+  };
+
+  // ---- expression ---------------------------------------------------------
+  // The rig is the only per-frame signal player.js gets, and it is enough:
+  // root pitch says "on the floor", root lift and the arm yaw say "celebrating".
+  const restExpr = (seed % 3 === 0) ? 'focus' : 'set';
+  let expr = 'set';
+  let squint = 0;
+
+  function setExpression(kind) {
+    if (kind === expr) return;
+    expr = kind;
+    headMat.map = headTexture({ ...faceOpts, expr: kind });
+  }
+
+  function pickExpression() {
+    const pitch = root.rotation.x;
+    const lift = root.position.y;
+    if (pitch < -0.40) return 'strain';
+    if (isKeeper) return lift > 0.13 ? 'strain' : restExpr;
+    if (lift > 0.11 || Math.abs(bones.armL.rotation.y) > 0.10) return 'joy';
+    return restExpr;
+  }
+
+  return {
+    group, rig, config, meshes, ring, blob, setExpression,
+    get expression() { return expr; },
+    setSelected(v) { ring.visible = !!v; },
+    syncShadow() {
+      setExpression(pickExpression());
+      // squinting is real: pulling the balls back into the dishes narrows the
+      // openings, so a grin or a grimace closes the eyes down.
+      const want = { set: 0.06, focus: 0.24, joy: 0.62, strain: 0.58 }[expr] ?? 0.06;
+      squint += (want - squint) * 0.22;
+      eyeMesh.position.z = -0.020 * squint;
+      eyeMesh.position.y = -0.004 * squint;
+
+      blob.position.x = 0;
+      blob.position.z = 0;
+      // Grounded (k=1) it hugs the stance; as the figure leaves the deck the
+      // ellipse widens and fades, which is what an area-lit occlusion term
+      // actually does — it does not simply switch off.
+      const lift = Math.max(0, root.position.y);
+      const k = 1 / (1 + lift * 1.4);
+      const w = 0.92 + 0.55 * (1 - k);
+      blob.scale.set(w, w * 0.72, 1);
+      blob.material.opacity = 0.90 * k * k + 0.10 * k;
+    },
+    dispose() {
+      group.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+      headMat.dispose();
+      ring.material.dispose();
+      blob.material.dispose();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// squad — every player on the pitch must read as a different person
+// ---------------------------------------------------------------------------
+
+const SQUAD_NUMBERS = [[1, 4, 6, 8, 10, 11], [1, 3, 5, 7, 9, 14]];
+
+/** Fisher-Yates over a copy, driven by the seeded rng */
+function shuffled(arr, rng) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = rng.int(i + 1);
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+export function createSquad(teamIndex, rng) {
+  const squad = [];
+  const numbers = SQUAD_NUMBERS[teamIndex % 2];
+  // sample without replacement so no two team-mates share a look
+  const skins = shuffled(SKIN_TONES, rng).slice(0, 6);
+  const hairs = shuffled(HAIR_STYLES, rng).slice(0, 6);
+  // Style was already sampled without replacement, but COLOUR was rng.pick, so
+  // three team-mates drawing the same brown out of twelve was routine and the
+  // panel counted four identical heads in a squad of ten. Hair reads as
+  // style-plus-colour at any distance past a few metres, and past that distance
+  // colour is doing most of the work — so it has to be sampled the same way.
+  const hairCols = shuffled(HAIR_COLORS, rng).slice(0, 6);
+  const boots = shuffled(BOOT_COLORS, rng).slice(0, 6);
+  // the club's look now comes from KIT_RECIPES, keyed off the team index
+  const kitStyle = 'club';
+
+  for (let i = 0; i < numbers.length; i++) {
+    const isKeeper = i === 0;
+    // build, girth and head size vary enough that the silhouettes differ at a
+    // glance: a short stocky number 6 next to a tall lean number 10.
+    const tall = 0.90 + rng.float() * 0.20;
+    squad.push(createPlayer({
+      team: teamIndex,
+      number: numbers[i],
+      isKeeper,
+      skin: skins[i],
+      hair: hairs[i],
+      hairColor: hairCols[i],
+      faceVariant: (i * 2 + teamIndex * 3 + rng.int(2)) % 6,
+      beard: rng.chance(0.30) ? 2 : rng.chance(0.34) ? 1 : 0,
+      kitStyle: isKeeper ? 'keeper' : kitStyle,
+      bootColor: boots[i],
+      build: tall,
+      girth: 1.14 - (tall - 0.90) * 0.55 + (rng.float() - 0.5) * 0.10,
+      headScale: 1.06 - (tall - 0.90) * 0.35,
+    }));
+  }
+  return squad;
+}

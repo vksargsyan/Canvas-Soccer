@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Character lineup</title>
+<style>html,body{margin:0;height:100%;background:#101820;overflow:hidden}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three/build/three.module.js", "three/addons/": "../vendor/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { createPlayer, HEAD_R } from '../src/entities/player.js';
+import { SKIN_TONES, HAIR_COLORS, HAIR_STYLES } from '../src/entities/player-textures.js';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1d2a35);
+
+const hemi = new THREE.HemisphereLight(0xcfe4ff, 0x2c3a2a, 1.05);
+scene.add(hemi);
+const key = new THREE.DirectionalLight(0xfff4e2, 2.35);
+key.position.set(3.2, 6.4, 5.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -8; key.shadow.camera.right = 8;
+key.shadow.camera.top = 8; key.shadow.camera.bottom = -8;
+key.shadow.bias = -0.0006;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xbfd9ff, 0.9);
+rim.position.set(-4, 3.5, -4.5);
+scene.add(rim);
+const fill = new THREE.DirectionalLight(0xffe9d0, 0.45);
+fill.position.set(-3, 1.2, 4);
+scene.add(fill);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: 0x2f6b34, roughness: 0.95 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const params = new URLSearchParams(location.search);
+const MODE = params.get('mode') || 'lineup';
+
+const N = 8;
+const players = [];
+for (let i = 0; i < N; i++) {
+  const p = createPlayer({
+    team: i % 2,
+    number: 100 + i * 17,
+    isKeeper: i === 0,
+    skin: SKIN_TONES[i % SKIN_TONES.length],
+    hair: HAIR_STYLES[i % HAIR_STYLES.length],
+    hairColor: HAIR_COLORS[(i * 3) % HAIR_COLORS.length],
+    faceVariant: i % 6,
+    beard: i % 3,
+    kitStyle: i === 0 ? 'keeper' : 'club',
+    build: 1.0,
+  });
+  p.group.position.set((i - (N - 1) / 2) * 1.28, 0, 0);
+  p.group.rotation.y = 0.16 * ((i % 2) ? 1 : -1);
+  scene.add(p.group);
+  p.group.traverse((o) => { if (o.isMesh) { o.castShadow = true; } });
+  players.push(p);
+}
+
+const camera = new THREE.PerspectiveCamera(28, window.innerWidth / window.innerHeight, 0.1, 100);
+if (MODE === 'lineup') {
+  camera.position.set(0, 1.35, 12.5);
+  camera.lookAt(0, 1.05, 0);
+} else if (MODE === 'faces') {
+  // tight on the heads of the first 4
+  camera.fov = 16;
+  camera.position.set(-2.2, 1.62, 7.0);
+  camera.lookAt(-2.2, 1.52, 0);
+} else if (MODE === 'faces2') {
+  camera.fov = 16;
+  camera.position.set(2.2, 1.62, 7.0);
+  camera.lookAt(2.2, 1.52, 0);
+} else if (MODE === 'portrait') {
+  camera.fov = 7.2;
+  camera.position.set(-0.62, 1.56, 12.0);
+  camera.lookAt(-0.62, 1.50, 0);
+} else if (MODE === 'portrait2') {
+  camera.fov = 7.2;
+  camera.position.set(1.92, 1.56, 12.0);
+  camera.lookAt(1.92, 1.50, 0);
+} else if (MODE === 'hands') {
+  camera.fov = 15;
+  camera.position.set(0, 1.05, 7.5);
+  camera.lookAt(0, 0.90, 0);
+} else if (MODE === 'kits') {
+  camera.fov = 20;
+  camera.position.set(0, 0.85, 9.0);
+  camera.lookAt(0, 0.72, 0);
+}
+camera.updateProjectionMatrix();
+
+// slight arm spread so hands are visible
+for (const p of players) {
+  p.rig.armL.rotation.z = 0.30;
+  p.rig.armR.rotation.z = -0.30;
+  p.rig.armL.rotation.x = -0.10;
+  p.rig.armR.rotation.x = -0.10;
+  p.rig.forearmL.rotation.x = -0.32;
+  p.rig.forearmR.rotation.x = -0.32;
+  p.syncShadow();
+}
+
+renderer.render(scene, camera);
+window.__ready = true;
+window.__stats = { calls: renderer.info.render.calls, tris: renderer.info.render.triangles };
+</script>
+</body>
+</html>

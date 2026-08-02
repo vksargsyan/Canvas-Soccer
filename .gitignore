@@ -1,0 +1,21 @@
+# Local tooling only. The game itself has no build step and no npm dependencies —
+# three.js is vendored in vendor/three and loaded through the importmap in index.html.
+# Agents occasionally npm-install three to import it from a node script; that must
+# never reach the repo.
+node_modules/
+package.json
+package-lock.json
+
+# Scratch harnesses and captures
+*.log
+shots-*/
+motion-*/
+
+# Agent scratch harnesses. These get written to the repo root while debugging a
+# render or a physics probe; they are throwaway and must never ship next to
+# index.html. Real dev tools live in dev/ and are committed deliberately.
+dbg*.mjs
+dbg*.html
+probe*.mjs
+blank.html
+_*.mjs

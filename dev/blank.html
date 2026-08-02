@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Canvas Soccer — bake bench</title>
+<link rel="icon" href="data:," />
+<!--
+  Empty harness page for benchmarking the procedural bakes in isolation. It sets
+  up the same import map index.html uses and nothing else, so a driver script can
+  import any texture module and time it without booting the game.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "three": "/vendor/three/build/three.module.js",
+    "three/addons/": "/vendor/three/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body><canvas id="view"></canvas></body>
+</html>
