@@ -418,9 +418,21 @@ function stability(a, nx, nz) {
   return s;
 }
 
+// De-overlap corrections are accumulated here and applied once, clamped, at the
+// end of the sweep. Module scope so a frame allocates nothing.
+let sepX = new Float64Array(32);
+let sepZ = new Float64Array(32);
+
+// How fast a body may be pushed out of an overlap, in m/s. De-overlap is a
+// nudge, not a launch: 3 m/s clears a typical interpenetration in a few frames
+// and stays well under a run, so it can never read as a slide.
+const MAX_SEPARATION_SPEED = 3.0;
+
 function jostle(players, dt) {
   const n = players.length;
   const min = LOCO.bodyRadius * 2;
+  if (sepX.length < n) { sepX = new Float64Array(n * 2); sepZ = new Float64Array(n * 2); }
+  for (let k = 0; k < n; k++) { sepX[k] = 0; sepZ[k] = 0; }
   for (let i = 0; i < n; i++) {
     const a = players[i];
     if (a.down) continue;
@@ -441,8 +453,13 @@ function jostle(players, dt) {
       const wa = sb / (sa + sb);
       const wb = 1 - wa;
 
-      a.pos.x -= nx * pen * wa; a.pos.z -= nz * pen * wa;
-      b.pos.x += nx * pen * wb; b.pos.z += nz * pen * wb;
+      // Accumulate rather than write. Writing here moved a body directly, once
+      // per overlapping PAIR, with no bound and no trace in its velocity — in a
+      // 12-player scramble that displaced players at an implied 25 m/s while
+      // their reported speed never exceeded 10.4, which is the "sliding half the
+      // pitch" everyone could see and no velocity-based metric could catch.
+      sepX[i] -= nx * pen * wa; sepZ[i] -= nz * pen * wa;
+      sepX[j] += nx * pen * wb; sepZ[j] += nz * pen * wb;
 
       // Shoulder charge: kill part of the closing speed. It goes in as a
       // REQUEST, so contact spends the same envelope the legs do and can never
@@ -460,6 +477,21 @@ function jostle(players, dt) {
       La.lean = clamp(La.lean - pen * 0.35, -0.6, 0.6);
       Lb.lean = clamp(Lb.lean + pen * 0.35, -0.6, 0.6);
     }
+  }
+
+  // Apply the whole frame's de-overlap in one clamped step. The cap is on the
+  // TOTAL correction per body, so a player caught between several others is
+  // squeezed out at a walking pace instead of being fired out by the sum of
+  // every pair that touched him.
+  const maxStep = MAX_SEPARATION_SPEED * dt;
+  for (let k = 0; k < n; k++) {
+    const p = players[k];
+    if (p.down) continue;
+    let dx = sepX[k], dz = sepZ[k];
+    const m = Math.hypot(dx, dz);
+    if (m < 1e-9) continue;
+    if (m > maxStep) { const s = maxStep / m; dx *= s; dz *= s; }
+    p.pos.x += dx; p.pos.z += dz;
   }
 }
 
