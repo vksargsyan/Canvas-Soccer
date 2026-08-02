@@ -555,6 +555,14 @@ export function stepBodies(players, dt) {
     L.open = true;                  // this frame's envelope is now available
     L.pressure = Math.max(0, L.pressure - 3.0 * h);
     L.shielding = Math.max(0, L.shielding - 2.2 * h);
+    // Take the controller's write as this frame's REQUEST. ai.js and main.js
+    // both set agent.vel directly, which the header calls a request — but
+    // nothing ever read it here, so the whole envelope (bounded acceleration,
+    // speed-dependent turn limiting, stamina) computed L.vx/L.vz into a state
+    // object that no integrator touched. main.js integrates agent.vel, so the
+    // model was decorative and players moved on whatever raw lerp the caller
+    // last wrote. This is the read half of the contract.
+    if (!a.down) requestVelocity(a, a.vel.x, a.vel.z);
   }
 
   const ball = players.__ball || null;
@@ -600,6 +608,10 @@ function commit(a, dt) {
   }
 
   L.vx = nvx; L.vz = nvz;
+  // ...and the write half. The bounded result goes back onto agent.vel, which
+  // is what main.js actually integrates. Without this the envelope was advisory
+  // and a controller could change direction or stop dead in a single frame.
+  a.vel.x = nvx; a.vel.z = nvz;
   L.sp0 = sp;
   if (sp > 1e-5) { L.d0x = dirX; L.d0z = dirZ; }
   // the request settles onto what actually happened, so a controller that says
